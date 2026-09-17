@@ -5,7 +5,7 @@ const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
 function randomSuffix(length: number): string {
   const bytes = randomBytes(length);
   let out = "";
-  for (const b of bytes) out += alphabet[b % alphabet.length];
+  for (const b of bytes) out += alphabet.charAt(b % alphabet.length);
   return out;
 }
 

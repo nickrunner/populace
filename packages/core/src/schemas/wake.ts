@@ -23,7 +23,7 @@ export const WakeSchema = z.object({
   toolCalls: z.number().int().nonnegative(),
   findingCount: z.number().int().nonnegative(),
   error: z.string().nullable().default(null),
-  startedAt: z.string().datetime(),
-  endedAt: z.string().datetime().nullable().default(null),
+  startedAt: z.iso.datetime(),
+  endedAt: z.iso.datetime().nullable().default(null),
 });
 export type Wake = z.infer<typeof WakeSchema>;

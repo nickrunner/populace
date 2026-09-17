@@ -11,7 +11,7 @@ export const MemorySchema = z.object({
   annoyances: z.array(MemoryNoteSchema).default([]),
   /** Things the agent has already done, so it does not redo onboarding every wake. */
   done: z.array(MemoryNoteSchema).default([]),
-  updatedAt: z.string().datetime(),
+  updatedAt: z.iso.datetime(),
 });
 export type Memory = z.infer<typeof MemorySchema>;
 

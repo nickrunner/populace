@@ -15,8 +15,8 @@ export const AgentSchema = z.object({
   identityId: z.string().nullable().default(null),
   wakeCount: z.number().int().nonnegative().default(0),
   maxWakes: z.number().int().positive().nullable().default(null),
-  nextWakeAt: z.string().datetime().nullable().default(null),
-  lastWakeAt: z.string().datetime().nullable().default(null),
-  createdAt: z.string().datetime(),
+  nextWakeAt: z.iso.datetime().nullable().default(null),
+  lastWakeAt: z.iso.datetime().nullable().default(null),
+  createdAt: z.iso.datetime(),
 });
 export type Agent = z.infer<typeof AgentSchema>;

@@ -41,11 +41,11 @@ export const ToolCallRecordSchema = z.object({
   latencyMs: z.number().nonnegative(),
   /** Trace sequence number of the corresponding `tool.call` event. */
   traceSeq: z.number().int().nonnegative(),
-  at: z.string().datetime(),
+  at: z.iso.datetime(),
 });
 export type ToolCallRecord = z.infer<typeof ToolCallRecordSchema>;
 
-const base = { seq: z.number().int().nonnegative(), at: z.string().datetime(), wakeId: z.string() };
+const base = { seq: z.number().int().nonnegative(), at: z.iso.datetime(), wakeId: z.string() };
 
 export const TraceEventSchema = z.discriminatedUnion("type", [
   z.object({ ...base, type: z.literal("wake.start"), agentId: z.string(), personaId: z.string(), runId: z.string(), wakeNumber: z.number().int() }),

@@ -19,7 +19,7 @@ export const VerificationSchema = z.object({
   judge: z.enum(["model", "heuristic"]),
   /** The replayed steps with fresh results, aligned by index with the finding's reproduction steps. */
   replay: z.array(ToolCallRecordSchema),
-  verifiedAt: z.string().datetime(),
+  verifiedAt: z.iso.datetime(),
   costUsd: z.number().nonnegative().default(0),
 });
 export type Verification = z.infer<typeof VerificationSchema>;
@@ -48,6 +48,6 @@ export const FindingSchema = z.object({
   endpoint: z.string(),
   identityId: z.string().nullable().default(null),
   verification: VerificationSchema.nullable().default(null),
-  createdAt: z.string().datetime(),
+  createdAt: z.iso.datetime(),
 });
 export type Finding = z.infer<typeof FindingSchema>;

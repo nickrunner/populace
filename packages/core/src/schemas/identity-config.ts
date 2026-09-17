@@ -27,7 +27,7 @@ export const FirebaseAdminConfigSchema = z.object({
   projectId: z.string().optional(),
   emailDomain: z.string().min(1).default("populace.test"),
   /** Optional HTTP endpoint that exchanges a custom token for the bearer the target accepts. Omit to use the custom token directly. */
-  exchangeUrl: z.string().url().optional(),
+  exchangeUrl: z.url().optional(),
 });
 
 export const IdentityConfigSchema = z.discriminatedUnion("strategy", [SelfSignupConfigSchema, StaticIdentityConfigSchema, FirebaseAdminConfigSchema]);

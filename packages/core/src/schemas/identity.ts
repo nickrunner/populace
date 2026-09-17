@@ -23,7 +23,7 @@ export const IdentitySchema = z.object({
   personaId: z.string().min(1),
   strategy: IdentityStrategySchema,
   credential: CredentialSchema,
-  createdAt: z.string().datetime(),
-  tornDownAt: z.string().datetime().nullable().default(null),
+  createdAt: z.iso.datetime(),
+  tornDownAt: z.iso.datetime().nullable().default(null),
 });
 export type Identity = z.infer<typeof IdentitySchema>;

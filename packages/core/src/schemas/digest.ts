@@ -22,8 +22,8 @@ export const DigestSchema = z.object({
   id: z.string(),
   targetName: z.string(),
   runIds: z.array(z.string()),
-  window: z.object({ from: z.string().datetime(), to: z.string().datetime() }),
-  generatedAt: z.string().datetime(),
+  window: z.object({ from: z.iso.datetime(), to: z.iso.datetime() }),
+  generatedAt: z.iso.datetime(),
   totals: z.object({
     wakes: z.number().int().nonnegative(),
     agents: z.number().int().nonnegative(),
