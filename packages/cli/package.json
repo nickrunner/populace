@@ -27,5 +27,8 @@
   },
   "bin": {
     "populace": "./dist/cli.js"
+  },
+  "devDependencies": {
+    "@populace/mock-target": "workspace:*"
   }
 }
