@@ -1,1 +1,10 @@
-export {};
+export { runWake, type WakeDeps, type WakeOptions, type WakeResult } from "./wake.js";
+export { LocalDaemon, type DaemonOptions } from "./daemon.js";
+export { McpSession, type TargetTool, type CallOutcome } from "./mcp/session.js";
+export { AnthropicProvider } from "./model/anthropic.js";
+export { usageFrom, type ModelProvider, type ModelRequest, type ModelResponse, type ModelRequestMetadata } from "./model/provider.js";
+export { reporterTools, toStrictInputSchema, isReporterTool, REPORTER_TOOL_NAMES } from "./reporter/tools.js";
+export { personaSystemPrompt, wakeContextMessage, describeTargetTools } from "./prompt.js";
+export { TraceWriter } from "./trace.js";
+export { WakeBudget, dailyCeilingBreached, killSwitchReason } from "./guardrails.js";
+export { fetchPageText, htmlToText } from "./web-fetch.js";

@@ -107,6 +107,16 @@ importers:
       zod:
         specifier: ^4.1.0
         version: 4.6.5
+    devDependencies:
+      '@populace/adapters':
+        specifier: workspace:*
+        version: link:../adapters
+      '@populace/mock-target':
+        specifier: workspace:*
+        version: link:../mock-target
+      '@populace/store-sqlite':
+        specifier: workspace:*
+        version: link:../store-sqlite
 
   packages/store-sqlite:
     dependencies:
