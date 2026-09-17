@@ -64,7 +64,7 @@ export function agentIdFor(populationId: string, personaId: string, ordinal: num
 }
 
 export function cadenceFor(population: Population, member: Population["members"][number]): Cadence {
-  return { ...population.cadence, ...(member.cadence ?? {}) } as Cadence;
+  return { ...population.cadence, ...(member.cadence ?? {}) };
 }
 
 export interface ExpandedAgent {

@@ -23,6 +23,9 @@ export default tseslint.config(
       ],
       "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true, allowBoolean: true }],
       "@typescript-eslint/no-unnecessary-condition": "off",
+      "@typescript-eslint/no-confusing-void-expression": "off",
+      // Conflicts with the unknown ban above; catch variables are narrowed with instanceof.
+      "@typescript-eslint/use-unknown-in-catch-callback-variable": "off",
       "@typescript-eslint/no-non-null-assertion": "error",
       "@typescript-eslint/consistent-type-imports": ["error", { prefer: "type-imports" }],
     },
