@@ -1,0 +1,30 @@
+{
+  "name": "populace-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Synthetic user population harness: persona-seeded AI agents that use an app through its MCP server and report what they find.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "clean": "rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm lint && pnpm build && pnpm test",
+    "populace": "node packages/cli/dist/cli.js",
+    "mock-target": "node packages/mock-target/dist/bin.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^22.19.0",
+    "eslint": "^9.39.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.50.0",
+    "vitest": "^4.0.0"
+  }
+}

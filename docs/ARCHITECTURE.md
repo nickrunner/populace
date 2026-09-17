@@ -1,0 +1,163 @@
+# Architecture
+
+populace deploys a scalable population of persona-seeded AI agents against any
+application that exposes a rich MCP server. Agents behave like prospective users:
+they discover the app through its tools, decide whether it is for them, sign up
+or receive an identity, use it, and come back on a schedule. Their output is
+structured findings that a report pipeline verifies, dedupes, clusters and
+renders into a digest for a product team.
+
+This document is the map. Each fixed decision has an ADR in `docs/adr/`.
+
+## Vocabulary
+
+| Term | Meaning | Where it lives |
+| --- | --- | --- |
+| **Target** | The app under test: one or more MCP endpoints (Streamable HTTP, bearer auth), optional web base URL, optional product description. | `@populace/core` `TargetSchema` |
+| **IdentityProvider** | Adapter yielding credentials for a persona. Strategies: `self-signup`, `admin-mint`, `static`. All support `teardown` and `listByTag`. | interface in core, implementations in `@populace/adapters/*` |
+| **Persona** | Static description: role, traits, goals, patience, budget, constraints, backstory. | core `PersonaSchema` |
+| **Agent** | A persona instance with an identity, persistent memory and a schedule. | core `AgentSchema`, rows in the store |
+| **Population** | Persona specs with counts and trait distributions, plus a scale factor. Expanded into agents. | core `PopulationSchema`, `expandPopulation()` |
+| **Wake** | One scheduled execution of an agent. A stateless job: load memory, run one session, persist memory/trace/findings/cost, exit. | `@populace/runner` `runWake()` |
+| **Trace** | Ordered log of one wake: every tool call, model turn, token usage, dollar cost. | core `TraceEventSchema`, `trace_events` table |
+| **Finding** | Structured report item (`bug`, `friction`, `coverage-gap`, `suggestion`, `abandonment`, `praise`) carrying the exact tool calls that led to it. | core `FindingSchema` |
+| **Digest** | Verified, clustered findings over a window, rendered for humans. | `@populace/reports` |
+| **Runner / Scheduler / Store** | Executes wakes / decides when / persists. | runner, core interfaces, `@populace/store-sqlite` |
+
+## Packages
+
+```
+packages/
+  core          vocabulary types + zod schemas, Store/Scheduler/IdentityProvider
+                interfaces, run ids and tagging, population expansion, pricing
+  runner        wake loop, MCP client wrapper with interception, reporter
+                toolset, memory, guardrails, trace writer, model provider
+  adapters      identity providers: self-signup, static, firebase-admin
+                (each on its own subpath so provider SDKs stay optional)
+  store-sqlite  Store implementation on node:sqlite
+  reports       verifier, dedup/clustering, digest renderer, exporters
+  cli           init, validate, run, wake, scale, digest, sweep, kill
+  mock-target   reference app with its own MCP server, self-signup and
+                planted defects; all development and CI runs against it
+examples/       a three-persona population config for the mock target
+```
+
+Dependency direction is strictly downward: `cli -> reports/runner/adapters/store-sqlite -> core`.
+`mock-target` depends on nothing in the workspace.
+
+## The wake
+
+A wake is the unit of everything. It is a pure function of
+`(agent, memory, identity, target, config)` that produces
+`(trace, memory', findings, cost, identity')`. There is no long-lived agent
+process; a local daemon and a cloud job both just call `runWake()`.
+
+```
+ load agent, persona, memory, identity     (Store)
+      |
+ connect MCP client (+ bearer if identity) (McpSession)
+      |
+ list tools -> filter by allow/deny lists  (guardrails)
+      |
+ system prompt = persona + behaviour        stable, cached
+ tools        = target tools + reporter     stable order, cached
+ user turn 1  = wake context: wake #, date, memory, identity state, goals
+      |
+ +--> stream model call, finalMessage()     (ModelProvider)  -> trace: model.call
+ |         |
+ |    guardrails: kill switch, per-wake token/$ ceiling, turn cap
+ |         |
+ |    for each tool_use block:
+ |       reporter tool  -> runner handles (findings, memory, done/give_up)
+ |       target tool    -> interceptor: denylist, destructive policy,
+ |                         signup capture, call target, trace: tool.call
+ |         |
+ +--- append tool_result user turn (history is append-only)
+      |
+ persist memory, findings, wake row (status, usage, cost), trace
+```
+
+Every model call and every tool call is a trace event. If it is not in the
+trace, it did not happen.
+
+### Reporter toolset
+
+Alongside the target's tools, every wake gets a runner-owned toolset:
+`file_finding`, `note_friction`, `report_coverage_gap`, `give_up`, `remember`,
+`done`. These are the only way findings and memory are produced (ADR-0007).
+Reporter tools are declared `strict: true` so their arguments always validate.
+
+Each target tool call is given a call ref (`c1`, `c2`, ...) that is echoed in
+the tool result. `file_finding` takes `evidence_calls: ["c3", "c4"]`; the runner
+resolves those refs into full tool-call records (name, arguments, result,
+error flag) and stores them as the finding's reproduction steps (ADR-0015).
+
+### Memory
+
+Each agent has a memory document: free-form notes plus a structured slice
+(`waitingOn`, `annoyances`, `done`). It is loaded into every wake and updated
+only through the `remember` tool. This is what makes a returning user
+different from a first visit (ADR-0008).
+
+### Guardrails
+
+Guardrails live in the runner, not in the prompt (ADR-0009): per-wake token
+and dollar ceilings, per-population daily dollar ceiling, a global kill switch
+in the store, allow/deny lists of tool names per persona, and a destructive-tool
+policy driven by MCP tool annotations (`destructiveHint`).
+
+### Identity
+
+`IdentityProvider.provision()` runs before the session. For `self-signup` it
+returns nothing and the agent signs up through the target's own tools; the
+interceptor recognises the configured signup tool, extracts the credential from
+its result and reconnects with the bearer token (ADR-0012). `static` reads a
+credentials file. `admin-mint` (Firebase Admin) creates a user with the run tag
+in its custom claims and mints a custom token.
+
+Every identity, wake and finding carries a run id (`run_...`) and a tag
+(`populace:run_...`). `populace sweep` tears down identities by tag and removes
+everything the run created (ADR-0010).
+
+## Reports
+
+```
+findings --> verifier --> verified findings --> cluster --> digest --> exporters
+             (replay)                             (dedup)   (render)   (markdown)
+```
+
+- **Verifier**: a second agent replays a finding's reproduction steps against
+  the target with the finding's identity, then a judge compares original and
+  replayed results and marks the finding `confirmed`, `not-reproduced` or
+  `inconclusive` (ADR-0014). The judge is a model call by default; a
+  deterministic heuristic judge exists for CI.
+- **Clustering**: findings are grouped by kind, primary tool and title
+  similarity; each cluster picks a representative and counts personas and
+  wakes affected (ADR-0017).
+- **Digest**: Markdown first. Exporters are a plugin interface; Markdown file
+  is the only implementation in Milestone 0.
+
+## Local mode vs cloud mode
+
+Local mode is a CLI daemon with an in-process tick loop and a SQLite store.
+Cloud mode (later) runs the same `runWake()` in a container with a Postgres
+store and an external scheduler. The `Store` and `Scheduler` interfaces are
+designed now; only SQLite and the in-process loop are implemented (ADR-0004).
+
+## Model calls
+
+Claude via `@anthropic-ai/sdk`. Default model `claude-opus-5`, server-side
+refusal fallbacks on by default, adaptive thinking, `output_config.effort`
+configurable per wake (default `high`), every call streamed with
+`finalMessage()`, append-only message history, stable prefix (system prompt +
+tools) cached, SDK types throughout (ADR-0006). The provider sits behind a thin
+`ModelProvider` interface; only the Anthropic implementation exists, plus a
+scripted provider used by tests (ADR-0016).
+
+## Testing
+
+Nothing in this repo depends on an external service to test. The mock target
+(`packages/mock-target`) is a small task-list app with its own MCP server,
+self-signup, and documented planted defects. Runner, reports and CLI tests run
+wakes against it with the scripted provider so that trace, memory, findings,
+verification and the digest are exercised end to end in CI.

@@ -1,0 +1,10 @@
+{
+  "name": "@populace/reports",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": { "build": "tsc -b" },
+  "dependencies": { "@anthropic-ai/sdk": "^0.126.0", "@populace/core": "workspace:*", "@populace/runner": "workspace:*", "zod": "^4.1.0" }
+}

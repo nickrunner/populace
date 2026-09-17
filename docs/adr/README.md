@@ -1,0 +1,26 @@
+# Architecture Decision Records
+
+One record per fixed decision from the kickoff brief, plus the routine calls made where the brief was silent.
+
+| # | Title |
+| --- | --- |
+| [0001](0001-typescript-pnpm-monorepo.md) | TypeScript, pnpm workspaces, Node 22, ESM, strict TS, no `any`/`unknown` |
+| [0002](0002-zod-for-all-schemas.md) | Zod for every config and persisted schema |
+| [0003](0003-wakes-are-stateless-jobs.md) | Agents are never long-lived processes; a wake is a stateless job |
+| [0004](0004-local-and-cloud-share-runner.md) | Local and cloud modes share the runner; only Store and Scheduler differ |
+| [0005](0005-runner-hosts-mcp-client.md) | The runner hosts its own MCP client and intercepts every tool call |
+| [0006](0006-claude-model-calls.md) | Claude via the Anthropic SDK: model, fallbacks, thinking, effort, streaming, caching, history |
+| [0007](0007-reporter-toolset.md) | Reporter toolset is the only way findings and memory are produced |
+| [0008](0008-persistent-agent-memory.md) | Persistent per-agent memory: notes plus a structured slice |
+| [0009](0009-guardrails-in-runner.md) | Guardrails live in the runner, not the prompt |
+| [0010](0010-run-id-tagging.md) | Every identity, wake and finding carries a run id; sweep removes by tag |
+| [0011](0011-node-sqlite.md) | Local store on `node:sqlite` with no native dependencies |
+| [0012](0012-self-signup-capture.md) | Self-signup credentials are captured by intercepting the signup tool |
+| [0013](0013-destructive-tool-confirmation.md) | Destructive tools are confirmed by an identical repeat call |
+| [0014](0014-verifier-replay-and-judge.md) | Verifier = mechanical replay + judge |
+| [0015](0015-finding-evidence-call-refs.md) | Findings reference evidence by call ref; the runner resolves them |
+| [0016](0016-scripted-provider-for-tests.md) | A scripted model provider makes wakes deterministic in tests |
+| [0017](0017-clustering-heuristic.md) | Clustering by kind, primary tool and title similarity |
+| [0018](0018-yaml-config.md) | Configuration is a single YAML file validated by zod |
+| [0019](0019-in-process-scheduler.md) | Scheduler interface and the in-process cadence loop |
+

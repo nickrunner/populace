@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "composite": false, "noEmit": true, "declaration": false, "declarationMap": false },
+  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "vitest.config.ts", "eslint.config.js"]
+}

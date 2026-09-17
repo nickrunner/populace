@@ -1,0 +1,10 @@
+{
+  "name": "@populace/runner",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }, "./testing": { "types": "./dist/testing/index.d.ts", "import": "./dist/testing/index.js" } },
+  "files": ["dist"],
+  "scripts": { "build": "tsc -b" },
+  "dependencies": { "@anthropic-ai/sdk": "^0.126.0", "@modelcontextprotocol/sdk": "^1.30.0", "@populace/core": "workspace:*", "zod": "^4.1.0" }
+}

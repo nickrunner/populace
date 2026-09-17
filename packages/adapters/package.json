@@ -1,0 +1,42 @@
+{
+  "name": "@populace/adapters",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./self-signup": {
+      "types": "./dist/self-signup/index.d.ts",
+      "import": "./dist/self-signup/index.js"
+    },
+    "./static": {
+      "types": "./dist/static/index.d.ts",
+      "import": "./dist/static/index.js"
+    },
+    "./firebase-admin": {
+      "types": "./dist/firebase-admin/index.d.ts",
+      "import": "./dist/firebase-admin/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@populace/core": "workspace:*",
+    "zod": "^4.1.0"
+  },
+  "peerDependencies": {
+    "firebase-admin": ">=12"
+  },
+  "peerDependenciesMeta": {
+    "firebase-admin": {
+      "optional": true
+    }
+  }
+}
