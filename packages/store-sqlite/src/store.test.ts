@@ -46,9 +46,9 @@ describe("SqliteStore", () => {
     expect(await store.listIdentitiesByTag(identity.tag)).toHaveLength(0);
     expect(await store.listIdentitiesByTag(identity.tag, true)).toHaveLength(1);
 
-    const memory = { ...emptyMemory("pop/p#1", now), notes: [{ wake: 1, text: "hi" }] };
+    const memory = { ...emptyMemory("run_a_aaaaaa", "pop/p#1", now), notes: [{ wake: 1, text: "hi" }] };
     await store.saveMemory(memory);
-    expect(await store.getMemory("pop/p#1")).toEqual(memory);
+    expect(await store.getMemory("run_a_aaaaaa", "pop/p#1")).toEqual(memory);
 
     const wake: Wake = {
       id: "wake_1",
@@ -112,7 +112,7 @@ describe("SqliteStore", () => {
     expect(await store.deleteFindingsByRun("run_a_aaaaaa")).toBe(1);
     expect(await store.deleteWakesByRun("run_a_aaaaaa")).toBe(1);
     expect(await store.deleteAgentsByRun("run_a_aaaaaa")).toBe(2);
-    expect(await store.getMemory("pop/p#1")).toBeUndefined();
+    expect(await store.getMemory("run_a_aaaaaa", "pop/p#1")).toBeUndefined();
     await store.close();
   });
 });

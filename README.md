@@ -45,6 +45,12 @@ pnpm populace digest          # writes digests/<date>-<id>.md (and .json)
 pnpm populace sweep
 ```
 
+`populace run --continue-from <run id>` starts a new run that inherits the previous
+one's agents, memory and accounts, so you can ship a fix and see whether the users
+who complained are satisfied by it. Agents who gave up return only if they said
+they would; the rest stay gone, and both runs stay separately reportable so their
+digests can be compared (ADR-0020).
+
 `populace status` shows agents, wakes, findings and spend; `populace kill`
 engages a global kill switch that stops every wake at its next step
 (`populace kill --release` lifts it); `populace scale 2` doubles the population.

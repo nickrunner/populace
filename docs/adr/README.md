@@ -23,4 +23,4 @@ One record per fixed decision from the kickoff brief, plus the routine calls mad
 | [0017](0017-clustering-heuristic.md) | Clustering by kind, primary tool and title similarity |
 | [0018](0018-yaml-config.md) | Configuration is a single YAML file validated by zod |
 | [0019](0019-in-process-scheduler.md) | Scheduler interface and the in-process cadence loop |
-
+| [0020](0020-run-lineage-and-continuations.md) | Memory is run-scoped, and runs form a lineage (`--continue-from`) |

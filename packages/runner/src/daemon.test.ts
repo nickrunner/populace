@@ -73,4 +73,76 @@ describe("LocalDaemon retirement", () => {
     expect(reconciled[0]?.retiredReason).toBeNull();
     await store.close();
   });
+
+  it("carries a continuation forward: memory, accounts, and only the agents who said they would return", async () => {
+    const store = new SqliteStore(":memory:");
+    const loaded = config(1);
+    const identityProvider = new SelfSignupProvider(loaded.identity as never);
+
+    // Parent run: the agent signs up, remembers something, then walks out saying it would return.
+    const parentRun = newRunId();
+    const quitButWinnable: ScriptPolicy = sequence([
+      (ctx) => {
+        const signup = /email (\S+), display name "([^"]+)", password (\S+)/.exec(ctx.wakeContext);
+        if (!signup) throw new Error("no signup suggestion");
+        return { calls: [{ name: "sign_up", input: { email: signup[1]!, displayName: signup[2]!, password: signup[3]! } }] };
+      },
+      () => ({ calls: [call("remember", { kind: "annoyance", text: "Search is case-sensitive." })] }),
+      () => ({ calls: [call("give_up", { title: "Search is broken", reason: "Cannot find my tasks.", would_return: true, severity: "high", evidence_calls: [] })] }),
+    ]);
+    await new LocalDaemon({ config: loaded, runId: parentRun }, { store, provider: new ScriptedProvider(quitButWinnable), identityProvider }).run();
+
+    const [parent] = await store.listAgents({ runId: parentRun });
+    expect(parent?.retiredReason).toBe("gave-up");
+    const parentIdentity = parent?.identityId;
+    expect(parentIdentity).toBeTruthy();
+
+    // Continuation: a new run id, seeded from the parent.
+    const childRun = newRunId();
+    const seen: string[] = [];
+    const observe: ScriptPolicy = (ctx) => {
+      seen.push(ctx.wakeContext);
+      return { calls: [call("done", { summary: "better now", would_return: true })] };
+    };
+    const child = new LocalDaemon({ config: config(1), runId: childRun, continueFrom: parentRun }, { store, provider: new ScriptedProvider(observe), identityProvider });
+    const agents = await child.reconcile();
+
+    // The agent came back, carrying its account and its history.
+    expect(agents).toHaveLength(1);
+    expect(agents[0]?.status).toBe("active");
+    expect(agents[0]?.identityId).toBe(parentIdentity);
+    expect(agents[0]?.continuedFrom).toEqual({ runId: parentRun, atWake: 1, gaveUp: true });
+    // Memory is copied under the new run, and the parent's own record is left intact.
+    expect((await store.getMemory(childRun, parent!.id))?.annoyances).toHaveLength(1);
+    expect((await store.getMemory(parentRun, parent!.id))?.annoyances).toHaveLength(1);
+    // maxWakes is an allowance for the continuation, not a total across both runs.
+    expect(agents[0]?.maxWakes).toBe(2);
+
+    await child.run();
+    expect(seen[0]).toContain("You stopped using this product after your last session");
+    expect(seen[0]).toContain("Search is case-sensitive.");
+    await store.close();
+  });
+
+  it("leaves behind an agent that gave up for good", async () => {
+    const store = new SqliteStore(":memory:");
+    const loaded = config(1);
+    const identityProvider = new SelfSignupProvider(loaded.identity as never);
+    const parentRun = newRunId();
+    const goneForGood: ScriptPolicy = sequence([
+      () => ({ calls: [call("give_up", { title: "Done with it", reason: "Not for me.", would_return: false, severity: "high", evidence_calls: [] })] }),
+    ]);
+    await new LocalDaemon({ config: loaded, runId: parentRun }, { store, provider: new ScriptedProvider(goneForGood), identityProvider }).run();
+
+    const childRun = newRunId();
+    const child = new LocalDaemon({ config: config(1), runId: childRun, continueFrom: parentRun }, { store, provider: new ScriptedProvider(sequence([])), identityProvider });
+    const agents = await child.reconcile();
+
+    // would_return was false, so the fix does not win this one back; a fresh cohort is the only way.
+    expect(agents.filter((a) => a.continuedFrom !== null)).toHaveLength(0);
+    // And it is not silently replaced by a new agent wearing the same id: a continuation
+    // reports on the cohort it inherited, it does not acquire users.
+    expect(agents).toHaveLength(0);
+    await store.close();
+  });
 });

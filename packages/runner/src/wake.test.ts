@@ -115,7 +115,7 @@ describe("runWake against the mock target", () => {
     expect((await store.getFinding(finding.id))?.title).toBe(finding.title);
 
     // memory persisted
-    const memory = await store.getMemory(agent.id);
+    const memory = await store.getMemory(agent.runId, agent.id);
     expect(memory?.done.map((d) => d.text)).toEqual(["Signed up and created project Home with a groceries task."]);
     expect(memory?.annoyances).toHaveLength(1);
     expect(result.wake.findingCount).toBe(1);
@@ -153,7 +153,7 @@ describe("runWake against the mock target", () => {
     const listed = ofType(await store.getTrace(second.wake.id), "tool.call").find((e) => e.tool === "list_projects");
     expect(listed?.result.isError).toBe(false);
     expect(listed?.result.text).toContain('"name": "Home"');
-    expect((await store.getMemory(agent.id))?.notes.map((n) => n.text)).toEqual(["Still have 1 project(s)."]);
+    expect((await store.getMemory(agent.runId, agent.id))?.notes.map((n) => n.text)).toEqual(["Still have 1 project(s)."]);
     expect(second.identity?.id).toBe(first.identity?.id);
     await store.close();
   });

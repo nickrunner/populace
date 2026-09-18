@@ -103,6 +103,12 @@ Each agent has a memory document: free-form notes plus a structured slice
 only through the `remember` tool. This is what makes a returning user
 different from a first visit (ADR-0008).
 
+Memory is keyed by `(runId, agentId)`, so a new run starts every agent with
+nothing. `populace run --continue-from <run id>` copies a parent run's memory,
+accounts and wake counts into a new run and brings back the agents who gave up
+but said they would return, which is how a shipped fix is validated against the
+users who complained about it (ADR-0020).
+
 ### Guardrails
 
 Guardrails live in the runner, not in the prompt (ADR-0009): per-wake token

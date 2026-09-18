@@ -22,6 +22,8 @@ export const WakeSchema = z.object({
   turns: z.number().int().nonnegative(),
   toolCalls: z.number().int().nonnegative(),
   findingCount: z.number().int().nonnegative(),
+  /** What the agent said on `done`/`give_up` about coming back. Null when it never got to say. */
+  wouldReturn: z.boolean().nullable().default(null),
   error: z.string().nullable().default(null),
   startedAt: z.iso.datetime(),
   endedAt: z.iso.datetime().nullable().default(null),

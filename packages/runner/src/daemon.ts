@@ -7,6 +7,13 @@ export interface DaemonOptions {
   scheduler?: Scheduler;
   /** Stop after every agent has reached maxWakes (or this many wakes in total). */
   stopAfterTotalWakes?: number;
+  /**
+   * Carry a previous run's agents into this one: their memory, accounts and wake counts come
+   * forward, and the ones who walked away return if they said they would. This is the
+   * "I shipped a fix, do my users come back?" run; `runId` must be a new run so the two stay
+   * separately reportable.
+   */
+  continueFrom?: string;
   onWake?: (result: WakeResult) => void;
 }
 
@@ -40,21 +47,60 @@ export class LocalDaemon {
     return member ? cadenceFor(population, member) : population.cadence;
   }
 
+
+  /**
+   * Seeds this run's agents from a parent run. Each agent keeps its identity, wake count and
+   * memory (copied under the new run id, so the parent's record stays intact); an agent that
+   * gave up comes back only if it said it would, and one that hit `maxWakes` gets a fresh
+   * allowance from the current config.
+   */
+  private async seedFromParent(parentRunId: string): Promise<Map<string, Agent>> {
+    const seeded = new Map<string, Agent>();
+    const parents = await this.store.listAgents({ runId: parentRunId, populationId: this.options.config.population.id });
+    for (const parent of parents) {
+      const wakes = await this.store.listWakes({ runIds: [parentRunId], agentId: parent.id });
+      const last = wakes[wakes.length - 1];
+      const gaveUp = parent.retiredReason === "gave-up";
+      // A user who left saying nothing would bring them back does not come back.
+      if (gaveUp && last?.wouldReturn !== true) continue;
+      const memory = await this.store.getMemory(parentRunId, parent.id);
+      if (memory) await this.store.saveMemory({ ...memory, runId: this.options.runId });
+      seeded.set(parent.id, {
+        ...parent,
+        runId: this.options.runId,
+        status: "active",
+        retiredReason: null,
+        nextWakeAt: null,
+        continuedFrom: { runId: parentRunId, atWake: parent.wakeCount, gaveUp },
+      });
+    }
+    return seeded;
+  }
+
   /** Creates (or reconciles) the agents for the population and schedules their first wakes. */
   async reconcile(now: Date = new Date()): Promise<Agent[]> {
     const expanded = expandPopulation(this.options.config.population, this.options.runId, now);
     const existing = await this.store.listAgents({ runId: this.options.runId, populationId: this.options.config.population.id });
-    const byId = new Map(existing.map((a) => [a.id, a]));
+    // A continuation seeds from the parent run, but only before this run has agents of its own.
+    const continuing = this.options.continueFrom !== undefined;
+    const inherited = continuing && existing.length === 0 ? await this.seedFromParent(this.options.continueFrom as string) : new Map<string, Agent>();
+    const byId = new Map([...inherited, ...existing.map((a): [string, Agent] => [a.id, a])]);
     const wanted = new Set<string>();
     const agents: Agent[] = [];
     for (const { agent, cadence } of expanded) {
-      wanted.add(agent.id);
       const current = byId.get(agent.id);
+      // A continuation reports on the cohort it inherited; it does not acquire new users.
+      // Without this an agent that left for good is replaced by an amnesiac wearing its id,
+      // which then shows up in the after-fix digest as if it were the same person.
+      if (!current && continuing) continue;
+      wanted.add(agent.id);
       if (current) {
         // Keep runtime state; refresh persona and limits from config.
         // Raising maxWakes brings back an agent the limit retired, but never one that walked away.
-        const revivable = current.status === "retired" && current.retiredReason !== "gave-up" && agent.maxWakes !== null && current.wakeCount < agent.maxWakes;
-        const merged: Agent = { ...current, persona: agent.persona, maxWakes: agent.maxWakes, ...(revivable ? { status: "active" as const, retiredReason: null } : {}) };
+        const allowance = agent.maxWakes === null ? null : current.wakeCount + agent.maxWakes;
+        const maxWakes = current.continuedFrom && current.continuedFrom.atWake === current.wakeCount ? allowance : agent.maxWakes;
+        const revivable = current.status === "retired" && current.retiredReason !== "gave-up" && maxWakes !== null && current.wakeCount < maxWakes;
+        const merged: Agent = { ...current, persona: agent.persona, maxWakes, ...(revivable ? { status: "active" as const, retiredReason: null } : {}) };
         if (merged.status === "active" && merged.nextWakeAt === null) merged.nextWakeAt = this.scheduler.firstWakeAt(merged, cadence, now).toISOString();
         await this.store.upsertAgent(merged);
         agents.push(merged);

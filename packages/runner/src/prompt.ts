@@ -82,6 +82,16 @@ export function wakeContextMessage(input: WakeContextInput): string {
   } else {
     lines.push("You do not have an account and cannot create one; use what is available without one.");
   }
+  // First wake of a continuation: a churned user does not wander back on their own, they hear
+  // something changed. Saying so is the realistic prompt, not a hint that biases the test.
+  const continued = input.agent.continuedFrom;
+  if (continued && input.wakeNumber === continued.atWake + 1) {
+    lines.push(
+      continued.gaveUp
+        ? "You stopped using this product after your last session. You have since heard that it has changed, and you are giving it one more look."
+        : "You have heard that the product has changed since your last session.",
+    );
+  }
   if (input.webBaseUrl) lines.push(`The product's website is ${input.webBaseUrl}; you can read pages from it with fetch_page.`);
   lines.push(`Keep this session to roughly ${Math.max(4, Math.floor(input.maxTurns * 0.6))} actions or fewer; end with done.`);
   lines.push("");

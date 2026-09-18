@@ -64,9 +64,10 @@ program
   .command("run")
   .description("start the local daemon: wake every agent on its cadence until all are retired or Ctrl-C")
   .option("--new-run", "start a new run id")
+  .option("--continue-from <run id>", "carry a previous run's agents, memory and accounts into a new run; agents who gave up return if they said they would")
   .option("--max-wakes <n>", "stop after this many wakes in total", (v: string) => Number(v))
   .option("--once", "run one scheduler tick and exit")
-  .action(async (opts: { newRun?: boolean; maxWakes?: number; once?: boolean }) => {
+  .action(async (opts: { newRun?: boolean; maxWakes?: number; once?: boolean; continueFrom?: string }) => {
     try {
       await run({ ...globals(), ...opts });
     } catch (err) {

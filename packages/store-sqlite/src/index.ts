@@ -21,6 +21,20 @@ import {
 } from "@populace/core";
 import type { z } from "zod";
 
+/**
+ * `memories` was keyed by agent alone, so memory leaked across runs and `--new-run` was not
+ * a clean slate. There is no migration framework here and the old rows are exactly the mixture
+ * this change exists to remove, so an old table is dropped rather than migrated.
+ */
+function dropPreRunScopedMemories(db: DatabaseSync): void {
+  const present = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'").get();
+  if (!present) return;
+  const columns = db.prepare("SELECT name FROM pragma_table_info('memories')").all();
+  // eslint-disable-next-line no-restricted-syntax -- SQLite pragma rows are untyped at this boundary.
+  const hasRunId = (columns as { name?: unknown }[]).some((c) => c.name === "run_id");
+  if (!hasRunId) db.exec("DROP TABLE memories");
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY, run_id TEXT NOT NULL, population_id TEXT NOT NULL, status TEXT NOT NULL,
@@ -32,7 +46,7 @@ CREATE TABLE IF NOT EXISTS identities (
   torn_down_at TEXT, json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS identities_tag ON identities(tag);
-CREATE TABLE IF NOT EXISTS memories (agent_id TEXT PRIMARY KEY, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS memories (run_id TEXT NOT NULL, agent_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (run_id, agent_id));
 CREATE TABLE IF NOT EXISTS wakes (
   id TEXT PRIMARY KEY, run_id TEXT NOT NULL, agent_id TEXT NOT NULL, population_id TEXT NOT NULL,
   started_at TEXT NOT NULL, cost_usd REAL NOT NULL, json TEXT NOT NULL
@@ -71,6 +85,7 @@ export class SqliteStore implements Store {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
+    dropPreRunScopedMemories(this.db);
     this.db.exec(SCHEMA);
   }
 
@@ -124,8 +139,7 @@ export class SqliteStore implements Store {
   }
 
   deleteAgentsByRun(runId: string): Promise<number> {
-    const agents = rows(this.db.prepare("SELECT json FROM agents WHERE run_id = ?").all(runId)).map((r) => parseRow(AgentSchema, r));
-    for (const agent of agents) this.db.prepare("DELETE FROM memories WHERE agent_id = ?").run(agent.id);
+    this.db.prepare("DELETE FROM memories WHERE run_id = ?").run(runId);
     const result = this.db.prepare("DELETE FROM agents WHERE run_id = ?").run(runId);
     return Promise.resolve(Number(result.changes));
   }
@@ -165,16 +179,16 @@ export class SqliteStore implements Store {
 
   // ---- memory ------------------------------------------------------------
 
-  getMemory(agentId: string): Promise<Memory | undefined> {
-    const row = this.db.prepare("SELECT json FROM memories WHERE agent_id = ?").get(agentId);
+  getMemory(runId: string, agentId: string): Promise<Memory | undefined> {
+    const row = this.db.prepare("SELECT json FROM memories WHERE run_id = ? AND agent_id = ?").get(runId, agentId);
     return Promise.resolve(row ? parseRow(MemorySchema, rows([row])[0] as JsonRow) : undefined);
   }
 
   saveMemory(memory: Memory): Promise<void> {
     const parsed = MemorySchema.parse(memory);
     this.db
-      .prepare("INSERT INTO memories (agent_id, json) VALUES (?, ?) ON CONFLICT(agent_id) DO UPDATE SET json = excluded.json")
-      .run(parsed.agentId, JSON.stringify(parsed));
+      .prepare("INSERT INTO memories (run_id, agent_id, json) VALUES (?, ?, ?) ON CONFLICT(run_id, agent_id) DO UPDATE SET json = excluded.json")
+      .run(parsed.runId, parsed.agentId, JSON.stringify(parsed));
     return Promise.resolve();
   }
 

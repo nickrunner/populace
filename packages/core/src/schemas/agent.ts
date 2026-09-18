@@ -11,6 +11,15 @@ export type AgentStatus = z.infer<typeof AgentStatusSchema>;
 export const RetiredReasonSchema = z.enum(["gave-up", "max-wakes", "scaled-down"]);
 export type RetiredReason = z.infer<typeof RetiredReasonSchema>;
 
+/** Set when an agent is carried into a continuation run: which run it came from, and at which wake. */
+export const ContinuedFromSchema = z.object({
+  runId: z.string().min(1),
+  atWake: z.number().int().nonnegative(),
+  /** True when the agent had walked away and is being given another look. */
+  gaveUp: z.boolean().default(false),
+});
+export type ContinuedFrom = z.infer<typeof ContinuedFromSchema>;
+
 export const AgentSchema = z.object({
   id: z.string().min(1),
   runId: z.string().min(1),
@@ -21,6 +30,8 @@ export const AgentSchema = z.object({
   status: AgentStatusSchema.default("active"),
   /** Set when status is `retired`; null while active. */
   retiredReason: RetiredReasonSchema.nullable().default(null),
+  /** Provenance for `--continue-from`; null for an agent that started in this run. */
+  continuedFrom: ContinuedFromSchema.nullable().default(null),
   identityId: z.string().nullable().default(null),
   wakeCount: z.number().int().nonnegative().default(0),
   maxWakes: z.number().int().positive().nullable().default(null),

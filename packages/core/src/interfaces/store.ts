@@ -42,7 +42,7 @@ export interface Store {
   deleteIdentitiesByRun(runId: string): Promise<number>;
 
   // memory
-  getMemory(agentId: string): Promise<Memory | undefined>;
+  getMemory(runId: string, agentId: string): Promise<Memory | undefined>;
   saveMemory(memory: Memory): Promise<void>;
 
   // wakes and traces

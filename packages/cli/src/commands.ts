@@ -104,14 +104,26 @@ function deps(ctx: CliContext): Parameters<typeof runWake>[1] {
 
 // ---- run -------------------------------------------------------------------
 
-export async function run(options: GlobalOptions & { newRun?: boolean; maxWakes?: number; once?: boolean }): Promise<{ runId: string; wakes: number }> {
-  const ctx = openContext(options);
+export async function run(options: GlobalOptions & { newRun?: boolean; maxWakes?: number; once?: boolean; continueFrom?: string }): Promise<{ runId: string; wakes: number }> {
+  // A continuation is always a new run, so the before and after stay separately reportable.
+  const ctx = openContext(options.continueFrom ? { ...options, newRun: true } : options);
+  if (options.continueFrom === ctx.runId) throw new Error("--continue-from needs a previous run id, not the current one");
   try {
     const daemon = new LocalDaemon(
-      { config: ctx.loaded.config, runId: ctx.runId, ...(options.maxWakes !== undefined ? { stopAfterTotalWakes: options.maxWakes } : {}), onWake: (r) => ctx.log(summarize(r)) },
+      {
+        config: ctx.loaded.config,
+        runId: ctx.runId,
+        ...(options.maxWakes !== undefined ? { stopAfterTotalWakes: options.maxWakes } : {}),
+        ...(options.continueFrom ? { continueFrom: options.continueFrom } : {}),
+        onWake: (r) => ctx.log(summarize(r)),
+      },
       deps(ctx),
     );
     const agents = await daemon.reconcile();
+    if (options.continueFrom) {
+      const returning = agents.filter((a) => a.continuedFrom !== null);
+      ctx.log(`continuing ${options.continueFrom} as ${ctx.runId}: ${returning.length} agent(s) carried over (${returning.filter((a) => a.continuedFrom?.gaveUp).length} returning after giving up)`);
+    }
     ctx.log(`run ${ctx.runId}: ${agents.length} agent(s), tick ${ctx.loaded.config.daemon.tick / 1000}s, concurrency ${ctx.loaded.config.daemon.concurrency}. Ctrl-C to stop; populace kill to stop all wakes.`);
     for (const a of agents) ctx.log(`  ${a.id} next wake ${a.nextWakeAt ?? "never"} (${a.wakeCount}${a.maxWakes ? `/${a.maxWakes}` : ""} wakes so far)`);
     if (options.once) {

@@ -101,7 +101,7 @@ describe("local daemon + CLI end to end", () => {
       const wakes = await store.listWakes({ agentId: agent.id });
       expect(wakes.map((w) => w.wakeNumber)).toEqual([1, 2, 3]);
       expect(wakes.every((w) => w.status === "done")).toBe(true);
-      expect((await store.getMemory(agent.id))?.annoyances).toHaveLength(1);
+      expect((await store.getMemory(agent.runId, agent.id))?.annoyances).toHaveLength(1);
       expect(agent.identityId).not.toBeNull();
     }
     expect(await store.listIdentitiesByTag(`populace:${runId}`)).toHaveLength(3);

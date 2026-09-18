@@ -3,6 +3,8 @@ import { z } from "zod";
 export const MemoryNoteSchema = z.object({ wake: z.number().int().nonnegative(), text: z.string() });
 
 export const MemorySchema = z.object({
+  /** Memory belongs to an agent *within a run*: a fresh run starts an agent with nothing. */
+  runId: z.string().min(1),
   agentId: z.string().min(1),
   notes: z.array(MemoryNoteSchema).default([]),
   /** Things the agent is waiting for the product (or someone) to do. */
@@ -15,8 +17,8 @@ export const MemorySchema = z.object({
 });
 export type Memory = z.infer<typeof MemorySchema>;
 
-export function emptyMemory(agentId: string, now: Date = new Date()): Memory {
-  return { agentId, notes: [], waitingOn: [], annoyances: [], done: [], updatedAt: now.toISOString() };
+export function emptyMemory(runId: string, agentId: string, now: Date = new Date()): Memory {
+  return { runId, agentId, notes: [], waitingOn: [], annoyances: [], done: [], updatedAt: now.toISOString() };
 }
 
 /** "resolved" removes waitingOn entries containing the text (case-insensitive); the rest append. */

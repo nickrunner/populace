@@ -178,13 +178,14 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
     turns: 0,
     toolCalls: 0,
     findingCount: 0,
+    wouldReturn: null,
     error: null,
     startedAt: startedAt.toISOString(),
     endedAt: null,
   };
 
   const findings: Finding[] = [];
-  let memory: Memory = (await store.getMemory(agent.id)) ?? emptyMemory(agent.id, startedAt);
+  let memory: Memory = (await store.getMemory(runId, agent.id)) ?? emptyMemory(runId, agent.id, startedAt);
   let identity: Identity | null = agent.identityId ? ((await store.getIdentity(agent.identityId)) ?? null) : null;
 
   const trace = new TraceWriter(store, wakeId, now);
@@ -450,6 +451,7 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
           tool: null,
           evidence: d.evidence_calls,
         });
+        wake.wouldReturn = d.would_return;
         ended = { status: "gave-up", summary: d.reason };
         return reporterResult(block, true, `Recorded that you gave up (${f.id}). Session over.`);
       }
@@ -464,6 +466,7 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
       case "done": {
         const parsed = DoneInput.safeParse(block.input);
         if (!parsed.success) return invalid(block, parsed.error);
+        wake.wouldReturn = parsed.data.would_return;
         ended = { status: "done", summary: `${parsed.data.summary}${parsed.data.would_return ? " (would return)" : " (would not return)"}` };
         return reporterResult(block, true, "Session over. Thanks.");
       }
