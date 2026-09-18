@@ -19,7 +19,7 @@ import {
   pageOf,
   routes,
 } from "@populace/contract";
-import { PopulaceConfigSchema, expandPopulation, instantiatePersona, newRunId, type PopulaceConfig, type Store } from "@populace/core";
+import { PopulaceConfigSchema, expandPopulation, instantiatePersona, newRevisionId, newRunId, tagForRun, type ConfigRevision, type PopulaceConfig, type Store } from "@populace/core";
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
 import { personaSystemPrompt, runWake } from "@populace/runner";
 import { ScriptedProvider, call, sequence, type ScriptContext } from "@populace/runner/testing";
@@ -29,6 +29,7 @@ import type { Hono } from "hono";
 import { createApp } from "./app.js";
 import { ensurePopulation, ensureProject, ensureSettings, redactConfig, resolveProjectConfig, seedProjectFromConfig, snapshotConfig, withLiveCredentials } from "./config-store.js";
 import { EventHub, RecordingStore } from "./events.js";
+import { captureAuthored } from "./history.js";
 import { JobRunner } from "./jobs.js";
 import { RunController } from "./runs.js";
 import { STARTER_PERSONAS } from "./starters.js";
@@ -668,3 +669,82 @@ async function realRun(store: Store): Promise<void> {
     await runWake({ agent, config: cfg }, { store, provider, identityProvider });
   }
 }
+
+describe("what the review of this slice turned up", () => {
+  it("will not let a target go while a run still has accounts to clean up on it", async () => {
+    const h = await harness();
+    const started = await json(await post(h.app, routes.runs));
+    const runId = (started as { runId: string }).runId;
+    await h.jobs.idle();
+    await h.runs.settled(runId);
+
+    const target = (await h.store.listTargets("default"))[0]!;
+    await h.store.saveIdentity({
+      id: "id_1",
+      runId,
+      tag: tagForRun(runId),
+      agentId: "tasklet/casual-lister#0",
+      personaId: "casual-lister",
+      strategy: "self-signup",
+      credential: { bearerToken: "their-token", email: "casey@example.com", extra: {} },
+      createdAt: new Date().toISOString(),
+      tornDownAt: null,
+    });
+
+    // Sweep reads the credential out of this row and nowhere else, so deleting it would strand a
+    // real account on someone's product with no way back.
+    const refused = await h.app.request(routes.target_(target.id), { method: "DELETE" });
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain("still has accounts");
+
+    // The same is true of a revision that predates the target: restoring it keeps the row rather
+    // than dropping the credential the run's accounts are behind.
+    const before: ConfigRevision = {
+      id: newRevisionId(),
+      projectId: "default",
+      at: new Date().toISOString(),
+      summary: "before there was a target",
+      source: "baseline",
+      document: { ...(await captureAuthored(h.store, "default")), targets: [] },
+    };
+    await h.store.saveConfigRevision(before);
+    await json(await post(h.app, routes.configRestore(before.id)));
+    expect((await h.store.listTargets("default")).map((t) => t.id)).toContain(target.id);
+
+    // Once the accounts are gone the target is free to go.
+    await h.store.markIdentityTornDown("id_1", new Date());
+    expect((await h.app.request(routes.target_(target.id), { method: "DELETE" })).status).toBe(204);
+    await h.close();
+  });
+
+  it("hands on no api key at all rather than a redacted one that would 401", async () => {
+    const withKey = PopulaceConfigSchema.parse({ ...config(), model: { ...config().model, apiKey: "sk-ant-not-a-real-key" } });
+    const h = await harness({ config: withKey });
+    const started = await json(await post(h.app, routes.runs));
+    const runId = (started as { runId: string }).runId;
+    await h.jobs.idle();
+    await h.runs.settled(runId);
+
+    const snapshot = await h.store.getConfigSnapshot((await h.store.getRun(runId))!.configSnapshotId);
+    expect(snapshot?.config.model.apiKey).toBe("[redacted]");
+    // A provider built from this would send "[redacted]" as a key and get a 401 that reads like a
+    // model outage. Absent falls back to the environment, which is where the key comes from anyway.
+    expect((await h.configForRun(runId)).model.apiKey).toBeUndefined();
+    await h.close();
+  });
+
+  it("refuses to carry a run on while another one is going, not only to start a fresh one", async () => {
+    const slow = PopulaceConfigSchema.parse({ ...config(), population: { ...config().population, maxWakes: 3, cadence: { every: "5s", jitter: "0s", initialDelay: "0s" } } });
+    const h = await harness({ config: slow });
+    const first = await json(await post(h.app, routes.runs));
+    const runId = (first as { runId: string }).runId;
+
+    const continued = await post(h.app, routes.runContinue(runId));
+    expect(continued.status).toBe(409);
+    expect(await continued.text()).toContain("already going");
+
+    await h.runs.stop(runId, "drain");
+    await h.jobs.idle();
+    await h.close();
+  });
+});

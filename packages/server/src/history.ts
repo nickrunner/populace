@@ -4,6 +4,7 @@ import {
   newPersonaId,
   newRevisionId,
   newTargetId,
+  tagForRun,
   type AuthoredDocument,
   type ConfigRevision,
   type PopulaceConfig,
@@ -42,8 +43,33 @@ export async function captureAuthored(store: Store, projectId: string): Promise<
 }
 
 /**
+ * The targets a run still needs, mapped to how many runs need each.
+ *
+ * A run keeps its `targetId` and its accounts on the product long after it has finished, until
+ * someone sweeps it. Sweep and verification both go through `withLiveCredentials`, which reads the
+ * credential out of the authored `targets` row — so deleting that row strands the accounts, and
+ * the only way back is recreating a target with the same endpoint name *and* the same token, which
+ * the person may no longer have. The authored layer cannot see the produced layer, so this is the
+ * one place that looks the other way across (`DATA-MODEL.md` §5).
+ */
+export async function targetsInUse(store: Store, projectId: string): Promise<Map<string, number>> {
+  const inUse = new Map<string, number>();
+  for (const run of await store.listRuns({ projectId })) {
+    if (run.targetId === "") continue;
+    const live = await store.listIdentitiesByTag(tagForRun(run.id));
+    if (live.length === 0) continue;
+    inUse.set(run.targetId, (inUse.get(run.targetId) ?? 0) + 1);
+  }
+  return inUse;
+}
+
+/**
  * Writes a captured document back, removing rows that are not in it. A restore that only added
  * would leave behind the person you deleted, which is not what "put it back the way it was" means.
+ *
+ * A target a run still has accounts on is the exception: it is kept rather than dropped, because
+ * restoring an old config should not cost someone the ability to clean up after a run they already
+ * finished. The revision is the authored layer's history; the accounts are not in it.
  *
  * The population row keeps its own id whatever the document says, so member references stay valid
  * and nothing else in the database has to be re-pointed.
@@ -51,8 +77,9 @@ export async function captureAuthored(store: Store, projectId: string): Promise<
 export async function applyAuthored(store: Store, projectId: string, document: AuthoredDocument): Promise<void> {
   const at = now();
   const targetIds = new Set(document.targets.map((t) => t.id));
+  const keep = await targetsInUse(store, projectId);
   for (const existing of await store.listTargets(projectId)) {
-    if (!targetIds.has(existing.id)) await store.deleteTarget(existing.id);
+    if (!targetIds.has(existing.id) && !keep.has(existing.id)) await store.deleteTarget(existing.id);
   }
   for (const target of document.targets) await store.saveTarget({ ...target, projectId, updatedAt: at });
 

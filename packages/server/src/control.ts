@@ -42,7 +42,7 @@ import { streamSSE } from "hono/streaming";
 import { ConfigIncomplete, ensurePopulation, ensureSettings, resolveProjectConfig } from "./config-store.js";
 import { estimateRun } from "./estimate.js";
 import { fail, page, param, parseBody, parseQuery } from "./http.js";
-import { applyAuthored, importConfig, renderRevision, withRevision } from "./history.js";
+import { applyAuthored, importConfig, renderRevision, targetsInUse, withRevision } from "./history.js";
 import { previewPersona, specForPreview } from "./preview.js";
 import { STARTER_PERSONAS, starterBySlug } from "./starters.js";
 import { ImportRejected, fromYaml, toYaml } from "./yaml.js";
@@ -161,6 +161,17 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   app.delete(routes.target_(":id"), async (c) => {
     const existing = await deps.store.getTarget(param(c, "id"));
     if (!existing) return c.body(null, 204);
+    // A run's accounts are cleaned up with this target's credential, which lives nowhere else.
+    // Refusing while any run still holds accounts is smaller than keeping a retired row around,
+    // and it says the true thing: sweep those runs and the target is free to go.
+    const holding = (await targetsInUse(deps.store, projectId)).get(existing.id) ?? 0;
+    if (holding > 0) {
+      return fail(
+        c,
+        "conflict",
+        `${holding} ${holding === 1 ? "run" : "runs"} still ${holding === 1 ? "has accounts" : "have accounts"} on ${existing.name}, and this is where the credential to remove them lives. Clean those runs up first, then delete it.`,
+      );
+    }
     await withRevision(deps.store, projectId, { summary: `removed the ${existing.name} target`, source: "editor" }, () => deps.store.deleteTarget(existing.id));
     return c.body(null, 204);
   });

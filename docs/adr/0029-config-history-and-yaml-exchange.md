@@ -41,6 +41,14 @@ Because every authored write goes through `withRevision`, a new authored table i
 `captureAuthored` and `applyAuthored` learn about it. That is the one place to change, and the compiler
 does not enforce it.
 
+A revision is the authored layer's history, but restoring one has effects on the produced layer that the
+authored layer cannot see. The case that bites is a target: a finished run keeps its `targetId` and its
+accounts on the product until someone sweeps it, and sweep reads that target's credential out of the
+authored row. So a target a run still holds accounts on is kept through a restore rather than dropped,
+and deleting one is refused outright while any run still holds accounts, naming how many. Failing at
+sweep time instead would leave real accounts on someone's product with no route back except recreating
+a target with the same endpoint name and the same token.
+
 Substitution runs over the whole file, comments included. The export header therefore names variables
 bare (`POPULACE_TASKLET_TOKEN`) and never as `${...}`; writing a placeholder in a comment would report it
 to the reader as a dependency and, on a machine where it is set, would write the secret's value into the

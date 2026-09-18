@@ -257,8 +257,15 @@ export function redactConfig(config: PopulaceConfig): { config: PopulaceConfig; 
  * So the snapshot stays redacted and the credential is put back at the point of use, from the
  * authored `targets` row, which is the only place a secret lives. An endpoint whose credential is
  * gone fails loudly here rather than connecting with a placeholder.
+ *
+ * `model.apiKey` is different and is not put back: it is a property of the process, never of a row
+ * (`history.ts` refuses to persist one), so there is nowhere to read it from. It is dropped rather
+ * than left as `[redacted]`, because a caller that built a provider from this config would
+ * otherwise send the placeholder as a key and get a 401 that reads like a model outage. Dropping
+ * it lands on the same fallback every command already uses, `process.env.ANTHROPIC_API_KEY`.
  */
-export async function withLiveCredentials(store: Store, config: PopulaceConfig, projectId = DEFAULT_PROJECT_ID): Promise<PopulaceConfig> {
+export async function withLiveCredentials(store: Store, snapshot: PopulaceConfig, projectId = DEFAULT_PROJECT_ID): Promise<PopulaceConfig> {
+  const config = snapshot.model.apiKey === REDACTED ? { ...snapshot, model: { ...snapshot.model, apiKey: undefined } } : snapshot;
   const needsToken = config.target.mcp.some((e) => e.bearerToken === REDACTED || Object.values(e.headers).includes(REDACTED));
   if (!needsToken) return config;
 
