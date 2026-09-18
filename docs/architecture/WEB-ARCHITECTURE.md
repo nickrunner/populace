@@ -129,10 +129,33 @@ GET    /target                      the configured target and its tool list
 GET    /health                      version, store path, lock holder, kill-switch state
 ```
 
-M1 is exactly the above and is read-only. M2 adds `POST /runs`, `POST /runs/:id/stop`,
-`POST /runs/:id/wakes`, `POST /kill-switch`, `POST /jobs/digest`, the persona and target
-authoring routes, and `POST /targets/:id/validate`. M3 adds `PATCH /clusters/:signature/triage`,
-`GET /runs/:a/compare/:b` and `POST /runs/:id/revalidate`.
+M1 is exactly the above and is read-only. M2's first slice added these, and the route table in
+`contract/src/api.ts` is the authority on all of them:
+
+```
+GET    /setup                       what still stands between the user and a run
+GET    /targets  POST /targets      the authored target rows
+GET/PUT/DELETE /targets/:id         a bearer token goes up and never comes back down
+POST   /targets/:id/check           connect, list tools, guess the identity tools
+GET    /targets/:id/promises        product copy against the tool list
+GET/POST /personas  GET/PUT/DELETE /personas/:id
+GET    /personas/starters           the six-persona library
+GET/PUT /population  GET/PUT /settings
+POST   /runs/estimate               arithmetic over history; spends nothing
+POST   /runs                        start; answers with a run id and a job id
+POST   /runs/:id/stop               mode: drain | now
+POST   /runs/:id/round              bring every active agent's next visit forward
+POST   /runs/:id/continue           a continuation from this run (ADR-0020)
+POST   /runs/:id/sweep              remove the accounts this run created
+POST   /runs/:id/digest/job         verify and cluster, as a job
+GET    /runs/:id/live               everything the live screen needs, from rows
+GET    /jobs/:id                    one job
+POST   /kill-switch                 engage or release
+GET    /events                      SSE; also /events/history for paging
+```
+
+M3 adds `PATCH /clusters/:signature/triage`, `GET /runs/:a/compare/:b` and
+`POST /runs/:id/revalidate`.
 
 ### Binding and access
 
@@ -154,7 +177,7 @@ One SSE endpoint, `/api/v1/events?after=<cursor>&run=<runId>`, carrying a discri
 event types declared in `contract`: `run.*`, `wake.*`, `trace.*`, `finding.*`, `job.*`,
 `guardrail.*`.
 
-The cursor is a store-level monotonic sequence over an append-only `events` table (ADR-0025).
+The cursor is a store-level monotonic sequence over an append-only `events` table (ADR-0026).
 Because it is persisted rather than in-memory:
 
 - A reconnecting browser replays what it missed instead of showing a gap.
@@ -165,6 +188,10 @@ M1 does not write this table (the roadmap holds M1 to no new persisted data). M1
 reads `trace_events` directly and polls. M2 introduces the event log, and the trace viewer's
 "live" mode is then the same component with a live cursor.
 
+Because a subscriber filters on `run`, every event about a run has to carry its `runId` — see
+`DATA-MODEL.md` §9 and the ADR-0026 amendment. An event about a run written with a null `runId`
+reaches neither the live stream nor the replay.
+
 ## 7. Build and distribution
 
 - `pnpm build` stays `tsc -b`; `@populace/web` adds a Vite build that writes to
@@ -172,7 +199,9 @@ reads `trace_events` directly and polls. M2 introduces the event log, and the tr
 - `populace serve` serves those assets with an SPA fallback. A user runs one command.
 - In development, `pnpm dev` runs Vite with `/api` proxied to the server so the dashboard hot
   reloads against a real store.
-- `pnpm check` (lint + build + test) stays the single CI gate.
+- `pnpm check` (build + lint + typecheck + test, in that order) stays the single CI gate. Build has
+  to come first: typed lint rules and `tsc -p` both read the workspace packages' emitted
+  declarations, which a fresh checkout does not have.
 
 ## 8. Build order
 
@@ -189,13 +218,42 @@ decided D3). The target wizard, persona editor and starter library. Cost estimat
 run starts. This rung is roughly twice any other and is split by surface depth if it must
 split, never by audience.
 
+*First slice shipped 2026-09-18.* The control plane (migration gate, config rows, run rows with
+snapshots, the event log behind a `RecordingStore`, the serial job queue, the advisory serve lock),
+the target wizard with a live check, the six-persona starter library, the limits screen, the run
+form with its estimate, and the live run screen. The second slice carries the full persona editor
+with its prompt preview, YAML import and export from the dashboard, and config history.
+
 **M3 — the loop.** Cluster signatures persisted, triage state attached to them rather than to
-finding rows (ADR-0027), run comparison, "re-run the people who complained" as a job over
+finding rows (ADR-0028), run comparison, "re-run the people who complained" as a job over
 `--continue-from`, GitHub issue export, a shareable digest.
 
 **M4 — many targets.** Projects become real, targets get a library, runs get schedules, and a
 non-interactive CI mode consumes the same API.
 
+M2 left one thing for this rung to undo. `POST /runs` refuses a second run while one is going
+(ADR-0022 amendment), which is right while a local install drives one target and stops everything
+with one button. M4 is done when one install drives three targets on schedules, and a scheduled
+start that arrives during another run would be refused with a 409 that nobody is watching. So M4
+either queues starts instead of rejecting them, or makes the stop run-scoped and leaves the kill
+switch as the global control. Whichever it is, the CI mode needs the same answer, because a build
+that skipped its run and said nothing is worse than one that waited.
+
 **M5 — cloud.** `@populace/store-postgres` behind the existing `Store` interface, an external
 scheduler behind `Scheduler`, hosted runners pulling jobs, accounts and tenancy in `server`,
 secrets out of the config rows. The runner is untouched.
+
+## 9. Open items
+
+Decisions this architecture needs and has not made. Each is recorded where it belongs; they are
+gathered here so nobody has to find them by reading every ADR.
+
+- **Replay contaminates the target it verifies against.** A finding with no evidence calls is
+  replayed on the visit's last five tool calls, writes included, and each replay changes what the
+  next one sees. Fix validation is built on verdicts, so this has to be settled before M3 rather
+  than during it. Options and reasoning: ADR-0014, amendment of 2026-09-18.
+- ~~**"Stop everything now" is global while runs are not.**~~ Settled in M2's second slice:
+  `POST /runs` refuses a second run while one is going. The kill switch is a store row every
+  in-flight wake checks (ADR-0009), so it is global by construction, and the button is only honest
+  while there is one thing to stop. See the ADR-0022 amendment, and the M4 row above: M4 is where
+  this has to be revisited.

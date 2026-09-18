@@ -13,3 +13,17 @@ M1 does not store this. The roadmap holds M1 to no new persisted data, and every
 Config that lives in rows and can be edited would otherwise rewrite history: editing a persona would change what a past run was. The snapshot is what stops that, and it is what lets a continuation say "same population, target repaired" instead of asking the user to remember.
 
 Until M2 the derived model aggregates on every request and cannot tell a run that finished from a run whose daemon was killed. Both are acceptable for a read-only local dashboard and neither survives the browser being able to start runs, which is why the table lands in the same milestone that adds the button.
+
+## Amendment (M2, 2026-09-18)
+
+Shipped as specified, with two things worth naming because they are easy to get wrong later.
+
+The hash is taken over the **redacted** config with object keys ordered, so identical configuration
+dedupes to one row whatever order the assembler built the object in.
+
+Because the stored config is redacted, a snapshot is a record of what ran and never a source of
+credentials. Anything that opens a connection — the verifier's replay, sweep's teardown calls — must
+read its credentials from the authored `targets` row and use the snapshot only for the shape of what
+ran. Connecting from a snapshot sends `[redacted]` as a bearer token, which fails silently: replays
+that cannot authenticate come back `not-reproduced`, and not-reproduced findings are dropped before
+clustering.

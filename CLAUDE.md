@@ -98,9 +98,13 @@ agents and a strong judge coexist in one run.
   (ADR-0007 amendment).
 - **Message history within a wake is append-only.** Notices and budget warnings are appended as new
   user turns; earlier turns are never edited or deleted.
-- **The store has no migration framework.** `CREATE TABLE IF NOT EXISTS` plus, where a shape had to
-  change, an explicit drop of the old table on open. Changing a table means deciding what happens to
-  existing local databases.
+- **The store has a migration gate, and what it protects depends on the table.** `schema_version`
+  in `control` gates an ordered list of forward steps in `packages/store-sqlite/src/migrations.ts`;
+  each runs once, in a transaction, and there are no down migrations. Authored tables (projects,
+  targets, personas, populations, settings) are the user's own work and are never dropped: they get
+  additive columns and defaults. Produced and derived tables (traces, events, digests, clusters)
+  are reproducible or expendable and may be dropped and rebuilt with a warning. Adding a table is
+  still `CREATE TABLE IF NOT EXISTS` inside a step (`DATA-MODEL.md` §11).
 - **Adding a field to a `core` schema breaks construction sites**, notably `expandPopulation()` and
   the wake/agent builders in `runner`. The compiler finds them; expect more than one.
 

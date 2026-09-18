@@ -15,3 +15,17 @@ The log lands in M2. M1's trace viewer reads `trace_events` and polls; its live 
 `trace_events` is ordered per wake, which is right for replay and useless for "what happened next anywhere". A store-level cursor gives a reconnecting browser a replay instead of a gap, gives the run screen one subscription, and in M5 is how separate runner and API processes meet.
 
 The log is derived from rows that already exist and may be truncated by age or count. Stating that now stops it from being treated later as the system of record.
+
+## Amendment (M2, 2026-09-18)
+
+The log is written by a `RecordingStore` decorator around the `Store`, not by the trace writer
+itself. Every row it appends is derived from a write the runner was already making — a wake saved, a
+finding saved, an identity saved, a trace event appended — which is what keeps `runWake()` untouched
+and keeps the log honestly derived. An append that fails is swallowed: the log is derived data, and
+losing a row of it costs a live update, while throwing would lose the wake that produced it.
+
+**Every event about a run must carry its `runId`.** Both ends of delivery filter on it: the
+in-process fan-out compares `event.runId` to the subscriber's filter, and `listEvents` filters with
+`run_id = ?`, which excludes NULL in SQL. An event about a run written with a null `runId` therefore
+reaches neither the live stream nor the replay of the screen that run owns. A null `runId` means the
+event is genuinely not about a run.
