@@ -7,7 +7,7 @@ import { DEFAULT_PROJECT_ID, type Job, type PopulaceConfig, type Store } from "@
 import type { ModelProvider } from "@populace/runner";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
-import { ensureProject, ensureSettings, resolveProjectConfig, seedProjectFromConfig, type ProcessConfig } from "./config-store.js";
+import { ensureProject, ensureSettings, ensureSimulation, resolveSimulationConfig, seedProjectFromConfig, type ProcessConfig, type SimulationPlan } from "./config-store.js";
 import type { ControlDeps } from "./deps.js";
 import { EventHub, RecordingStore } from "./events.js";
 import { JobRunner } from "./jobs.js";
@@ -32,6 +32,18 @@ export interface ServeOptions {
    * has a target keeps it.
    */
   seedConfig?: PopulaceConfig;
+  /**
+   * The simulations that `populace.yaml` describes, imported alongside it. Absent means the file
+   * named none and one is implied from its visit cap.
+   */
+  seedSimulations?: readonly SimulationPlan[];
+  /**
+   * Pick back up the executions a previous process left behind (SPEC §4.2). `reconcileOrphans()`
+   * marks a run whose process died `paused` / `process-ended`; this is the other half — without it
+   * a longitudinal soak the user was told to leave running stops for good the first time the
+   * laptop closes. Off by default, because re-arming a run spends money.
+   */
+  resume?: boolean;
   /** Serve the read-only API only: no run control, no authoring, no lock taken. */
   readOnly?: boolean;
   /** Take over a lock held by another process. */
@@ -88,7 +100,7 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     await ensureProject(options.store, projectId);
     await ensureSettings(options.store, projectId);
     if (options.seedConfig) {
-      const seeded = await seedProjectFromConfig(options.store, options.seedConfig, projectId);
+      const seeded = await seedProjectFromConfig(options.store, options.seedConfig, projectId, options.seedSimulations ? { simulations: options.seedSimulations } : {});
       log(`populace serve: ${seeded.seeded ? `imported populace.yaml — ${seeded.reason}` : `using the config in the database (${seeded.reason})`}`);
     }
 
@@ -103,6 +115,9 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
         if (!options.provider) throw new Error("this process has no model provider; set ANTHROPIC_API_KEY");
         return options.provider();
       },
+      // Resuming an execution needs the live credentials a snapshot does not carry, and applying
+      // changes to one is a re-resolve by definition.
+      resolve: async (simulationId: string) => (await resolveSimulationConfig(store, processConfig, simulationId)).config,
       log,
     });
 
@@ -110,18 +125,35 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     // dashboard that shows one as live is worse than one that shows it as failed.
     const orphanRuns = await runs.reconcileOrphans();
     const orphanJobs = await jobs.reconcileOrphans();
-    if (orphanRuns + orphanJobs > 0) log(`populace serve: marked ${orphanRuns} run(s) and ${orphanJobs} job(s) as failed after an earlier process stopped`);
+    if (orphanRuns + orphanJobs > 0) log(`populace serve: ${orphanRuns} run(s) paused and ${orphanJobs} job(s) failed after an earlier process stopped`);
+
+    // `--resume`: the other half of the orphan story. Only the runs a dead process left behind are
+    // re-armed — a run somebody paused on purpose stays paused, and nothing is re-armed at all
+    // without a model provider to run it with.
+    if (options.resume && options.provider) {
+      for (const run of await store.listRuns({ status: "paused" })) {
+        if (run.pauseReason !== "process-ended") continue;
+        try {
+          await runs.resume(run.id);
+          log(`populace serve: picked execution ${run.seq} back up (${run.id})`);
+        } catch (err) {
+          log(`populace serve: could not pick ${run.id} back up: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } else if (options.resume && !options.provider) {
+      log("populace serve: --resume needs ANTHROPIC_API_KEY; the paused executions were left where they are.");
+    }
 
     const configForRun = async (runId: string): Promise<PopulaceConfig> => {
       const run = await store.getRun(runId);
       const snapshot = run?.configSnapshotId ? await store.getConfigSnapshot(run.configSnapshotId) : undefined;
       if (snapshot) return snapshot.config;
-      return (await resolveProjectConfig(store, processConfig, projectId)).config;
+      const simulationId = run?.simulationId ?? (await ensureSimulation(store, projectId)).id;
+      return (await resolveSimulationConfig(store, processConfig, simulationId)).config;
     };
 
     control = {
       store,
-      projectId,
       processConfig,
       hasApiKey: () => options.provider !== undefined,
       ...(options.provider ? { provider: options.provider } : {}),
@@ -139,11 +171,28 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     };
   }
 
+  /**
+   * The config ONE RUN executed, for the read routes that cannot render without one. It resolves
+   * that run's SIMULATION — there is no process-wide "the config" any more, because there is no
+   * process-wide project (SPEC §6).
+   */
+  const configForRunRead = async (runId: string): Promise<PopulaceConfig | undefined> => {
+    const run = await store.getRun(runId);
+    const snapshot = run?.configSnapshotId ? await store.getConfigSnapshot(run.configSnapshotId) : undefined;
+    if (snapshot) return snapshot.config;
+    if (!run) return undefined;
+    try {
+      return (await resolveSimulationConfig(store, processConfig, run.simulationId)).config;
+    } catch {
+      return undefined;
+    }
+  };
+
   const app = createApp({
     store,
     storePath: options.storePath,
     version: options.version,
-    config: async () => (await resolveProjectConfig(store, processConfig, projectId)).config,
+    configForRun: configForRunRead,
     ...(options.provider ? { verifier: options.provider() } : {}),
     ...(control ? { control } : {}),
   });

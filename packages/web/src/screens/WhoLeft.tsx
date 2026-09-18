@@ -11,12 +11,12 @@ import { Avatar, Card, Failed, Loading, PageHeader } from "../components/ui.jsx"
  */
 export function WhoLeft({ runId }: { runId: string }) {
   const findings = useQuery({ queryKey: ["findings", runId, "abandonment"], queryFn: () => api.findings(runId, "?kind=abandonment") });
-  const agents = useQuery({ queryKey: ["agents", runId], queryFn: () => api.agents(runId) });
+  const participants = useQuery({ queryKey: ["participants", runId], queryFn: () => api.participants(runId) });
 
   if (findings.isError) return <Failed error={findings.error} />;
   const findingData = findings.data;
-  const agentData = agents.data;
-  if (!findingData || !agentData) return <Loading what="who left" />;
+  const participantData = participants.data;
+  if (!findingData || !participantData) return <Loading what="who left" />;
 
   const left = findingData.items;
 
@@ -32,7 +32,7 @@ export function WhoLeft({ runId }: { runId: string }) {
       ) : (
         <div className="flex flex-col gap-4">
           {left.map((finding) => {
-            const agent = agentData.items.find((a) => a.id === finding.agentId);
+            const agent = participantData.items.find((a) => a.id === finding.agentId);
             const name = agent?.personaName ?? finding.personaId;
             return (
               <Card key={finding.id} className="p-5">
@@ -43,7 +43,7 @@ export function WhoLeft({ runId }: { runId: string }) {
                     <p className="t-body text-ink italic mb-3">“{inTheirWords(finding)}”</p>
                     <div className="flex flex-wrap items-center gap-4 t-meta text-ink-muted">
                       <span>
-                        {name} · visit {agent?.wakeCount ?? "—"}
+                        {name} · visit {agent?.visits ?? "—"}
                       </span>
                       <span className={agent?.wouldReturn === true ? "text-confirmed" : undefined}>
                         {agent?.wouldReturn === true

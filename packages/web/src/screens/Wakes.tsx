@@ -19,12 +19,12 @@ export function Wakes({ runId }: { runId: string }) {
   const [status, setStatus] = useState<string | null>(null);
 
   const wakes = useQuery({ queryKey: ["wakes", runId], queryFn: () => api.wakes(runId) });
-  const agents = useQuery({ queryKey: ["agents", runId], queryFn: () => api.agents(runId) });
+  const participants = useQuery({ queryKey: ["participants", runId], queryFn: () => api.participants(runId) });
 
   if (wakes.isError) return <Failed error={wakes.error} />;
   const wakeData = wakes.data;
-  const agentData = agents.data;
-  if (!wakeData || !agentData) return <Loading what="the visits" />;
+  const participantData = participants.data;
+  if (!wakeData || !participantData) return <Loading what="the visits" />;
 
   // Newest first: the question is nearly always "what just happened".
   const all = [...wakeData.items].sort((a, b) => b.startedAt.localeCompare(a.startedAt)).filter((w) => agentFilter === null || w.agentId === agentFilter);
@@ -32,7 +32,7 @@ export function Wakes({ runId }: { runId: string }) {
   const outcomes = [...new Set(all.map((w) => w.status))];
   const calls = all.reduce((sum, w) => sum + w.toolCalls, 0);
   const cost = all.reduce((sum, w) => sum + w.costUsd, 0);
-  const agentName = agentFilter === null ? null : (agentData.items.find((a) => a.id === agentFilter)?.personaName ?? agentFilter);
+  const agentName = agentFilter === null ? null : (participantData.items.find((a) => a.id === agentFilter)?.personaName ?? agentFilter);
 
   return (
     <>

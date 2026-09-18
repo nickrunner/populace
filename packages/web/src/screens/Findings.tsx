@@ -21,16 +21,16 @@ export function Findings({ runId }: { runId: string }) {
   const [only, setOnly] = useState<string | null>(null);
   const digest = useQuery({ queryKey: ["digest", runId], queryFn: () => api.digest(runId) });
   const run = useQuery({ queryKey: ["run", runId], queryFn: () => api.run(runId) });
-  const agents = useQuery({ queryKey: ["agents", runId], queryFn: () => api.agents(runId) });
+  const participants = useQuery({ queryKey: ["participants", runId], queryFn: () => api.participants(runId) });
 
   if (digest.isError) return <Failed error={digest.error} />;
   const digestData = digest.data;
   const runData = run.data;
-  const agentData = agents.data;
-  if (!digestData || !runData || !agentData) return <Loading what="the findings" />;
+  const participantData = participants.data;
+  if (!digestData || !runData || !participantData) return <Loading what="the findings" />;
 
   const clusters = digestData.clusters;
-  const people = agentData.items.length;
+  const people = participantData.items.length;
   const shown = only === null ? clusters : clusters.filter((c) => c.kind === only);
   // The digest drops findings the verifier could not reproduce before it clusters, so the number
   // of reports on this page is smaller than the run's. Say so rather than leaving the reader to

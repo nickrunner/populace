@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { EffortSchema, ModelConfigSchema, expandPopulation, parseDuration, tagForRun, type Agent } from "@populace/core";
 import { AnthropicProvider, LocalDaemon, McpSession, runWake, type ModelProvider, type WakeResult } from "@populace/runner";
 import { buildDigest, exporterNamed, renderDigestMarkdown, verifyPending } from "@populace/reports";
-import { parseDocument } from "yaml";
+import { isCollection, parseDocument } from "yaml";
 import { DEFAULT_STORE_PATH, loadConfig, loadConfigIfPresent, storePath } from "./config.js";
 import { SqliteStore } from "@populace/store-sqlite";
 import { openContext, type CliContext } from "./context.js";
@@ -44,6 +44,9 @@ export async function validate(options: GlobalOptions & { connect?: boolean }): 
   lines.push(`identity: ${config.identity.strategy}`);
   lines.push(`model: ${config.model.model} effort=${config.model.effort} fallbacks=${config.model.fallbacks ? "on" : "off"}`);
   const agents = expandPopulation(config.population, "run_0_000000", config.simulation.id);
+  lines.push(
+    `simulation ${config.simulation.slug}: ${config.simulation.mode}${config.simulation.visitsPerPerson === null ? " (no visit cap; it runs until you stop it)" : `, ${config.simulation.visitsPerPerson} visit(s) each`}`,
+  );
   lines.push(`population ${config.population.id}: ${config.population.members.length} cohort(s) -> ${agents.length} agent(s), cadence every ${config.population.cadence.every / 1000}s`);
   for (const { agent } of agents) lines.push(`  - ${agent.id} (${agent.name}, ${agent.persona.role}, patience ${agent.persona.patience}, budget $${agent.persona.budgetUsd})`);
   if (options.connect !== false) {
@@ -160,9 +163,14 @@ export async function scale(factor: string, options: GlobalOptions): Promise<Age
   const loaded = loadConfig(options.config ?? "populace.yaml");
   const { readFileSync } = await import("node:fs");
   const doc = parseDocument(readFileSync(loaded.path, "utf8"));
-  loaded.config.population.members.forEach((member, index) => {
-    doc.setIn(["population", "members", index, "count"], Math.max(1, Math.ceil(member.count * value)));
-  });
+  // Headcount lives on the cohort now. A file still written as `population.members` is scaled the
+  // same way, because a member IS a cohort; `loadConfig` concatenates the two in this order.
+  const scaled = (count: number): number => Math.max(1, Math.ceil(count * value));
+  const written = doc.getIn(["population", "members"]);
+  const legacy = isCollection(written) ? written.items.length : 0;
+  const members = loaded.config.population.members;
+  members.slice(0, legacy).forEach((member, index) => doc.setIn(["population", "members", index, "count"], scaled(member.count)));
+  members.slice(legacy).forEach((member, index) => doc.setIn(["cohorts", index, "size"], scaled(member.count)));
   writeFileSync(loaded.path, doc.toString());
   const ctx = openContext(options);
   try {
@@ -289,7 +297,7 @@ export async function status(options: GlobalOptions): Promise<string[]> {
  * already writes (ADR-0024). From M2 this process also hosts the daemon and takes the store
  * lock (ADR-0022), at which point `serve` and `run` stop being safe to use at the same time.
  */
-export async function serve(options: GlobalOptions & { port?: number; host?: string; readOnly?: boolean; force?: boolean }): Promise<{ url: string; close: () => Promise<void> }> {
+export async function serve(options: GlobalOptions & { port?: number; host?: string; project?: string; resume?: boolean; readOnly?: boolean; force?: boolean }): Promise<{ url: string; close: () => Promise<void> }> {
   // `serve` is the one command that works without a config file: from M2 the database is the
   // source of truth, and a new user's first act is to set a target up in the browser (ADR-0025).
   const loaded = loadConfigIfPresent(options.config ?? "populace.yaml");
@@ -308,7 +316,14 @@ export async function serve(options: GlobalOptions & { port?: number; host?: str
       processConfig: { store: loaded?.config.store ?? { kind: "sqlite", path }, digestDir: loaded?.config.digestDir ?? "digests" },
       // Import, not sync: the file seeds an empty project once and is an export target after that.
       ...(loaded ? { seedConfig: loaded.config } : {}),
+      ...(loaded && loaded.simulations.length > 0 ? { seedSimulations: loaded.simulations } : {}),
       ...(apiKey ? { provider: () => (provider ??= new AnthropicProvider(loaded?.config.model ?? ModelConfigSchema.parse({}))) } : {}),
+      // The API is project-scoped from M3 on: this only says which project the file is imported
+      // into and which one a fresh store is created with. The server holds as many as the store does.
+      ...(options.project ? { projectId: options.project } : {}),
+      // The other half of "a run whose process died is paused, not failed": without this a soak
+      // the user was told to leave running never comes back after the laptop closes.
+      ...(options.resume ? { resume: true } : {}),
       ...(options.readOnly ? { readOnly: true } : {}),
       ...(options.force ? { force: true } : {}),
       ...(options.port !== undefined ? { port: options.port } : {}),

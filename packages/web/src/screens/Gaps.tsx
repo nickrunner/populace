@@ -10,16 +10,16 @@ import { Avatar, Card, Failed, Loading, Mono, PageHeader, Section, ToolName } fr
  */
 export function Gaps({ runId }: { runId: string }) {
   const digest = useQuery({ queryKey: ["digest", runId], queryFn: () => api.digest(runId) });
-  const agents = useQuery({ queryKey: ["agents", runId], queryFn: () => api.agents(runId) });
+  const participants = useQuery({ queryKey: ["participants", runId], queryFn: () => api.participants(runId) });
   const tools = useQuery({ queryKey: ["tools", runId], queryFn: () => api.tools(runId) });
 
   if (digest.isError) return <Failed error={digest.error} />;
   const digestData = digest.data;
-  const agentData = agents.data;
-  if (!digestData || !agentData) return <Loading what="the coverage gaps" />;
+  const participantData = participants.data;
+  if (!digestData || !participantData) return <Loading what="the coverage gaps" />;
 
   const gaps = digestData.clusters.filter((c) => c.kind === "coverage-gap");
-  const nameOf = (personaId: string): string => agentData.items.find((a) => a.personaId === personaId)?.personaName ?? personaId;
+  const nameOf = (personaId: string): string => participantData.items.find((a) => a.personaSlug === personaId)?.personaName ?? personaId;
   const untouched = (tools.data?.items ?? []).filter((t) => t.exposed && t.calls === 0);
 
   return (

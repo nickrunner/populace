@@ -1,10 +1,11 @@
 import { API_BASE, DigestQuerySchema, FindingListQuerySchema, RunListQuerySchema, TraceQuerySchema, WakeListQuerySchema } from "@populace/contract";
-import type { Finding, TraceEvent } from "@populace/core";
+import type { Finding, PopulaceConfig, TraceEvent } from "@populace/core";
 import { buildDigest, verifyPending } from "@populace/reports";
 import { Hono } from "hono";
 import { mountControl } from "./control.js";
 import type { ServerDeps } from "./deps.js";
 import { fail, page, parseQuery } from "./http.js";
+import { ProjectReadModel } from "./project-read-model.js";
 import { ReadModel } from "./read-model.js";
 import { targetView } from "./target.js";
 
@@ -22,25 +23,25 @@ export type { ServerDeps, ControlDeps } from "./deps.js";
 export function createApp(deps: ServerDeps): Hono {
   const app = new Hono();
   const read = new ReadModel(deps.store);
+  const projects = new ProjectReadModel(deps.store, deps.control ? { runningRunIds: () => deps.control?.runs.runningIds ?? [] } : {});
 
   app.get(`${API_BASE}/health`, async (c) => {
     const killSwitch = await deps.store.getKillSwitch();
     return c.json({ version: deps.version, storePath: deps.storePath, readOnly: deps.control === undefined, killSwitch });
   });
 
-  app.get(`${API_BASE}/target`, async (c) => {
-    try {
-      return c.json(await targetView(await deps.config()));
-    } catch (err) {
-      // No target set up yet is a normal state in M2, and the screens that ask for one say so.
-      return fail(c, "not_found", err instanceof Error ? err.message : "no target is set up yet");
-    }
-  });
-
+  /**
+   * `GET /target` is gone. It answered "the target" for a process that assumed one project with
+   * one target; a target is now named by the simulation that goes to it, and read under
+   * `/projects/:p/targets` (SPEC §6.1).
+   */
   app.get(`${API_BASE}/runs`, async (c) => {
     const q = parseQuery(c, RunListQuerySchema);
     if (!q.ok) return q.response;
-    return c.json(page(await read.listRuns(), q.value.cursor, q.value.limit));
+    // Filtered IN SQL: the rows carry their project and simulation, so a project's runs are a
+    // query rather than every run in the database loaded and thrown away.
+    const runs = await read.listRuns({ ...(q.value.project === undefined ? {} : { projectId: q.value.project }), ...(q.value.simulation === undefined ? {} : { simulationId: q.value.simulation }) });
+    return c.json(page(runs, q.value.cursor, q.value.limit));
   });
 
   // Declared before `/runs/:id` so the literal path is not captured as a run id.
@@ -51,33 +52,44 @@ export function createApp(deps: ServerDeps): Hono {
     return run ? c.json(run) : fail(c, "not_found", `no run ${c.req.param("id")}`);
   });
 
-  app.get(`${API_BASE}/runs/:id/agents`, async (c) => c.json({ items: await read.listAgents(c.req.param("id")), nextCursor: null }));
+  /**
+   * The wire speaks the user's words (Decision A). The rows underneath are still `Agent`s and
+   * every store method still says so; this is a translation at the boundary.
+   */
+  app.get(`${API_BASE}/runs/:id/participants`, async (c) => c.json({ items: await read.listParticipants(c.req.param("id")), nextCursor: null }));
+
+  /** One person's whole page in ONE request — memory, visits and findings included, no N+1. */
+  app.get(`${API_BASE}/runs/:id/participants/:pid`, async (c) => {
+    const detail = await projects.participant(c.req.param("id"), c.req.param("pid"));
+    return detail ? c.json(detail) : fail(c, "not_found", `nobody called ${c.req.param("pid")} in run ${c.req.param("id")}`);
+  });
+
+  app.get(`${API_BASE}/runs/:id/cohorts`, async (c) => c.json({ items: await projects.runCohorts(c.req.param("id")), nextCursor: null }));
 
   app.get(`${API_BASE}/runs/:id/wakes`, async (c) => {
     const q = parseQuery(c, WakeListQuerySchema);
     if (!q.ok) return q.response;
-    const wakes = await read.listWakes(c.req.param("id"), q.value.agentId);
+    const wakes = await read.listWakes(c.req.param("id"), q.value.participant);
     return c.json(page(wakes, q.value.cursor, q.value.limit));
   });
 
   app.get(`${API_BASE}/runs/:id/findings`, async (c) => {
     const q = parseQuery(c, FindingListQuerySchema);
     if (!q.ok) return q.response;
-    const { kind, severity, verdict, unverified, agentId, tool, cursor, limit } = q.value;
+    const { kind, severity, verdict, unverified, participant, tool, cursor, limit } = q.value;
     let findings = await deps.store.listFindings({ runIds: [c.req.param("id")], ...(kind ? { kinds: kind } : {}), ...(unverified ? { unverifiedOnly: true } : {}) });
     if (severity) findings = findings.filter((f) => severity.includes(f.severity));
     if (verdict) findings = findings.filter((f) => f.verification !== null && verdict.includes(f.verification.verdict));
-    if (agentId !== undefined) findings = findings.filter((f) => f.agentId === agentId);
+    if (participant !== undefined) findings = findings.filter((f) => f.agentId === participant);
     if (tool !== undefined) findings = findings.filter((f) => f.tool === tool);
     return c.json(page(sortFindings(findings), cursor, limit));
   });
 
   app.get(`${API_BASE}/runs/:id/spend`, async (c) => {
-    const guardrails = await deps.config().then(
-      (config) => config.guardrails,
-      () => undefined,
-    );
-    return c.json(await new ReadModel(deps.store, guardrails).spend(c.req.param("id")));
+    // The ceiling this run was actually running under, from the config it froze — not whatever
+    // the settings form says today.
+    const config = await configForRun(c.req.param("id"));
+    return c.json(await new ReadModel(deps.store, config?.guardrails).spend(c.req.param("id")));
   });
 
   app.get(`${API_BASE}/runs/:id/tools`, async (c) => {
@@ -85,28 +97,27 @@ export function createApp(deps: ServerDeps): Hono {
     return c.json(await read.toolUsage(c.req.param("id"), config ? await targetView(config) : { name: "", endpoints: [], webBaseUrl: null, description: null, identityStrategy: "", tools: null, toolsError: "no target is set up" }));
   });
 
-  app.get(`${API_BASE}/runs/:id/agents/:agentId/memory`, async (c) => {
-    const memory = await read.memory(c.req.param("id"), c.req.param("agentId"));
-    // An agent that has not written anything yet has no memory row, which is a normal state on a
+  app.get(`${API_BASE}/runs/:id/participants/:pid/memory`, async (c) => {
+    const memory = await read.memory(c.req.param("id"), c.req.param("pid"));
+    // Somebody who has not written anything yet has no memory row, which is a normal state on a
     // first visit rather than a missing resource, so it answers with an empty document.
-    return c.json(memory ?? { runId: c.req.param("id"), agentId: c.req.param("agentId"), notes: [], waitingOn: [], annoyances: [], done: [], updatedAt: new Date(0).toISOString() });
+    return c.json(memory ?? { runId: c.req.param("id"), agentId: c.req.param("pid"), notes: [], waitingOn: [], annoyances: [], done: [], updatedAt: new Date(0).toISOString() });
   });
 
   /**
    * The config a run actually executed, from its snapshot. A digest or a tool list rebuilt today
    * has to describe what ran, not what the forms happen to say now — which is the whole reason a
-   * snapshot exists (ADR-0024). Falls back to the live config for runs written before M2.
+   * snapshot exists (ADR-0024). `deps.configForRun` is the fallback for a run with no snapshot,
+   * and it resolves that run's SIMULATION rather than "the project's config".
    */
-  async function configForRun(runId: string) {
+  async function configForRun(runId: string): Promise<PopulaceConfig | undefined> {
     const stored = await deps.store.getRun(runId);
     if (stored?.configSnapshotId) {
       const snapshot = await deps.store.getConfigSnapshot(stored.configSnapshotId);
       if (snapshot) return snapshot.config;
     }
-    return deps.config().then(
-      (config) => config,
-      () => undefined,
-    );
+    if (!deps.configForRun) return undefined;
+    return deps.configForRun(runId).catch(() => undefined);
   }
 
   app.get(`${API_BASE}/runs/:id/digest`, async (c) => {

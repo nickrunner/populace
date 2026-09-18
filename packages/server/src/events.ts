@@ -14,11 +14,51 @@ export class RecordingStore implements Store {
     private readonly onEvent: (event: Event) => void = () => undefined,
   ) {}
 
+  /**
+   * Which project and simulation a run belongs to. Cached because every trace event asks, and a
+   * run's project never changes: a run row is written once, before its first wake.
+   */
+  private readonly runScope = new Map<string, { projectId: string | null; simulationId: string | null }>();
+  /** Which run a wake belongs to, for the events that know their wake and not their run. */
+  private readonly wakeRun = new Map<string, string>();
+
+  /**
+   * Stamps the project and the simulation onto an event.
+   *
+   * An emitter deep inside a wake knows its wake and its run and has no business knowing which
+   * project it is filed under, so the stamp happens here — which is what lets one stream follow a
+   * whole project (`GET /events?project=…`) without a client opening a connection per run.
+   */
+  private async scoped(input: EventInput): Promise<EventInput> {
+    if (input.projectId !== undefined && input.simulationId !== undefined) return input;
+    const runId = input.runId ?? (input.wakeId === null ? null : await this.runOfWake(input.wakeId));
+    if (runId === null) return input;
+    let scope = this.runScope.get(runId);
+    if (!scope) {
+      const run = await this.inner.getRun(runId);
+      // A run that has no row yet (the row is written a moment later) is not cached: the next
+      // event asks again rather than remembering "no project" forever.
+      if (!run) return { ...input, runId };
+      scope = { projectId: run.projectId, simulationId: run.simulationId };
+      this.runScope.set(runId, scope);
+    }
+    return { ...input, runId, projectId: input.projectId ?? scope.projectId, simulationId: input.simulationId ?? scope.simulationId };
+  }
+
+  private async runOfWake(wakeId: string): Promise<string | null> {
+    const cached = this.wakeRun.get(wakeId);
+    if (cached !== undefined) return cached;
+    const wake = await this.inner.getWake(wakeId);
+    if (!wake) return null;
+    this.wakeRun.set(wakeId, wake.runId);
+    return wake.runId;
+  }
+
   private async record(input: EventInput): Promise<void> {
     // A failed event append must never fail the wake that produced it: the log is derived data and
     // losing a row of it costs a live update, while throwing here would lose the wake.
     try {
-      this.onEvent(await this.inner.appendEvent(input));
+      this.onEvent(await this.inner.appendEvent(await this.scoped(input)));
     } catch {
       /* derived data; the produced row is already written */
     }
@@ -74,7 +114,7 @@ export class RecordingStore implements Store {
   }
 
   async appendEvent(event: EventInput): Promise<Event> {
-    const saved = await this.inner.appendEvent(event);
+    const saved = await this.inner.appendEvent(await this.scoped(event));
     this.onEvent(saved);
     return saved;
   }
@@ -95,6 +135,7 @@ export class RecordingStore implements Store {
   getWake: Store["getWake"] = (...args) => this.inner.getWake(...args);
   listWakes: Store["listWakes"] = (...args) => this.inner.listWakes(...args);
   getTrace: Store["getTrace"] = (...args) => this.inner.getTrace(...args);
+  getTraces: Store["getTraces"] = (...args) => this.inner.getTraces(...args);
   deleteWakesByRun: Store["deleteWakesByRun"] = (...args) => this.inner.deleteWakesByRun(...args);
   getFinding: Store["getFinding"] = (...args) => this.inner.getFinding(...args);
   listFindings: Store["listFindings"] = (...args) => this.inner.listFindings(...args);

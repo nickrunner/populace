@@ -49,7 +49,18 @@ export class JobRunner {
     await this.store.saveJob(job);
     // Progress reaches the browser over the event stream rather than by polling `GET /jobs/:id`,
     // which is what lets one SSE subscription carry the whole run screen.
-    await this.store.appendEvent({ runId: job.runId, wakeId: null, type: "job.updated", payload: { jobId: job.id, kind: job.kind, status: job.status, progress: job.progress, error: job.error } });
+    //
+    // The project is passed explicitly because the recording store can only derive one FROM A RUN,
+    // and an authoring job (`people.generate`, `target.reset`) has no run at all — nor does
+    // `run.start` until the row it is creating exists. Without this a project's stream carries no
+    // job progress for the project's own jobs.
+    await this.store.appendEvent({
+      runId: job.runId,
+      wakeId: null,
+      ...(job.projectId === null ? {} : { projectId: job.projectId }),
+      type: "job.updated",
+      payload: { jobId: job.id, kind: job.kind, status: job.status, progress: job.progress, error: job.error },
+    });
   }
 
   private async drain(): Promise<void> {

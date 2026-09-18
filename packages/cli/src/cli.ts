@@ -151,9 +151,11 @@ program
   .description("start the local HTTP API and dashboard: set up targets and people, start runs and watch them")
   .option("--port <n>", "port to listen on", (v: string) => Number.parseInt(v, 10))
   .option("--host <host>", "host to bind; defaults to 127.0.0.1 and should stay there")
+  .option("--project <id>", "which project a populace.yaml is imported into and which one a fresh store is created with")
+  .option("--resume", "pick back up the executions a previous populace process left paused when it stopped")
   .option("--read-only", "serve the dashboard without the controls that start runs or change config")
   .option("--force", "take over the store lock from a populace process that is no longer running")
-  .action(async (opts: { port?: number; host?: string; readOnly?: boolean; force?: boolean }) => {
+  .action(async (opts: { port?: number; host?: string; project?: string; resume?: boolean; readOnly?: boolean; force?: boolean }) => {
     try {
       const server = await serve({ ...globals(), ...opts });
       const stop = (): void => void server.close().then(() => process.exit(0));

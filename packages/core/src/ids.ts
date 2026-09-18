@@ -31,6 +31,10 @@ export function newJobId(): string {
 }
 
 /** Authored rows get surrogate ids so a slug can be renamed without the row moving. */
+export function newProjectId(): string {
+  return `prj_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
 export function newTargetId(): string {
   return `tgt_${Date.now().toString(36)}_${randomSuffix(6)}`;
 }

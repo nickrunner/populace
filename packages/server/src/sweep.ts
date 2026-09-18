@@ -65,6 +65,12 @@ export async function sweepRun(store: Store, config: PopulaceConfig, runId: stri
     }
   }
 
+  if (!options.dryRun && failures === 0) {
+    // The accounts this run made are gone, so the row stops claiming they are still on the target.
+    const run = await store.getRun(runId);
+    if (run && run.sweptAt === null) await store.saveRun({ ...run, sweptAt: new Date().toISOString() });
+  }
+
   if (!options.dryRun && !options.keepData && failures === 0) {
     const f = await store.deleteFindingsByRun(runId);
     const w = await store.deleteWakesByRun(runId);

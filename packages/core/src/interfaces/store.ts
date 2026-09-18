@@ -104,6 +104,13 @@ export interface Store {
   listWakes(query?: WakeQuery): Promise<Wake[]>;
   appendTraceEvent(event: TraceEvent): Promise<void>;
   getTrace(wakeId: string): Promise<TraceEvent[]>;
+  /**
+   * Several wakes' traces in ONE call, ordered by `(wakeId, seq)`. A screen that measures tool
+   * coverage over a whole execution reads every visit's trace; doing that one wake at a time made
+   * the number of round trips grow with the headcount, which is the shape the project read model
+   * is not allowed to have (SPEC §6.2, "query-count discipline").
+   */
+  getTraces(wakeIds: string[]): Promise<TraceEvent[]>;
   deleteWakesByRun(runId: string): Promise<number>;
 
   // findings
@@ -136,7 +143,12 @@ export interface Store {
    */
   saveRun(run: Run): Promise<void>;
   getRun(id: string): Promise<Run | undefined>;
-  listRuns(filter?: { projectId?: string; simulationId?: string; status?: Run["status"] }): Promise<Run[]>;
+  /**
+   * `parentRunId` is the ADR-0020 lineage lookup and is backed by the `runs_parent` index. The
+   * read model used to find a run's children by loading every OTHER run's agents and looking for
+   * one that pointed back; that scan was O(runs x agents) on a screen that renders on every poll.
+   */
+  listRuns(filter?: { projectId?: string; simulationId?: string; status?: Run["status"]; parentRunId?: string }): Promise<Run[]>;
   deleteRun(id: string): Promise<void>;
 
   // config snapshots (immutable; written once when a run starts)

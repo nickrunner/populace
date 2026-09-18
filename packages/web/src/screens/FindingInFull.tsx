@@ -67,18 +67,18 @@ function Replay({ cluster }: { cluster: Cluster }) {
 export function FindingInFull({ runId }: { runId: string }) {
   const { clusterId } = useParams();
   const digest = useQuery({ queryKey: ["digest", runId], queryFn: () => api.digest(runId) });
-  const agents = useQuery({ queryKey: ["agents", runId], queryFn: () => api.agents(runId) });
+  const participants = useQuery({ queryKey: ["participants", runId], queryFn: () => api.participants(runId) });
 
   if (digest.isError) return <Failed error={digest.error} />;
   const digestData = digest.data;
-  const agentData = agents.data;
-  if (!digestData || !agentData) return <Loading what="this finding" />;
+  const participantData = participants.data;
+  if (!digestData || !participantData) return <Loading what="this finding" />;
 
   const cluster = digestData.clusters.find((c) => c.id === clusterId);
   if (!cluster) return <Failed error={new Error(`no finding ${clusterId ?? ""} in this run`)} />;
 
-  const nameOf = (personaId: string): string => agentData.items.find((a) => a.personaId === personaId)?.personaName ?? personaId;
-  const people = agentData.items.length;
+  const nameOf = (personaId: string): string => participantData.items.find((a) => a.personaSlug === personaId)?.personaName ?? personaId;
+  const people = participantData.items.length;
   const representative = cluster.representative;
   const others = cluster.findings.filter((f) => f.id !== representative.id);
 

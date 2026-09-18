@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import type { JsonValue } from "@populace/core/isomorphic";
-import { api, openEventStream, type AgentLive, type LiveEvent } from "../api.js";
+import { api, openEventStream, type ParticipantLive, type LiveEvent } from "../api.js";
 import { Avatar, Button, Card, Chip, Empty, Failed, Loading, Mono, Problem, Section } from "../components/ui.jsx";
 import { clock, usd4 } from "../format.js";
 
@@ -79,7 +79,7 @@ export function LiveRun({ runId }: { runId: string }) {
 
   const run = live.data;
   const going = run.status === "running" || run.status === "pending";
-  const here = run.agents.filter((a) => a.status === "here");
+  const here = run.participants.filter((a) => a.status === "here");
 
   return (
     <div>
@@ -125,14 +125,14 @@ export function LiveRun({ runId }: { runId: string }) {
       ) : null}
 
       <Section title="Where everyone is" sub={going ? `${here.length} mid-visit` : "as they finished"}>
-        {run.agents.length === 0 ? (
+        {run.participants.length === 0 ? (
           <Card className="p-4">
             <Empty>Nobody has arrived yet.</Empty>
           </Card>
         ) : (
           <div className="grid grid-cols-2 gap-3">
-            {run.agents.map((agent) => (
-              <AgentCard key={agent.agentId} agent={agent} runId={runId} going={going} />
+            {run.participants.map((agent) => (
+              <AgentCard key={agent.participantId} agent={agent} runId={runId} going={going} />
             ))}
           </div>
         )}
@@ -158,7 +158,7 @@ export function LiveRun({ runId }: { runId: string }) {
   );
 }
 
-function AgentCard({ agent, runId, going }: { agent: AgentLive; runId: string; going: boolean }) {
+function AgentCard({ agent, runId, going }: { agent: ParticipantLive; runId: string; going: boolean }) {
   const body = (
     <Card className={`p-3.5 h-full ${agent.status === "here" ? "border-accent/40" : ""}`}>
       <div className="flex items-center gap-2.5 mb-2">
@@ -166,8 +166,8 @@ function AgentCard({ agent, runId, going }: { agent: AgentLive; runId: string; g
         <div className="flex-1 min-w-0">
           <div className="t-body text-ink truncate">{agent.personaName}</div>
           <div className="t-meta text-ink-muted">
-            visit {agent.wakeNumber}
-            {agent.maxWakes === null ? "" : ` of ${agent.maxWakes}`}
+            visit {agent.visitNumber}
+            {agent.maxVisits === null ? "" : ` of ${agent.maxVisits}`}
             {agent.status === "here" ? ` · turn ${agent.turn}` : ""}
           </div>
         </div>
@@ -182,14 +182,14 @@ function AgentCard({ agent, runId, going }: { agent: AgentLive; runId: string; g
               <Mono className="text-[11.5px] text-evidence">{agent.lastCall}</Mono>
             )
           ) : going ? (
-            countdown(agent.nextWakeAt)
+            countdown(agent.nextVisitAt)
           ) : (
             "not coming back"
           )}
         </span>
         <span className="tabular-nums">
           {usd4(agent.costUsd)}
-          {agent.findingCount > 0 ? ` · ${agent.findingCount} filed` : ""}
+          {agent.findings > 0 ? ` · ${agent.findings} filed` : ""}
         </span>
       </div>
     </Card>

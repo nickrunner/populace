@@ -163,7 +163,12 @@ export class LocalDaemon {
         } catch (err) {
           this.deps.log?.(`[daemon] tick failed: ${err instanceof Error ? err.message : String(err)}`);
         }
+        // `stop()` resolves `run()` immediately, so a tick that was already in flight when it was
+        // called outlives the shutdown it was supposed to end. Checking again after every await is
+        // what makes "the daemon has stopped" mean "it has stopped touching the store".
+        if (!this.running) return;
         const active = await this.store.listAgents({ runId: this.options.runId, status: "active" });
+        if (!this.running) return;
         const limitReached = this.options.stopAfterTotalWakes !== undefined && this.totalWakes >= this.options.stopAfterTotalWakes;
         if ((active.length === 0 && this.inFlight === 0) || limitReached) {
           this.running = false;
@@ -174,6 +179,15 @@ export class LocalDaemon {
       };
       void loop();
     });
+  }
+
+  /**
+   * Replaces the config this run executes, for "apply changes to the running execution"
+   * (SPEC §4.2). A run executes a frozen snapshot, so an edit is invisible to it until something
+   * says otherwise; this is that something, and the caller re-snapshots and reconciles around it.
+   */
+  applyConfig(config: PopulaceConfig): void {
+    this.options.config = config;
   }
 
   stop(): void {

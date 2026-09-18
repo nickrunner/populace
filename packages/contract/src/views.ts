@@ -1,11 +1,8 @@
 import {
-  AgentStatusSchema,
-  ContinuedFromSchema,
   DigestSchema,
   FindingKindSchema,
   FindingSchema,
   MemorySchema,
-  RetiredReasonSchema,
   SeveritySchema,
   TraceEventSchema,
   VerdictSchema,
@@ -64,37 +61,12 @@ export const RunDetailSchema = RunSummarySchema.extend({
 });
 export type RunDetail = z.infer<typeof RunDetailSchema>;
 
-export const AgentSummarySchema = z.object({
-  id: z.string(),
-  runId: z.string(),
-  personaId: z.string(),
-  personaName: z.string(),
-  role: z.string(),
-  status: AgentStatusSchema,
-  retiredReason: RetiredReasonSchema.nullable(),
-  continuedFrom: ContinuedFromSchema.nullable(),
-  identityId: z.string().nullable(),
-  wakeCount: z.number().int().nonnegative(),
-  maxWakes: z.number().int().positive().nullable(),
-  nextWakeAt: z.iso.datetime().nullable(),
-  lastWakeAt: z.iso.datetime().nullable(),
-  findingCount: z.number().int().nonnegative(),
-  costUsd: z.number().nonnegative(),
-  /** What the agent said on its last `done` or `give_up` about coming back. */
-  wouldReturn: z.boolean().nullable(),
-  backstory: z.string(),
-  patience: z.number().int(),
-  budgetUsd: z.number().nonnegative(),
-  model: z.string(),
-  effort: z.string(),
-  /**
-   * The account this agent holds on the target, by its readable handle only. The bearer token
-   * the credential also carries is never on the wire (`DATA-MODEL.md` §4).
-   */
-  account: z.object({ email: z.string().nullable(), userId: z.string().nullable() }).nullable(),
-});
-export type AgentSummary = z.infer<typeof AgentSummarySchema>;
-
+/**
+ * `AgentSummarySchema` used to live here. It is gone: the wire speaks the user's words now, so
+ * `ParticipantSummaryView` and `ParticipantDetailView` in `project.ts` are what a client reads
+ * (Decision A). The `Agent` row, the `agents` table and every store method keep their names —
+ * this was a translation at the boundary, not a rename underneath it.
+ */
 export { MemorySchema };
 
 /**
@@ -154,6 +126,8 @@ export const SpendViewSchema = z.object({
   spentTodayUsd: z.number().nonnegative(),
   byAgent: z.array(SpendBucketSchema),
   byPersona: z.array(SpendBucketSchema),
+  /** By COHORT, which is what a bill is read by: two cohorts may share one persona. */
+  byCohort: z.array(SpendBucketSchema),
   byDay: z.array(SpendBucketSchema),
 });
 export type SpendView = z.infer<typeof SpendViewSchema>;

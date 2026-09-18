@@ -187,7 +187,12 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
 
   const findings: Finding[] = [];
   let memory: Memory = (await store.getMemory(runId, agent.id)) ?? emptyMemory(runId, agent.id, startedAt);
-  let identity: Identity | null = agent.identityId ? ((await store.getIdentity(agent.identityId)) ?? null) : null;
+  // An identity a sweep has already torn down is an account that no longer exists on the target,
+  // so it counts as ABSENT and the agent provisions a new one. A carry-forward from a swept
+  // ephemeral execution copies the parent's `identityId` onto its agents, and without this the
+  // child run spends its whole budget authenticating as deleted accounts and never signs up.
+  const stored = agent.identityId ? ((await store.getIdentity(agent.identityId)) ?? null) : null;
+  let identity: Identity | null = stored?.tornDownAt === null ? stored : null;
 
   const trace = new TraceWriter(store, wakeId, now);
   await store.saveWake(wake);

@@ -2,6 +2,7 @@ import {
   FindingKindSchema,
   SeveritySchema,
   WakeStatusSchema,
+  tagForRun,
   type Agent,
   type Finding,
   type FindingKind,
@@ -14,7 +15,7 @@ import {
   type Wake,
   type WakeStatus,
 } from "@populace/core";
-import type { AgentSummary, RunDetail, RunStatus, RunSummary, RunTotals, SpendBucket, SpendView, ToolUsage, ToolUsageView, WakeSummary } from "@populace/contract";
+import type { ParticipantSummaryView, RunDetail, RunStatus, RunSummary, RunTotals, SpendBucket, SpendView, ToolUsage, ToolUsageView, WakeSummary } from "@populace/contract";
 import type { TargetView } from "@populace/contract";
 
 /**
@@ -101,10 +102,18 @@ export class ReadModel {
     };
   }
 
-  /** Newest run first. Run ids embed a base36 timestamp, so a reverse sort is chronological. */
-  async listRuns(): Promise<RunSummary[]> {
-    const ids = (await this.store.listRunIds()).sort().reverse();
-    const stored = new Map((await this.store.listRuns()).map((r) => [r.id, r]));
+  /**
+   * Newest run first. Run ids embed a base36 timestamp, so a reverse sort is chronological.
+   *
+   * A filter is honoured IN SQL — `runs` carries `project_id` and `simulation_id`, and the store
+   * has accepted that filter since M2 while this method ignored it and loaded every run in the
+   * database to build a list of one project's. A run with no row at all predates M2 and belongs
+   * to no project, so a filtered list is exactly the filtered rows.
+   */
+  async listRuns(filter: { projectId?: string; simulationId?: string } = {}): Promise<RunSummary[]> {
+    const scoped = filter.projectId !== undefined || filter.simulationId !== undefined;
+    const stored = new Map((await this.store.listRuns(filter)).map((r) => [r.id, r]));
+    const ids = scoped ? [...stored.keys()].sort().reverse() : [...new Set([...(await this.store.listRunIds()), ...stored.keys()])].sort().reverse();
     const out: RunSummary[] = [];
     for (const id of ids) {
       const { agents, wakes, findings } = await this.load(id);
@@ -120,15 +129,9 @@ export class ReadModel {
     // looking at it, so the row alone is enough to exist.
     if (!stored && agents.length === 0 && wakes.length === 0 && findings.length === 0) return undefined;
     const carried = agents.filter((a) => a.continuedFrom !== null);
-    // A child run is one whose agents point back here; there is no index for that yet, so the
-    // lineage is resolved by scanning the other runs' agents. Cheap at local scale, and gone
-    // the moment runs have a parent column of their own.
-    const childRunIds = new Set((await this.store.listRuns()).filter((r) => r.parentRunId === runId).map((r) => r.id));
-    for (const id of await this.store.listRunIds()) {
-      if (id === runId || childRunIds.has(id)) continue;
-      const others = await this.store.listAgents({ runId: id });
-      if (others.some((a) => a.continuedFrom?.runId === runId)) childRunIds.add(id);
-    }
+    // One index lookup on `runs_parent`. This used to load every other run's agents looking for
+    // one that pointed back here, on a screen the browser re-polls while a run is going.
+    const childRunIds = new Set((await this.store.listRuns({ parentRunId: runId })).map((r) => r.id));
     const findingsByKind = countBy(FindingKindSchema.options, findings, (f) => f.kind);
     const findingsBySeverity = countBy(SeveritySchema.options, findings, (f) => f.severity);
     const wakesByStatus = countBy<WakeStatus, Wake>(WakeStatusSchema.options, wakes, (w) => w.status);
@@ -150,44 +153,51 @@ export class ReadModel {
     };
   }
 
-  async listAgents(runId: string): Promise<AgentSummary[]> {
+  /**
+   * The participants of one execution, translated for the wire (Decision A): `wakeCount` is
+   * `visits`, `maxWakes` is `maxVisits`, and the word "agent" does not appear in what comes back.
+   * The rows underneath are `Agent`s and every store method still says so.
+   *
+   * Identities are fetched for the whole run in one call rather than one per participant: they
+   * all carry the run's tag, and a query per head is the shape this stage exists to remove.
+   */
+  async listParticipants(runId: string): Promise<ParticipantSummaryView[]> {
     const { agents, wakes, findings } = await this.load(runId);
-    const identities = new Map<string, Identity>();
-    for (const agent of agents) {
-      if (agent.identityId === null) continue;
-      const identity = await this.store.getIdentity(agent.identityId);
-      if (identity) identities.set(agent.id, identity);
+    const identities = await this.identitiesOf(runId, agents);
+    const cohortNames = await this.cohortNames(runId, agents);
+    return agents.map((agent) => participantOf(agent, wakes, findings, identities.get(agent.id), cohortNames.get(agent.cohortSlug) ?? agent.cohortSlug));
+  }
+
+  /**
+   * Each participant's account, by agent id.
+   *
+   * The tag is the fast path: every identity a run created carries it, so one call covers a whole
+   * execution. It is not the only path, because a CARRY-FORWARD creates no identities — it copies
+   * the parent's `identityId` onto the child's agents, and those rows carry the PARENT's tag. The
+   * fallback reads exactly the ids the tag missed, which is nothing at all for an ordinary run and
+   * one pass for a continuation, never a query per head.
+   */
+  async identitiesOf(runId: string, agents: Agent[]): Promise<Map<string, Identity>> {
+    const byAgent = new Map((await this.store.listIdentitiesByTag(tagForRun(runId), true)).map((identity) => [identity.agentId, identity]));
+    const missing = agents.filter((agent) => agent.identityId !== null && !byAgent.has(agent.id));
+    for (const agent of missing) {
+      const identity = agent.identityId === null ? undefined : await this.store.getIdentity(agent.identityId);
+      if (identity) byAgent.set(agent.id, identity);
     }
-    return agents.map((agent) => {
-      const identity = identities.get(agent.id);
-      const own = wakes.filter((w) => w.agentId === agent.id);
-      const last = own.at(-1);
-      return {
-        id: agent.id,
-        runId: agent.runId,
-        personaId: agent.persona.id,
-        personaName: agent.persona.name,
-        role: agent.persona.role,
-        status: agent.status,
-        retiredReason: agent.retiredReason,
-        continuedFrom: agent.continuedFrom,
-        identityId: agent.identityId,
-        wakeCount: agent.wakeCount,
-        maxWakes: agent.maxWakes,
-        nextWakeAt: agent.nextWakeAt,
-        lastWakeAt: agent.lastWakeAt,
-        findingCount: findings.filter((f) => f.agentId === agent.id).length,
-        costUsd: round(own.reduce((sum, w) => sum + w.costUsd, 0)),
-        wouldReturn: last?.wouldReturn ?? null,
-        backstory: agent.persona.backstory,
-        patience: agent.persona.patience,
-        budgetUsd: agent.persona.budgetUsd,
-        model: last?.model ?? agent.persona.model.model ?? "",
-        effort: last?.effort ?? agent.persona.model.effort ?? "",
-        // The readable handle only. The credential's bearer token never leaves the store.
-        account: identity ? { email: identity.credential.email ?? null, userId: identity.credential.userId ?? null } : null,
-      };
-    });
+    return byAgent;
+  }
+
+  /**
+   * A cohort's display name, from the config this run froze. The agent row carries the slug (it is
+   * half of an agent id and therefore immutable); the readable name lives in the snapshot, which
+   * is also what makes a three-month-old execution render the name it actually ran under.
+   */
+  private async cohortNames(runId: string, agents: Agent[]): Promise<Map<string, string>> {
+    const out = new Map(agents.map((a) => [a.cohortSlug, a.cohortSlug]));
+    const run = await this.store.getRun(runId);
+    const snapshot = run?.configSnapshotId ? await this.store.getConfigSnapshot(run.configSnapshotId) : undefined;
+    for (const member of snapshot?.config.population.members ?? []) out.set(member.cohort, member.cohortName);
+    return out;
   }
 
   memory(runId: string, agentId: string): Promise<Memory | undefined> {
@@ -207,17 +217,19 @@ export class ReadModel {
 
     for (const tool of target.tools ?? []) byName.set(tool.name, seed(tool.name, true, tool.destructive));
 
-    for (const wake of wakes) {
-      for (const event of await this.store.getTrace(wake.id)) {
-        if (event.type !== "tool.call") continue;
-        const current = seed(event.tool, byName.has(event.tool), false);
-        current.calls += 1;
-        if (event.result.isError) current.errors += 1;
-        if (!current.agents.includes(wake.agentId)) current.agents.push(wake.agentId);
-        current.firstUsedAt = current.firstUsedAt === null || event.at < current.firstUsedAt ? event.at : current.firstUsedAt;
-        current.lastUsedAt = current.lastUsedAt === null || event.at > current.lastUsedAt ? event.at : current.lastUsedAt;
-        byName.set(event.tool, current);
-      }
+    // One call for every visit's trace rather than one call per visit: the round trips must not
+    // grow with the headcount (SPEC §6.2).
+    const agentOf = new Map(wakes.map((w) => [w.id, w.agentId]));
+    for (const event of await this.store.getTraces(wakes.map((w) => w.id))) {
+      if (event.type !== "tool.call") continue;
+      const current = seed(event.tool, byName.has(event.tool), false);
+      current.calls += 1;
+      if (event.result.isError) current.errors += 1;
+      const who = agentOf.get(event.wakeId) ?? "";
+      if (!current.agents.includes(who)) current.agents.push(who);
+      current.firstUsedAt = current.firstUsedAt === null || event.at < current.firstUsedAt ? event.at : current.firstUsedAt;
+      current.lastUsedAt = current.lastUsedAt === null || event.at > current.lastUsedAt ? event.at : current.lastUsedAt;
+      byName.set(event.tool, current);
     }
     const items = [...byName.values()].sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
     return {
@@ -241,6 +253,9 @@ export class ReadModel {
   async spend(runId: string): Promise<SpendView> {
     const [wakes, agents] = await Promise.all([this.store.listWakes({ runIds: [runId] }), this.store.listAgents({ runId })]);
     const names = new Map(agents.map((a) => [a.persona.id, a.persona.name]));
+    // Cohort, not persona, is what a bill is read by now: two cohorts may share one persona, so
+    // a per-persona row cannot answer "what did the sceptics cost me".
+    const cohortOf = new Map(agents.map((a) => [a.id, a.cohortSlug]));
     // Spend against the daily ceiling is per population and trailing 24h, exactly as the
     // guardrail that enforces it measures it (ADR-0009) - not "this run so far".
     const populationId = agents[0]?.populationId ?? wakes[0]?.populationId;
@@ -251,6 +266,7 @@ export class ReadModel {
       spentTodayUsd: round(spentToday),
       byAgent: bucket(wakes, (w) => w.agentId, (w) => w.agentId),
       byPersona: bucket(wakes, (w) => w.personaId, (w) => names.get(w.personaId) ?? w.personaId),
+      byCohort: bucket(wakes, (w) => cohortOf.get(w.agentId) ?? "", (w) => cohortOf.get(w.agentId) ?? ""),
       byDay: bucket(wakes, (w) => w.startedAt.slice(0, 10), (w) => w.startedAt.slice(0, 10)),
     };
   }
@@ -292,4 +308,41 @@ function labelFor(runId: string, agents: Agent[], startedAt: string | null): str
   const when = startedAt ? startedAt.slice(0, 16).replace("T", " ") : null;
   if (population && when) return `${population} · ${when}`;
   return population ?? runId;
+}
+
+/**
+ * One `Agent` row as the wire describes it (Decision A). The translation is here, in one place,
+ * so a participant view built by the run read model and one built by the project read model
+ * cannot drift into meaning different things.
+ */
+export function participantOf(agent: Agent, wakes: Wake[], findings: Finding[], identity: Identity | undefined, cohortName: string): ParticipantSummaryView {
+  const own = wakes.filter((w) => w.agentId === agent.id);
+  const last = own.at(-1);
+  const mine = findings.filter((f) => f.agentId === agent.id);
+  return {
+    id: agent.id,
+    runId: agent.runId,
+    personId: agent.personId,
+    name: agent.name,
+    cohortSlug: agent.cohortSlug,
+    cohortName,
+    // The persona's IMMUTABLE slug, inlined as its id when the config was resolved. A display
+    // name rename must never move it: continuations match on it.
+    personaSlug: agent.persona.id,
+    personaName: agent.persona.name,
+    role: agent.persona.role,
+    status: agent.status,
+    retiredReason: agent.retiredReason,
+    continuedFrom: agent.continuedFrom,
+    visits: agent.wakeCount,
+    maxVisits: agent.maxWakes,
+    findings: mine.length,
+    confirmed: mine.filter((f) => f.verification?.verdict === "confirmed").length,
+    costUsd: round(own.reduce((sum, w) => sum + w.costUsd, 0)),
+    wouldReturn: last?.wouldReturn ?? null,
+    lastVisitAt: agent.lastWakeAt,
+    nextVisitAt: agent.nextWakeAt,
+    // The readable handle only. The credential's bearer token never leaves the store.
+    account: identity ? { email: identity.credential.email ?? null, userId: identity.credential.userId ?? null } : null,
+  };
 }

@@ -34,6 +34,12 @@ export const TargetResetSchema = z.discriminatedUnion("kind", [
     kind: z.literal("http"),
     url: z.url(),
     method: z.enum(["POST", "DELETE"]).default("POST"),
+    /**
+     * Sent with the request. A reset route is an admin route, and an admin route wants a token:
+     * the reference target's own is behind `x-admin-token`, so a hook that could not send a header
+     * could not drive the one target we ship.
+     */
+    headers: z.record(z.string(), z.string()).default({}),
   }),
 ]);
 export type TargetReset = z.infer<typeof TargetResetSchema>;

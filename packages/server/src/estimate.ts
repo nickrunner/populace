@@ -52,7 +52,10 @@ export function plannedVisits(
   let visits = 0;
   // Bounded exactly when every cohort has a visit cap — which for an ephemeral simulation is
   // always, because `visitsPerPerson` resolves onto `population.maxWakes`.
-  let bounded = true;
+  // An EPHEMERAL simulation is bounded by definition: `visitsPerPerson` resolves onto
+  // `population.maxWakes`, so every cohort carries a cap and the run ends when the last
+  // participant hits it. A longitudinal one is bounded only if every cohort caps itself.
+  let bounded = config.simulation.mode === "ephemeral";
   for (const member of config.population.members) {
     const count = member.count;
     const cap = member.maxWakes ?? config.population.maxWakes;
@@ -93,7 +96,7 @@ export async function estimateRun(store: Store, input: EstimateInput): Promise<R
     lowUsd: Number(Math.max(0, central * (1 - spread)).toFixed(2)),
     expectedUsd: Number(central.toFixed(2)),
     highUsd: Number((central * (1 + spread)).toFixed(2)),
-    perPersona: plan.perCohort.map((p) => ({ cohort: p.cohort, personaId: p.personaId, agents: p.agents, visits: p.visits, capped: p.capped, expectedUsd: Number((p.visits * perWake).toFixed(2)) })),
+    perCohort: plan.perCohort.map((p) => ({ cohort: p.cohort, personaId: p.personaId, agents: p.agents, visits: p.visits, capped: p.capped, expectedUsd: Number((p.visits * perWake).toFixed(2)) })),
     model: model.model,
     effort: model.effort,
     /** The ceilings that will actually stop it, whatever this estimate says (ADR-0009). */

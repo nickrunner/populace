@@ -435,6 +435,22 @@ export class SqliteStore implements Store {
     return Promise.resolve(rows(result).map((r) => parseRow(TraceEventSchema, r)));
   }
 
+  /**
+   * Chunked because SQLite caps the number of bound parameters in one statement, not because the
+   * caller should think about it: what matters to a read model is that this is a fixed handful of
+   * round trips however many participants an execution had.
+   */
+  getTraces(wakeIds: string[]): Promise<TraceEvent[]> {
+    const out: TraceEvent[] = [];
+    for (let i = 0; i < wakeIds.length; i += 400) {
+      const chunk = wakeIds.slice(i, i + 400);
+      if (chunk.length === 0) continue;
+      const sql = `SELECT json FROM trace_events WHERE wake_id IN (${chunk.map(() => "?").join(",")}) ORDER BY wake_id, seq`;
+      for (const row of rows(this.db.prepare(sql).all(...chunk))) out.push(parseRow(TraceEventSchema, row));
+    }
+    return Promise.resolve(out);
+  }
+
   deleteWakesByRun(runId: string): Promise<number> {
     this.db.prepare("DELETE FROM trace_events WHERE wake_id IN (SELECT id FROM wakes WHERE run_id = ?)").run(runId);
     return Promise.resolve(Number(this.db.prepare("DELETE FROM wakes WHERE run_id = ?").run(runId).changes));
@@ -565,7 +581,7 @@ export class SqliteStore implements Store {
     return Promise.resolve(row ? parseRow(RunSchema, rows([row])[0] as JsonRow) : undefined);
   }
 
-  listRuns(filter: { projectId?: string; simulationId?: string; status?: Run["status"] } = {}): Promise<Run[]> {
+  listRuns(filter: { projectId?: string; simulationId?: string; status?: Run["status"]; parentRunId?: string } = {}): Promise<Run[]> {
     const where: string[] = [];
     const params: string[] = [];
     if (filter.projectId) {
@@ -579,6 +595,12 @@ export class SqliteStore implements Store {
     if (filter.status) {
       where.push("status = ?");
       params.push(filter.status);
+    }
+    // Backed by `runs_parent`: a run's children are an index lookup, not a scan over every
+    // other run's agents.
+    if (filter.parentRunId) {
+      where.push("parent_run_id = ?");
+      params.push(filter.parentRunId);
     }
     const sql = `SELECT json FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC`;
     return Promise.resolve(rows(this.db.prepare(sql).all(...params)).map((r) => parseRow(RunSchema, r)));

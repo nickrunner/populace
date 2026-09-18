@@ -17,14 +17,16 @@ export function NewRun() {
   // somebody to send — not only once everything is ready. Seeing what a run would cost is most of
   // the reason to open this screen, and hiding it behind an unrelated blocker (a missing API key,
   // an engaged stop) makes the screen useless exactly when it is being read.
-  const canEstimate = setup.data !== undefined && setup.data.targetId !== null && setup.data.agentCount > 0;
-  const estimate = useQuery({ queryKey: ["estimate"], queryFn: () => api.estimate(), enabled: canEstimate, retry: false });
+  // A run belongs to a simulation now: "start a run" means "run this simulation once more".
+  const simulationId = setup.data?.simulationIds[0]?.id ?? "";
+  const canEstimate = setup.data !== undefined && setup.data.targetId !== null && setup.data.peopleCount > 0 && simulationId !== "";
+  const estimate = useQuery({ queryKey: ["estimate", simulationId], queryFn: () => api.estimate(simulationId), enabled: canEstimate, retry: false });
   const runs = useQuery({ queryKey: ["runs"], queryFn: () => api.runs() });
   const [label, setLabel] = useState("");
   const [carryOn, setCarryOn] = useState("");
 
   const start = useMutation({
-    mutationFn: () => (carryOn === "" ? api.startRun({ ...(label ? { label } : {}) }) : api.continueRun(carryOn, { ...(label ? { label } : {}) })),
+    mutationFn: () => (carryOn === "" ? api.startRun(simulationId, { ...(label ? { label } : {}) }) : api.carryForward(carryOn, { ...(label ? { label } : {}) })),
     onSuccess: (started) => navigate(`/runs/${encodeURIComponent(started.runId)}/live`),
   });
 
@@ -39,7 +41,7 @@ export function NewRun() {
       <header className="mb-7">
         <h1 className="t-title">Start a run</h1>
         <p className="t-body text-ink-soft mt-2 max-w-[68ch]">
-          {setup.data.agentCount} {setup.data.agentCount === 1 ? "person goes" : "people go"} to the target on the cadence you set, and file what they find as they go. Nothing is spent until you press the button.
+          {setup.data.peopleCount} {setup.data.peopleCount === 1 ? "person goes" : "people go"} to the target on the cadence you set, and file what they find as they go. Nothing is spent until you press the button.
         </p>
       </header>
 

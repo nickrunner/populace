@@ -19,9 +19,13 @@ beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "populace-e2e-"));
   const yaml = configTemplate(target.url)
     .replace("cadence: { every: 2m, jitter: 30s }", "cadence: { every: 300ms, jitter: 0s }")
-    .replace("maxWakes: 4", "maxWakes: 3")
+    .replace("visitsPerPerson: 4", "visitsPerPerson: 3")
     .replace("tick: 5s", "tick: 100ms")
     .replace("judge: model", "judge: heuristic");
+  // The patches above are string replacements against the template, so a template edit turns them
+  // into silent no-ops and this test HANGS on a two-minute cadence rather than failing. Assert
+  // that each one landed, so a template change is a red test instead of a wedged one.
+  for (const patched of ["every: 300ms", "visitsPerPerson: 3", "tick: 100ms", "judge: heuristic"]) expect(yaml).toContain(patched);
   writeFileSync(join(dir, "populace.yaml"), yaml);
 });
 afterAll(async () => {

@@ -1,5 +1,4 @@
 import {
-  AgentSummarySchema,
   EventSchema,
   JobViewSchema,
   PersonaViewSchema,
@@ -8,6 +7,12 @@ import {
   RunLiveSchema,
   SettingsViewSchema,
   SetupStatusSchema,
+  ParticipantDetailViewSchema,
+  ParticipantSummaryViewSchema,
+  ProjectOverviewViewSchema,
+  ProjectSummaryViewSchema,
+  RunCohortViewSchema,
+  SimulationSummaryViewSchema,
   StarterPersonaViewSchema,
   StartedRunSchema,
   StoredTargetViewSchema,
@@ -16,7 +21,7 @@ import {
   type PersonaInput,
   type PopulationInput,
   type SettingsInput,
-  type StartRunBody,
+  type StartExecutionBody,
   type TargetInput,
   DigestSchema,
   ErrorBodySchema,
@@ -26,7 +31,6 @@ import {
   RunDetailSchema,
   RunSummarySchema,
   SpendViewSchema,
-  TargetViewSchema,
   ToolUsageViewSchema,
   TraceEventSchema,
   WakeDetailSchema,
@@ -34,6 +38,7 @@ import {
   pageOf,
   routes,
 } from "@populace/contract";
+import { DEFAULT_PROJECT_ID } from "@populace/core/isomorphic";
 import { z } from "zod";
 
 /**
@@ -87,55 +92,88 @@ const targets = pageOf(StoredTargetViewSchema);
 const personas = pageOf(PersonaViewSchema);
 const starters = pageOf(StarterPersonaViewSchema);
 const nothing = z.null();
-const agents = pageOf(AgentSummarySchema);
+const participants = pageOf(ParticipantSummaryViewSchema);
+const projectList = pageOf(ProjectSummaryViewSchema);
+const simulations = pageOf(SimulationSummaryViewSchema);
+const cohorts = pageOf(RunCohortViewSchema);
+const populations = pageOf(PopulationViewSchema);
 const wakes = pageOf(WakeSummarySchema);
 const findings = pageOf(FindingSchema);
 const trace = pageOf(TraceEventSchema);
 
+/**
+ * Which project the screens are looking at. Authoring is project-scoped from M3 on, so every call
+ * below names one; the switcher that sets it is part of the shell rewrite, and until then this is
+ * the project a fresh install opens with.
+ */
+let project = DEFAULT_PROJECT_ID;
+export function currentProject(): string {
+  return project;
+}
+export function setProject(id: string): void {
+  project = id;
+}
+
 export const api = {
   health: () => get(routes.health, HealthViewSchema),
-  target: () => get(routes.target, TargetViewSchema),
-  runs: () => get(routes.runs, runs),
+  projects: () => get(routes.projects, projectList),
+  project: () => get(routes.project(project), ProjectOverviewViewSchema),
+  simulations: () => get(routes.simulations(project), simulations),
+  runs: () => get(`${routes.runs}?project=${encodeURIComponent(project)}`, runs),
   run: (id: string) => get(routes.run(id), RunDetailSchema),
-  agents: (id: string) => get(routes.runAgents(id), agents),
+  participants: (id: string) => get(routes.runParticipants(id), participants),
+  participant: (runId: string, pid: string) => get(routes.participant(runId, pid), ParticipantDetailViewSchema),
+  runCohorts: (id: string) => get(routes.runCohorts(id), cohorts),
   wakes: (id: string) => get(routes.runWakes(id), wakes),
   findings: (id: string, query = "") => get(`${routes.runFindings(id)}${query}`, findings),
   digest: (id: string) => get(routes.runDigest(id), DigestSchema),
   spend: (id: string) => get(routes.runSpend(id), SpendViewSchema),
   tools: (id: string) => get(routes.runTools(id), ToolUsageViewSchema),
-  memory: (runId: string, agentId: string) => get(routes.agentMemory(runId, agentId), MemorySchema),
+  memory: (runId: string, participantId: string) => get(routes.participantMemory(runId, participantId), MemorySchema),
   wake: (id: string) => get(routes.wake(id), WakeDetailSchema),
   /** The whole trace in one request: a wake is bounded by the turn cap, so it always fits. */
   trace: (id: string) => get(`${routes.wakeTrace(id)}?limit=500`, trace),
   finding: (id: string) => get(routes.finding(id), FindingSchema),
 
   // ---- M2: setting it up -------------------------------------------------
-  setup: () => get(routes.setup, SetupStatusSchema),
-  targets: () => get(routes.targets, targets),
-  saveTarget: (id: string | null, body: TargetInput) => (id === null ? send("POST", routes.targets, body, StoredTargetViewSchema) : send("PUT", routes.target_(id), body, StoredTargetViewSchema)),
+  setup: () => get(routes.projectSetup(project), SetupStatusSchema),
+  targets: () => get(routes.targets(project), targets),
+  saveTarget: (id: string | null, body: TargetInput) =>
+    id === null ? send("POST", routes.targets(project), body, StoredTargetViewSchema) : send("PUT", routes.target_(project, id), body, StoredTargetViewSchema),
   /** Opens a connection to the target. POST because that is a side effect on someone else's server. */
-  checkTarget: (id: string) => send("POST", routes.targetCheck(id), undefined, TargetCheckSchema),
-  checkDraftTarget: (body: { mcp: TargetInput["mcp"] }) => send("POST", `${routes.targets}/check`, body, TargetCheckSchema),
-  promises: (id: string) => get(routes.targetPromises(id), TargetPromisesSchema),
+  checkTarget: (id: string) => send("POST", routes.targetCheck(project, id), undefined, TargetCheckSchema),
+  checkDraftTarget: (body: { mcp: TargetInput["mcp"] }) => send("POST", routes.targetsCheck(project), body, TargetCheckSchema),
+  promises: (id: string) => get(routes.targetPromises(project, id), TargetPromisesSchema),
 
-  personas: () => get(routes.personas, personas),
-  starters: () => get(routes.personaStarters, starters),
-  addStarter: (slug: string, count: number) => send("POST", routes.personaStarters, { slug, count }, PersonaViewSchema),
-  savePersona: (id: string | null, body: PersonaInput) => (id === null ? send("POST", routes.personas, body, PersonaViewSchema) : send("PUT", routes.persona(id), body, PersonaViewSchema)),
-  removePersona: (id: string) => send("DELETE", routes.persona(id), undefined, nothing),
+  personas: () => get(routes.personas(project), personas),
+  starters: () => get(routes.personaStarters(project), starters),
+  addStarter: (slug: string, count: number) => send("POST", routes.personaStarters(project), { slug, count }, PersonaViewSchema),
+  savePersona: (id: string | null, body: PersonaInput) =>
+    id === null ? send("POST", routes.personas(project), body, PersonaViewSchema) : send("PUT", routes.persona(project, id), body, PersonaViewSchema),
+  removePersona: (id: string) => send("DELETE", routes.persona(project, id), undefined, nothing),
 
-  population: () => get(routes.population, PopulationViewSchema),
-  savePopulation: (body: PopulationInput) => send("PUT", routes.population, body, PopulationViewSchema),
-  settings: () => get(routes.settings, SettingsViewSchema),
-  saveSettings: (body: SettingsInput) => send("PUT", routes.settings, body, SettingsViewSchema),
+  populations: () => get(routes.populations(project), populations),
+  /**
+   * The project's composition. A project may hold several populations; until the composition
+   * screen grows a switcher, the screens mean the first one — which is the one called "Everyone"
+   * that a project is created with.
+   */
+  population: async () => (await get(routes.populations(project), populations)).items[0] ?? Promise.reject(new ApiError("this project has no population yet", 404)),
+  savePopulation: async (body: PopulationInput) => {
+    const current = (await get(routes.populations(project), populations)).items[0];
+    if (!current) throw new ApiError("this project has no population yet", 404);
+    return send("PUT", routes.population_(project, current.id), body, PopulationViewSchema);
+  },
+  settings: () => get(routes.settings(project), SettingsViewSchema),
+  saveSettings: (body: SettingsInput) => send("PUT", routes.settings(project), body, SettingsViewSchema),
 
   // ---- M2: driving it ----------------------------------------------------
   /** Arithmetic over history. It spends nothing and never starts a run. */
-  estimate: () => send("POST", routes.runsEstimate, {}, RunEstimateSchema),
-  startRun: (body: StartRunBody) => send("POST", routes.runs, body, StartedRunSchema),
-  continueRun: (id: string, body: StartRunBody) => send("POST", routes.runContinue(id), body, StartedRunSchema),
+  estimate: (simulationId: string) => send("POST", routes.simulationEstimate(project, simulationId), {}, RunEstimateSchema),
+  startRun: (simulationId: string, body: StartExecutionBody) => send("POST", routes.simulationRuns(project, simulationId), body, StartedRunSchema),
+  carryForward: (id: string, body: StartExecutionBody) => send("POST", routes.runCarryForward(id), body, StartedRunSchema),
   stopRun: (id: string, mode: "drain" | "now") => send("POST", routes.runStop(id), { mode }, z.object({ runId: z.string(), status: z.string() })),
-  oneMoreRound: (id: string) => send("POST", routes.runRound(id), {}, z.object({ runId: z.string(), agents: z.number() })),
+  oneMoreRound: (id: string) => send("POST", routes.runRound(id), {}, z.object({ runId: z.string(), participants: z.number() })),
   sweepRun: (id: string, body: { dryRun?: boolean; keepData?: boolean }) => send("POST", routes.runSweep(id), body, JobViewSchema),
   buildDigest: (id: string) => send("POST", routes.runDigestJob(id), {}, JobViewSchema),
   setKillSwitch: (engaged: boolean, reason?: string) => send("POST", routes.killSwitch, { engaged, ...(reason === undefined ? {} : { reason }) }, z.object({ engaged: z.boolean(), reason: z.string().nullable(), at: z.string().nullable() })),
@@ -163,7 +201,7 @@ export function openEventStream(runId: string, after: number, onEvent: (event: z
 
 export type Run = z.infer<typeof RunDetailSchema>;
 export type RunSummary = z.infer<typeof RunSummarySchema>;
-export type Agent = z.infer<typeof AgentSummarySchema>;
+export type Participant = z.infer<typeof ParticipantSummaryViewSchema>;
 export type Wake = z.infer<typeof WakeSummarySchema>;
 export type Finding = z.infer<typeof FindingSchema>;
 export type Digest = z.infer<typeof DigestSchema>;
@@ -172,7 +210,6 @@ export type TraceEvent = z.infer<typeof TraceEventSchema>;
 export type Memory = z.infer<typeof MemorySchema>;
 export type ToolUsageView = z.infer<typeof ToolUsageViewSchema>;
 export type SpendView = z.infer<typeof SpendViewSchema>;
-export type TargetView = z.infer<typeof TargetViewSchema>;
 export type SetupStatus = z.infer<typeof SetupStatusSchema>;
 export type StoredTarget = z.infer<typeof StoredTargetViewSchema>;
 export type TargetCheck = z.infer<typeof TargetCheckSchema>;
@@ -183,6 +220,6 @@ export type PopulationView = z.infer<typeof PopulationViewSchema>;
 export type Settings = z.infer<typeof SettingsViewSchema>;
 export type RunEstimate = z.infer<typeof RunEstimateSchema>;
 export type RunLive = z.infer<typeof RunLiveSchema>;
-export type AgentLive = RunLive["agents"][number];
+export type ParticipantLive = RunLive["participants"][number];
 export type Job = z.infer<typeof JobViewSchema>;
 export type LiveEvent = z.infer<typeof EventSchema>;

@@ -14,6 +14,8 @@ export const EventTypeSchema = z.enum([
   "run.started",
   "run.ended",
   "run.status",
+  /** The config a running execution executes was replaced — "apply changes" (SPEC §4.2). */
+  "run.config",
   "wake.started",
   "wake.ended",
   "trace.appended",

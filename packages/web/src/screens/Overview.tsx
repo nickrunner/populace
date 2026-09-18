@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
-import type { Agent, Digest, Run } from "../api.js";
+import type { Digest, Participant, Run } from "../api.js";
 import { usd, when } from "../format.js";
 import { ClusterRow } from "../components/ClusterRow.jsx";
 import { Avatar, Card, Failed, Loading, PageHeader, Section, Stat } from "../components/ui.jsx";
@@ -10,10 +10,10 @@ import { Avatar, Card, Failed, Loading, PageHeader, Section, Stat } from "../com
  * The one sentence at the top is the whole report for someone who reads nothing else, so it is
  * assembled from what happened rather than from a template with numbers dropped in.
  */
-function headline(run: Run, agents: Agent[], targetName: string): string {
-  const people = agents.length;
-  const left = agents.filter((a) => a.retiredReason === "gave-up");
-  const struggled = new Set(run.findingsByKind.bug > 0 || run.findingsByKind.friction > 0 ? agents.filter((a) => a.findingCount > 0).map((a) => a.id) : []);
+function headline(run: Run, people_: Participant[], targetName: string): string {
+  const people = people_.length;
+  const left = people_.filter((a) => a.retiredReason === "gave-up");
+  const struggled = new Set(run.findingsByKind.bug > 0 || run.findingsByKind.friction > 0 ? people_.filter((a) => a.findings > 0).map((a) => a.id) : []);
   if (people === 0) return `Nobody has visited ${targetName} in this run yet.`;
   if (struggled.size === 0 && left.length === 0) return `All ${people} ${people === 1 ? "person" : "people"} we sent to ${targetName} got their errands done without filing anything.`;
 
@@ -34,25 +34,25 @@ function worstFirst(digest: Digest) {
 
 export function Overview({ runId }: { runId: string }) {
   const run = useQuery({ queryKey: ["run", runId], queryFn: () => api.run(runId) });
-  const agents = useQuery({ queryKey: ["agents", runId], queryFn: () => api.agents(runId) });
+  const participants = useQuery({ queryKey: ["participants", runId], queryFn: () => api.participants(runId) });
   const digest = useQuery({ queryKey: ["digest", runId], queryFn: () => api.digest(runId) });
   const spend = useQuery({ queryKey: ["spend", runId], queryFn: () => api.spend(runId) });
-  const target = useQuery({ queryKey: ["target"], queryFn: () => api.target() });
+  const targets = useQuery({ queryKey: ["targets"], queryFn: () => api.targets() });
 
   if (run.isError) return <Failed error={run.error} />;
   const runData = run.data;
-  const agentData = agents.data;
+  const participantData = participants.data;
   const digestData = digest.data;
-  if (!runData || !agentData || !digestData) return <Loading what="this run" />;
+  if (!runData || !participantData || !digestData) return <Loading what="this run" />;
 
-  const people = agentData.items;
+  const people = participantData.items;
   const left = people.filter((a) => a.retiredReason === "gave-up");
   const finished = runData.wakesByStatus.done;
 
   return (
     <>
       <PageHeader
-        title={target.data?.name ?? runData.populationId}
+        title={targets.data?.items[0]?.name ?? runData.populationId}
         trail={
           <>
             {runData.startedAt ? when(runData.startedAt) : "not started"} · {people.length} {people.length === 1 ? "person" : "people"} ·{" "}
@@ -61,7 +61,7 @@ export function Overview({ runId }: { runId: string }) {
         }
       />
 
-      <p className="t-display mb-8 max-w-[34ch] leading-[1.25]">{headline(runData, people, target.data?.name ?? "the target")}</p>
+      <p className="t-display mb-8 max-w-[34ch] leading-[1.25]">{headline(runData, people, targets.data?.items[0]?.name ?? "the target")}</p>
 
       <div className="grid grid-cols-4 gap-6 mb-10 pb-8 border-b border-rule">
         <Stat label="Errands finished" value={`${finished} of ${runData.totals.wakes}`} />
@@ -73,7 +73,7 @@ export function Overview({ runId }: { runId: string }) {
         <Stat
           label="Walked away"
           value={left.length}
-          sub={left[0] ? `${left[0].personaName.split(" ")[0]}, at visit ${left[0].wakeCount}` : "nobody, so far"}
+          sub={left[0] ? `${left[0].personaName.split(" ")[0]}, at visit ${left[0].visits}` : "nobody, so far"}
         />
         <Stat label="Spent on this run" value={usd(spend.data?.totalUsd ?? runData.totals.costUsd)} />
       </div>
@@ -104,10 +104,10 @@ export function Overview({ runId }: { runId: string }) {
                 </div>
               </div>
               <div className="t-meta text-ink-muted">
-                {agent.wakeCount} {agent.wakeCount === 1 ? "visit" : "visits"} · {agent.findingCount} filed
+                {agent.visits} {agent.visits === 1 ? "visit" : "visits"} · {agent.findings} filed
               </div>
               <div className={`t-meta mt-1 ${agent.retiredReason === "gave-up" ? "text-critical" : "text-confirmed"}`}>
-                {agent.retiredReason === "gave-up" ? `Left at visit ${agent.wakeCount}` : agent.status === "active" ? "Still coming back" : "Done for now"}
+                {agent.retiredReason === "gave-up" ? `Left at visit ${agent.visits}` : agent.status === "active" ? "Still coming back" : "Done for now"}
               </div>
             </Card>
           ))}

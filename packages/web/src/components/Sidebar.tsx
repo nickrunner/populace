@@ -36,10 +36,6 @@ export function Sidebar({ runId }: { runId: string | null }) {
   const spend = useQuery({ queryKey: ["spend", runId], queryFn: () => api.spend(runId ?? ""), enabled: runId !== null });
   const setup = useQuery({ queryKey: ["setup"], queryFn: () => api.setup(), refetchInterval: 15_000 });
   const targets = useQuery({ queryKey: ["targets"], queryFn: () => api.targets() });
-  // The chip says "connected" only when something actually answered. `GET /target` connects and
-  // reports what it found, so the word is backed by a live list of tools rather than by the
-  // existence of a row.
-  const reachable = useQuery({ queryKey: ["target"], queryFn: () => api.target(), retry: false, refetchInterval: 30_000 });
 
   const base = runId === null ? null : `/runs/${encodeURIComponent(runId)}`;
   const kinds = run.data?.findingsByKind;
@@ -93,7 +89,7 @@ export function Sidebar({ runId }: { runId: string | null }) {
 
         <Group title="Set up">
           <Item to="/setup/target" label="The target" />
-          <Item to="/setup/people" label="The people" count={setup.data?.agentCount} />
+          <Item to="/setup/people" label="The people" count={setup.data?.peopleCount} />
           <Item to="/setup/limits" label="Limits and spending" />
         </Group>
 
@@ -112,15 +108,9 @@ export function Sidebar({ runId }: { runId: string | null }) {
         <Link to="/setup/target" className="block">
           <div className="flex items-center gap-2 mb-1">
             <span className="t-label text-ink-muted">{target?.name ?? "No target yet"}</span>
-            {setup.data?.killSwitch.engaged ? (
-              <Chip tone="bad">stopped</Chip>
-            ) : !target ? null : reachable.isPending ? (
-              <Chip>checking</Chip>
-            ) : reachable.data?.tools ? (
-              <Chip tone="good">connected</Chip>
-            ) : (
-              <Chip tone="bad">not answering</Chip>
-            )}
+            {/* Checking reachability opens a connection to somebody else's server, so it is a
+                POST the target screen makes on request — never a timer in the shell. */}
+            {setup.data?.killSwitch.engaged ? <Chip tone="bad">stopped</Chip> : !target ? null : <Chip>configured</Chip>}
           </div>
           <Mono className="text-[11px] text-ink-muted block break-all">{target?.mcp[0]?.url ?? "connect one to begin"}</Mono>
         </Link>
