@@ -259,7 +259,7 @@ export class ReadModel {
     // Spend against the daily ceiling is per population and trailing 24h, exactly as the
     // guardrail that enforces it measures it (ADR-0009) - not "this run so far".
     const populationId = agents[0]?.populationId ?? wakes[0]?.populationId;
-    const spentToday = populationId === undefined ? 0 : await this.store.costSince(populationId, new Date(Date.now() - 86_400_000));
+    const spentToday = populationId === undefined ? 0 : await this.store.costSince({ populationId }, new Date(Date.now() - 86_400_000));
     return {
       totalUsd: round(wakes.reduce((sum, w) => sum + w.costUsd, 0)),
       dailyCeilingUsd: this.guardrails?.dailyUsd ?? 0,

@@ -13,7 +13,17 @@ import { newJobId, type Job, type JobKind, type Store } from "@populace/core";
 export interface JobOutcome {
   runId?: string;
 }
-export type JobHandler = (job: Job, report: (progress: Partial<Job["progress"]>) => Promise<void>) => Promise<JobOutcome | undefined>;
+/**
+ * Records dollars this job spent on the model OUTSIDE a wake, cumulatively, onto the row.
+ *
+ * It is a callback rather than something the handler returns because the number has to survive the
+ * handler NOT returning: a `people.generate` job that stops between batches because the kill
+ * switch went on has still spent what it spent, and a bill that is only written on success is a
+ * bill that hides exactly the runs somebody wanted to know the cost of (SPEC §5.4).
+ */
+export type JobSpend = (costUsd: number) => Promise<void>;
+export type JobReport = (progress: Partial<Job["progress"]>) => Promise<void>;
+export type JobHandler = (job: Job, report: JobReport, spend: JobSpend) => Promise<JobOutcome | undefined>;
 
 export class JobRunner {
   private readonly queue: { job: Job; handler: JobHandler }[] = [];
@@ -82,8 +92,13 @@ export class JobRunner {
           job = { ...job, progress: { ...job.progress, ...progress } };
           await this.save(job);
         };
+        const spend: JobSpend = async (costUsd: number): Promise<void> => {
+          if (settled || costUsd <= 0) return;
+          job = { ...job, costUsd: Number((job.costUsd + costUsd).toFixed(8)) };
+          await this.save(job);
+        };
         try {
-          const result = await next.handler(job, report);
+          const result = await next.handler(job, report, spend);
           job = { ...job, status: "succeeded", endedAt: new Date().toISOString(), ...(result?.runId ? { runId: result.runId } : {}) };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

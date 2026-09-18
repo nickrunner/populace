@@ -14,6 +14,7 @@ import {
   RunEstimateSchema,
   RunLiveSchema,
   RunSummarySchema,
+  ExecutionCompareViewSchema,
   SimulationResultsViewSchema,
   TriageViewSchema,
   SettingsViewSchema,
@@ -25,8 +26,9 @@ import {
   pageOf,
   routes,
 } from "@populace/contract";
-import { CadenceSchema, PopulaceConfigSchema, expandPopulation, newCohortId, newRunId, newTargetId, tagForRun, type Cohort, type PopulaceConfig, type Simulation, type Store } from "@populace/core";
+import { CadenceSchema, PopulaceConfigSchema, expandPopulation, newCohortId, newRunId, newTargetId, signatureOf, tagForRun, type Cohort, type PopulaceConfig, type Simulation, type Store } from "@populace/core";
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
+import { primaryTool } from "@populace/reports";
 import { runWake } from "@populace/runner";
 import { ScriptedProvider, call, sequence, type ScriptContext, type ScriptPolicy } from "@populace/runner/testing";
 import { SqliteStore } from "@populace/store-sqlite";
@@ -131,7 +133,7 @@ async function resolveProject(store: Store): Promise<ResolvedSimulation> {
  * the hub, the job queue and the run controller — so what these tests drive is the process, not a
  * hand-assembled subset of it.
  */
-async function harness(options: { hasApiKey?: boolean; seed?: boolean; policy?: ScriptPolicy } = {}): Promise<Harness> {
+async function harness(options: { hasApiKey?: boolean; seed?: boolean; policy?: ScriptPolicy; writesPeople?: boolean } = {}): Promise<Harness> {
   const inner = new SqliteStore(":memory:");
   const hub = new EventHub();
   const counted = counting(new RecordingStore(inner, hub.publish));
@@ -156,6 +158,10 @@ async function harness(options: { hasApiKey?: boolean; seed?: boolean; policy?: 
       store,
       processConfig,
       hasApiKey: () => options.hasApiKey !== false,
+      // Only where a test is about tier-2 person generation: given a provider, `people.generate`
+      // calls the model instead of leaving the seeded cast alone, and every other test in this
+      // file is about something else.
+      ...(options.writesPeople ? { provider: (): ScriptedProvider => provider } : {}),
       jobs,
       runs,
       hub,
@@ -235,6 +241,29 @@ const complains: ScriptPolicy = sequence([
   () => ({ calls: [call("done", { summary: "had a look", would_return: true })] }),
 ]);
 
+/** Files something without naming a tool, which the reporter allows: `tool` is optional. */
+const complainsWithoutTool: ScriptPolicy = sequence([
+  () => ({ calls: [call("list_tasks", {})] }),
+  (ctx: ScriptContext) => ({
+    calls: [
+      call("file_finding", {
+        kind: "bug",
+        title: "the second page repeats a row from the first",
+        description: "Paging is off by one.",
+        expected: "Each task appears once.",
+        observed: "One task appeared twice.",
+        severity: "high",
+        confidence: 0.9,
+        // The reporter asks for a tool or an explicit null, and null is a real answer: a lot of
+        // findings are about the product rather than about one tool.
+        tool: null,
+        evidence_calls: [ctx.lastResults[0]?.ref ?? ""],
+      }),
+    ],
+  }),
+  () => ({ calls: [call("done", { summary: "had a look", would_return: true })] }),
+]);
+
 const post = async (app: Hono, path: string, body: object = {}): Promise<Response> => app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 const memberSlugs = async (h: Harness): Promise<string[]> => PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h)))).members.map((m) => m.slug);
 const put = async (app: Hono, path: string, body: object): Promise<Response> => app.request(path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -290,6 +319,21 @@ describe("authoring config into the database", () => {
     const resolved = await resolveProject(h.store);
     expect(resolved.config.population.members[0]?.persona.id).toBe("casual-lister");
     await h.close();
+  });
+
+  /**
+   * SPEC §2.3. A persona is a KIND of person; a person's name comes from their cohort's roster. The
+   * starters used to be called Casey Morgan, Priya Desai and so on, which put two human names side
+   * by side on three screens and made neither of them mean anything. This is a shape check rather
+   * than a list of forbidden strings so that a new starter cannot arrive wearing a personal name.
+   */
+  it("gives no starter persona a name that reads as a person's", () => {
+    const looksPersonal = /^[A-Z][\p{L}'’-]+ [A-Z][\p{L}'’-]+$/u;
+    for (const starter of STARTER_PERSONAS) {
+      expect(starter.spec.name, `${starter.slug} is named like a person`).not.toMatch(looksPersonal);
+      expect(starter.spec.name.length).toBeGreaterThan(0);
+    }
+    expect(STARTER_PERSONAS.map((starter) => starter.spec.name)).toEqual(["First-time visitor", "Deadline planner", "Power user", "Sceptical evaluator", "Bargain hunter", "The one who left"]);
   });
 
   it("adds a starter and counts them into the population", async () => {
@@ -1159,6 +1203,65 @@ describe("the people in a cohort", () => {
     expect(resolved.config.population.members[0]?.count).toBe(6);
     await h.close();
   });
+
+  /**
+   * The whole chain in one test: a model writes a cohort's people, those people are who goes on
+   * the execution, and what they file is keyed at file time and counted back against the cohort
+   * they came from.
+   *
+   * It exists because the two halves were built separately. Person generation can be green on its
+   * own while nothing it writes ever reaches a run, and clustering can be green on its own against
+   * hand-made findings — the join between them is what neither suite sees.
+   */
+  it("sends the people the model wrote, and counts what they file back against their cohort", async () => {
+    const writes: ScriptPolicy = (ctx: ScriptContext) => {
+      if (!ctx.toolNames.includes("write_people")) return complains(ctx);
+      const asked = ctx.messages
+        .map((m) => (typeof m.content === "string" ? m.content : ""))
+        .join("\n")
+        .match(/by ordinal: ([\d, ]+)/);
+      const ordinals = (asked?.[1] ?? "").split(",").map((n) => Number.parseInt(n.trim(), 10));
+      return { calls: [call("write_people", { people: ordinals.map((ordinal) => ({ ordinal, name: `Written Person ${ordinal + 1}`, details: `Keeps a list on a commute, slot ${ordinal + 1}.` })) })] };
+    };
+    const h = await harness({ policy: writes, writesPeople: true });
+    const cohort = (await cohortsOf(h.store))[0]!;
+    await put(h.app, routes.cohort(P, cohort.id), { size: 2 });
+    await post(h.app, routes.cohortPeople(P, cohort.id));
+    await h.jobs.idle();
+
+    const roster = pageOf(PersonViewSchema).parse(await json(await h.app.request(routes.cohortPeople(P, cohort.id))));
+    expect(roster.items.map((p) => p.name)).toEqual(["Written Person 1", "Written Person 2"]);
+    expect(roster.items.every((p) => p.generatedBy === "model")).toBe(true);
+
+    const simulationId = (await ensureSimulation(h.store)).id;
+    const started = (await json(await post(h.app, routes.simulationRuns(P, simulationId)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(started.runId);
+
+    // Who went is who the model wrote — names and details both, since the details are what the
+    // system prompt individuates them with.
+    const agents = await h.store.listAgents({ runId: started.runId });
+    expect(agents.map((a) => a.name).sort()).toEqual(["Written Person 1", "Written Person 2"]);
+    expect(agents.every((a) => a.details.includes("commute"))).toBe(true);
+    expect(agents.map((a) => a.personId).sort()).toEqual([`${cohort.slug}#1`, `${cohort.slug}#2`]);
+
+    // Every finding carries the key it was filed under, computed by the runner, not by the report.
+    const findings = await h.store.listFindings({ runIds: [started.runId] });
+    expect(findings.length).toBeGreaterThan(0);
+    // `primaryTool`, not the bare `tool` field: a finding that names no tool is keyed on the last
+    // tool it reproduced with, and any read model that recomputes the key has to do the same.
+    for (const finding of findings) expect(finding.signature).toBe(signatureOf(finding.kind, primaryTool(finding), finding.title));
+
+    // ...and the clusterer reads the cohort and the people straight back out of the agent ids the
+    // roster produced: two of two weekenders hit it, four reports between them.
+    const results = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    const card = results.clusters.find((c) => c.signature === findings[0]!.signature);
+    expect(card?.peopleHit).toBe(2);
+    expect(card?.peopleTotal).toBe(2);
+    expect(card?.reports).toBe(findings.length);
+    expect(card?.cohorts).toEqual([{ slug: cohort.slug, name: cohort.name, hit: 2, total: 2 }]);
+    await h.close();
+  });
 });
 
 describe("the store underneath", () => {
@@ -1644,6 +1747,183 @@ describe("the project library and the pre-flight", () => {
     const after = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
     expect(after.clusters.map((c) => c.signature)).not.toContain(signature);
     expect(after.known.map((c) => c.signature)).toEqual([signature]);
+
+    // Drift is a HASH question, not a string question. A judgement whose recorded title no longer
+    // hashes to the signature it was filed under is sitting on a different problem, and says so —
+    // which is what the `sig1:` version prefix exists to make loud rather than silent (ADR-0028).
+    const filed = (await h.store.getTriage((await h.store.listProjects())[0]!.id, signature))!;
+    await h.store.saveTriage({ ...filed, titleAtTriage: "create_project rejects a perfectly good name" });
+    const drifted = pageOf(TriageViewSchema).parse(await json(await h.app.request(routes.triage(P))));
+    expect(drifted.items[0]?.drifted).toBe(true);
+    const onScreen = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    expect(onScreen.known[0]?.triage?.drifted).toBe(true);
+    // Punctuation and case do not move the key, so they are not drift. That is the whole of what
+    // this proves: a GENUINE rewording — "list_tasks is paging badly", "the task list repeats a
+    // row" — WOULD drift, because the key is a hash of an exact token set (see the measured
+    // numbers in `stability.test.ts`), and the case above is what that looks like.
+    await h.store.saveTriage({ ...filed, titleAtTriage: "list_tasks pages badly!" });
+    expect(pageOf(TriageViewSchema).parse(await json(await h.app.request(routes.triage(P)))).items[0]?.drifted).toBe(false);
+    await h.close();
+  });
+
+  it("puts a problem the latest execution no longer reports under Known once somebody says it is fixed", async () => {
+    // The second execution finds nothing. Flipping the script mid-test is how "we shipped a fix"
+    // is expressed offline: same simulation, same people, a target that no longer complains.
+    let quiet = false;
+    const h = await harness({ policy: (ctx) => (quiet ? { calls: [call("done", { summary: "all fine now", would_return: true })] } : complains(ctx)) });
+    const first = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(first.runId);
+    const signature = (await h.store.listFindings({ runIds: [first.runId] }))[0]!.signature;
+
+    quiet = true;
+    const second = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(second.runId);
+    expect(await h.store.listFindings({ runIds: [second.runId] })).toHaveLength(0);
+
+    const simulationId = (await ensureSimulation(h.store)).id;
+    // An absence is something you can LOOK AT: the card is still on the screen, saying it is gone.
+    // Vanishing silently is the opposite of the question the screen exists to answer.
+    const before = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    const card = before.clusters.find((c) => c.signature === signature);
+    expect(card?.state).toBe("fixed");
+    expect(card?.peopleHit).toBe(0);
+    expect(card?.seenIn).toEqual([1]);
+    expect(before.known).toHaveLength(0);
+
+    // And once a human agrees it is fixed, it stops taking up room at the top.
+    await put(h.app, routes.triage(P), { signature, state: "fixed", note: "shipped" });
+    const known = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    expect(known.clusters.map((c) => c.signature)).not.toContain(signature);
+    expect(known.known.map((c) => c.signature)).toEqual([signature]);
+    expect(known.known[0]?.state).toBe("fixed");
+    await h.close();
+  });
+
+  /**
+   * The other half of "an absence is evidence": an execution that has not visited is NOT an
+   * absence. Pressing start writes the run row before the first visit lands, and a run that never
+   * gets off the ground stays the newest execution forever — in neither case has anything been
+   * fixed, and saying so would be the most damaging thing this screen could get wrong.
+   */
+  it("does not call a problem fixed because the newest execution has not visited yet", async () => {
+    const h = await harness({ policy: complains });
+    const first = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(first.runId);
+    const simulationId = (await ensureSimulation(h.store)).id;
+    const signature = (await h.store.listFindings({ runIds: [first.runId] }))[0]!.signature;
+
+    const before = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    expect(before.clusters.find((c) => c.signature === signature)?.state).toBe("new");
+
+    const ran = (await h.store.getRun(first.runId))!;
+    await h.store.saveRun({ ...ran, id: newRunId(), seq: ran.seq + 1, status: "pending", endedAt: null, totals: { agents: 0, activeAgents: 0, wakes: 0, findings: 0, confirmed: 0, costUsd: 0 } });
+
+    const during = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    const card = during.clusters.find((c) => c.signature === signature);
+    expect(card?.state).toBe("new");
+    expect(card?.peopleHit).toBeGreaterThan(0);
+    expect(card?.seenIn).toEqual([1]);
+    // The screen reports on the execution that has something to report, and the pending one is
+    // where it belongs: in the history, waiting.
+    expect(during.execution?.id).toBe(first.runId);
+    expect(during.history.map((e) => e.seq)).toEqual([1, 2]);
+    // And the project home does not announce a fix either.
+    const overview = ProjectOverviewViewSchema.parse(await json(await h.app.request(routes.project(P))));
+    expect(overview.simulations.find((sim) => sim.id === simulationId)?.fixedSinceLast).toBe(0);
+    await h.close();
+  });
+
+  /**
+   * A signature is a hash of an exact token set; the clusterer merges titles that are merely
+   * similar. One problem therefore carries several keys, and the screen must not show it as two.
+   */
+  it("shows one problem once when a later execution words it differently", async () => {
+    let reworded = false;
+    const wording = (ctx: ScriptContext): { calls: ReturnType<typeof call>[] } => ({
+      calls: [
+        call("file_finding", {
+          kind: "bug",
+          title: reworded ? "list_tasks pages badly" : "list_tasks pages badly and repeats a row",
+          description: "The second page repeats the last row of the first.",
+          expected: "Each task appears once.",
+          observed: "One task appeared twice.",
+          severity: "high",
+          confidence: 0.9,
+          tool: "list_tasks",
+          evidence_calls: [ctx.lastResults[0]?.ref ?? ""],
+        }),
+      ],
+    });
+    const h = await harness({
+      policy: sequence([() => ({ calls: [call("list_tasks", {})] }), wording, () => ({ calls: [call("done", { summary: "had a look", would_return: true })] })]),
+    });
+    const first = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(first.runId);
+    reworded = true;
+    const second = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(second.runId);
+
+    const firstSignature = (await h.store.listFindings({ runIds: [first.runId] }))[0]!.signature;
+    const secondSignature = (await h.store.listFindings({ runIds: [second.runId] }))[0]!.signature;
+    expect(secondSignature).not.toBe(firstSignature); // two keys...
+
+    const simulationId = (await ensureSimulation(h.store)).id;
+    const results = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    // ...and one card. The old wording is not a second, `fixed` problem: it is this one, said
+    // differently, and putting both on the screen says the search bug was fixed and is still here.
+    expect(results.clusters).toHaveLength(1);
+    expect(results.clusters.map((c) => c.state)).toEqual(["open"]);
+    expect(results.clusters.map((c) => c.signature)).toEqual([secondSignature]);
+    await h.close();
+  });
+
+  /** A comparison is counted against the two executions it is comparing, not against the newest. */
+  it("counts each side of a comparison against that execution's own roster", async () => {
+    const h = await harness({ policy: complains });
+    const simulationId = (await ensureSimulation(h.store)).id;
+    const ids: string[] = [];
+    for (const size of [1, 1, 3]) {
+      await put(h.app, routes.cohort(P, (await cohortsOf(h.store))[0]!.id), { size });
+      const started = (await json(await post(h.app, routes.simulationRuns(P, simulationId)))) as { runId: string };
+      await h.jobs.idle();
+      await h.runs.settled(started.runId);
+      ids.push(started.runId);
+    }
+    expect((await h.store.listAgents({ runId: ids[2]! }))).toHaveLength(3);
+
+    const compared = ExecutionCompareViewSchema.parse(await json(await h.app.request(`${routes.simulationCompare(P, simulationId)}?a=${ids[0]!}&b=${ids[1]!}`)));
+    const card = compared.persisting[0];
+    expect(card).toBeDefined();
+    // One person went on execution 2, so "1 of 1" — not "1 of 3", which is execution 3's headcount
+    // and a number about nobody on this screen.
+    expect(card?.peopleTotal).toBe(1);
+    expect(card?.cohorts.map((cohort) => cohort.total)).toEqual([1]);
+    await h.close();
+  });
+
+  /**
+   * The key is hashed over the tool the finding NAMES or, failing that, the last tool it
+   * reproduced with. A read model that recomputes it over the bare field would never match, and
+   * every judgement on a finding that named no tool would read as sitting on a different problem.
+   */
+  it("keeps a judgement attached when the finding named no tool", async () => {
+    const h = await harness({ policy: complainsWithoutTool });
+    const started = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(started.runId);
+    const finding = (await h.store.listFindings({ runIds: [started.runId] }))[0]!;
+    expect(finding.tool).toBeUndefined();
+    expect(finding.signature).toBe(signatureOf(finding.kind, "list_tasks", finding.title));
+
+    await put(h.app, routes.triage(P), { signature: finding.signature, state: "fixed", note: "shipped" });
+    const rows = pageOf(TriageViewSchema).parse(await json(await h.app.request(routes.triage(P))));
+    expect(rows.items[0]?.titleAtTriage).toBe(finding.title);
+    expect(rows.items[0]?.drifted).toBe(false);
     await h.close();
   });
 });

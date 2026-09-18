@@ -39,7 +39,14 @@ export const PersonSchema = z.object({
   handle: z.string().min(1),
   /** The concrete persona for this person: traits, patience and budget sampled from the seed. */
   persona: PersonaSchema,
-  generatedBy: z.enum(["model", "seeded"]).default("seeded"),
+  /**
+   * Where the row's name and details came from — and, for `authored`, the one value that means
+   * HANDS OFF. A slot is only ever written over while it still holds what the seeded bank put
+   * there, so a person somebody typed a name for has to be distinguishable from one nobody has
+   * touched. Without it a rename with no details left the row looking exactly like a placeholder
+   * and the next generate quietly took the name back.
+   */
+  generatedBy: z.enum(["model", "seeded", "authored"]).default("seeded"),
   /** Which model wrote it, so a regeneration is explainable. Empty when seeded. */
   generatedByModel: z.string().default(""),
   /** `${cohort.seed}:${cohortSlug}:${ordinal}` */

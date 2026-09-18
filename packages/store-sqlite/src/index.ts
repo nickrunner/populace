@@ -25,6 +25,8 @@ import {
   type Agent,
   type AgentQuery,
   type Cohort,
+  type CostKind,
+  type CostQuery,
   type Finding,
   type FindingQuery,
   type ConfigSnapshot,
@@ -186,18 +188,24 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_run ON events(run_id, seq);
 CREATE INDEX IF NOT EXISTS events_project ON events(project_id, seq);
 
+/*
+ * \`cost_usd\` is lifted out of the blob because it is read as a SUM: a job that writes a cohort's
+ * people spends real money outside any wake, and \`costSince\` adds it to what the visits cost to
+ * answer one question about a project's day (SPEC §5.4).
+ */
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, project_id TEXT, run_id TEXT,
-  created_at TEXT NOT NULL, json TEXT NOT NULL
+  created_at TEXT NOT NULL, cost_usd REAL NOT NULL DEFAULT 0, json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS jobs_project_created ON jobs(project_id, created_at);
 `;
 
 /**
  * Bump this whenever any table above changes shape. It is compared against what the database was
  * written with; a mismatch rebuilds the file from scratch.
  */
-const SCHEMA_SHAPE = "m3.projects-simulations-cohorts-people.2";
+const SCHEMA_SHAPE = "m3.projects-simulations-cohorts-people.3";
 const SHAPE_KEY = "schema_shape";
 const REBUILT_WARNING = "populace store: the schema changed; this database was rebuilt from scratch and its runs are gone.";
 
@@ -205,6 +213,13 @@ function tableNames(db: DatabaseSync): string[] {
   const result = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all();
   // eslint-disable-next-line no-restricted-syntax -- sqlite_master rows are untyped at this boundary.
   return (result as { name?: unknown }[]).flatMap((r) => (typeof r.name === "string" ? [r.name] : []));
+}
+
+function sumOf(db: DatabaseSync, sql: string, ...params: string[]): number {
+  const row = db.prepare(sql).get(...params);
+  // eslint-disable-next-line no-restricted-syntax -- aggregate row from node:sqlite.
+  const total = (row as { total?: unknown } | undefined)?.total;
+  return typeof total === "number" ? total : 0;
 }
 
 /** `SELECT COUNT(*) AS n …`, which node:sqlite hands back as a loosely typed row. */
@@ -515,12 +530,24 @@ export class SqliteStore implements Store {
 
   // ---- guardrail support -------------------------------------------------
 
-  costSince(populationId: string, since: Date): Promise<number> {
-    const row = this.db
-      .prepare("SELECT COALESCE(SUM(cost_usd), 0) AS total FROM wakes WHERE population_id = ? AND started_at >= ?")
-      .get(populationId, since.toISOString());
-    // eslint-disable-next-line no-restricted-syntax -- aggregate row from node:sqlite.
-    const total = (row as unknown as { total: number } | undefined)?.total ?? 0;
+  costSince(query: CostQuery, since: Date): Promise<number> {
+    const at = since.toISOString();
+    const wants = (kind: CostKind): boolean => query.kind === undefined || query.kind === kind;
+    let total = 0;
+    if (wants("visits")) {
+      // A wake row carries its population; the project comes from the run it belongs to. Asking by
+      // population is the runner's own ceiling and stays exactly the query it always was.
+      if (query.populationId !== undefined) {
+        total += sumOf(this.db, "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM wakes WHERE population_id = ? AND started_at >= ?", query.populationId, at);
+      } else if (query.projectId !== undefined) {
+        total += sumOf(this.db, "SELECT COALESCE(SUM(w.cost_usd), 0) AS total FROM wakes w JOIN runs r ON r.id = w.run_id WHERE r.project_id = ? AND w.started_at >= ?", query.projectId, at);
+      }
+    }
+    // Authoring belongs to a project and to no population, so a population-scoped question sees
+    // none of it — which is right: it is not that population's visits.
+    if (wants("authoring") && query.projectId !== undefined) {
+      total += sumOf(this.db, "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM jobs WHERE project_id = ? AND created_at >= ?", query.projectId, at);
+    }
     return Promise.resolve(total);
   }
 
@@ -1003,11 +1030,11 @@ export class SqliteStore implements Store {
     const parsed = JobSchema.parse(job);
     this.db
       .prepare(
-        `INSERT INTO jobs (id, kind, status, project_id, run_id, created_at, json) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO jobs (id, kind, status, project_id, run_id, created_at, cost_usd, json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET status = excluded.status, project_id = excluded.project_id, run_id = excluded.run_id,
-           json = excluded.json`,
+           cost_usd = excluded.cost_usd, json = excluded.json`,
       )
-      .run(parsed.id, parsed.kind, parsed.status, parsed.projectId, parsed.runId, parsed.createdAt, JSON.stringify(parsed));
+      .run(parsed.id, parsed.kind, parsed.status, parsed.projectId, parsed.runId, parsed.createdAt, parsed.costUsd, JSON.stringify(parsed));
     return Promise.resolve();
   }
 

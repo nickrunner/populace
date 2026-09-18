@@ -194,7 +194,7 @@ export const PersonViewSchema = z.object({
   name: z.string(),
   details: z.string(),
   handle: z.string(),
-  generatedBy: z.enum(["model", "seeded"]),
+  generatedBy: z.enum(["model", "seeded", "authored"]),
   patience: z.number().int(),
   budgetUsd: z.number().nonnegative(),
   traits: PersonaSchema.shape.traits,
@@ -209,7 +209,7 @@ export const CohortViewSchema = z.object({
   personaId: z.string(),
   personaName: z.string(),
   size: z.number().int().nonnegative(),
-  generated: z.object({ model: z.number().int().nonnegative(), seeded: z.number().int().nonnegative() }),
+  generated: z.object({ model: z.number().int().nonnegative(), seeded: z.number().int().nonnegative(), authored: z.number().int().nonnegative() }),
   cadence: CadenceSchema.partial().nullable(),
   maxWakes: z.number().int().positive().nullable(),
   notes: z.string(),
@@ -439,6 +439,12 @@ export type ExecutionHistoryEntry = z.infer<typeof ExecutionHistoryEntrySchema>;
  */
 export const SimulationResultsViewSchema = z.object({
   simulation: SimulationSummaryViewSchema,
+  /**
+   * The execution these results are OF: the most recent one that actually sent somebody. A run
+   * that has been created and has not visited yet has nothing to report — reading its silence as
+   * an absence would call every open problem fixed — so it appears in `simulation.latest` and in
+   * `history`, and the numbers here stay with the execution that has something to say.
+   */
   execution: RunDetailSchema.nullable(),
   headline: z.string(),
   stats: z.object({

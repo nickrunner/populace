@@ -146,8 +146,8 @@ describe("SqliteStore", () => {
     await store.appendTraceEvent({ type: "note", seq: 0, at: now.toISOString(), wakeId: "wake_1", text: "first" });
     await store.appendTraceEvent({ type: "note", seq: 1, at: now.toISOString(), wakeId: "wake_1", text: "second" });
     expect((await store.getTrace("wake_1")).map((e) => e.seq)).toEqual([0, 1]);
-    expect(await store.costSince("pop", new Date(now.getTime() - 1000))).toBe(0.5);
-    expect(await store.costSince("pop", new Date(now.getTime() + 1000))).toBe(0);
+    expect(await store.costSince({ populationId: "pop" }, new Date(now.getTime() - 1000))).toBe(0.5);
+    expect(await store.costSince({ populationId: "pop" }, new Date(now.getTime() + 1000))).toBe(0);
 
     const finding: Finding = {
       id: "fnd_1",

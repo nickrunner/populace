@@ -13,6 +13,23 @@ import type { Memory } from "../schemas/memory.js";
 import type { TraceEvent } from "../schemas/trace.js";
 import type { Wake } from "../schemas/wake.js";
 
+/**
+ * Which model spend a question is about: `visits` is what wakes cost, `authoring` is what jobs
+ * spent outside a wake (writing a cohort's people). Omitting it asks for both.
+ */
+export type CostKind = "visits" | "authoring";
+
+/**
+ * Scope of a spend question. A population scopes visits — it is what a wake row carries and what
+ * the runner's per-population ceiling is written in terms of. A project scopes both, because
+ * authoring belongs to a project and to no population at all.
+ */
+export interface CostQuery {
+  populationId?: string;
+  projectId?: string;
+  kind?: CostKind;
+}
+
 export interface FindingQuery {
   runIds?: string[];
   since?: Date;
@@ -121,8 +138,16 @@ export interface Store {
   deleteFindingsByRun(runId: string): Promise<number>;
 
   // guardrail support
-  /** Dollars spent by wakes of this population that started after `since`. */
-  costSince(populationId: string, since: Date): Promise<number>;
+  /**
+   * Dollars of model spend after `since`, in the one place a ceiling is read from.
+   *
+   * `people.generate` is the first thing outside `runWake` that calls the model, and ADR-0009
+   * assumed every dollar was spent inside a wake. Rather than give authoring its own ceiling and
+   * its own accounting — two budgets that can each be under while the bill is over — authoring
+   * spend is counted here, by the same path, and told apart by `kind` so a spend screen can still
+   * separate what the people cost from what the visits did (SPEC §5.4).
+   */
+  costSince(query: CostQuery, since: Date): Promise<number>;
   setKillSwitch(engaged: boolean, reason?: string): Promise<void>;
   getKillSwitch(): Promise<{ engaged: boolean; reason: string | null; at: string | null }>;
   /**

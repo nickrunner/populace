@@ -1,6 +1,9 @@
 import {
   SEVERITY_RANK,
+  personIdOfAgentId,
+  signatureOf,
   type Agent,
+  type FindingKind,
   type Cohort,
   type Finding,
   type Project,
@@ -27,7 +30,7 @@ import type {
   ToolUsageView,
   TriageView,
 } from "@populace/contract";
-import { clusterFindings } from "@populace/reports";
+import { clusterFindings, primaryTool, signatureHistories, type CohortCensus, type SignatureHistory } from "@populace/reports";
 import { ReadModel, participantOf } from "./read-model.js";
 
 /**
@@ -48,12 +51,6 @@ import { ReadModel, participantOf } from "./read-model.js";
 export interface ProjectReadModelOptions {
   /** The runs this process is driving right now, so a summary can say "running" truthfully. */
   runningRunIds?: () => string[];
-}
-
-/** A person id (`cohortSlug#n`) out of an agent id (`populationSlug/cohortSlug#n`). */
-function personIdOf(agentId: string): string {
-  const slash = agentId.indexOf("/");
-  return slash === -1 ? agentId : agentId.slice(slash + 1);
 }
 
 function round(value: number): number {
@@ -96,7 +93,9 @@ export class ProjectReadModel {
       this.store.listRuns({ projectId: project.id }),
     ]);
     const week = new Date(Date.now() - 7 * 86_400_000);
-    const recent = runs.length === 0 ? [] : await this.store.listWakes({ runIds: runs.map((r) => r.id), since: week });
+    // Through `costSince`, not a sum over wakes: writing a cohort's people spends on the model
+    // outside any wake, and a project's cost that leaves that out is not the project's cost.
+    const recent = await this.store.costSince({ projectId: project.id }, week);
     const running = new Set(this.options.runningRunIds?.() ?? []);
     const stamps = runs.flatMap((run) => [run.endedAt, run.startedAt].filter((v): v is string => v !== null));
     return {
@@ -110,7 +109,7 @@ export class ProjectReadModel {
       counts: { simulations: simulations.length, targets: targets.length, personas: personas.length, cohorts: cohorts.length, people: people.length },
       runningRunIds: runs.filter((run) => running.has(run.id)).map((run) => run.id),
       lastActivityAt: stamps.length ? stamps.reduce((a, b) => (a > b ? a : b)) : null,
-      costLast7dUsd: round(sum(recent.map((w) => w.costUsd))),
+      costLast7dUsd: round(recent),
     };
   }
 
@@ -128,7 +127,10 @@ export class ProjectReadModel {
       this.store.getKillSwitch(),
     ]);
     const findings = runs.length === 0 ? [] : await this.store.listFindings({ runIds: runs.map((r) => r.id) });
-    const spentToday = runs.length === 0 ? [] : await this.store.listWakes({ runIds: runs.map((r) => r.id), since: new Date(Date.now() - 86_400_000) });
+    // The same question the people writer's ceiling asks, asked the same way. Two numerators under
+    // one `dailyCeilingUsd` would show a project comfortably under a ceiling that is already
+    // refusing its jobs (SPEC §5.4).
+    const spentToday = await this.store.costSince({ projectId: project.id }, new Date(Date.now() - 86_400_000));
     const views: SimulationSummaryView[] = [];
     for (const simulation of simulations) views.push(await this.simulationSummary(simulation, runs));
 
@@ -141,7 +143,7 @@ export class ProjectReadModel {
       if (SEVERITY_RANK[finding.severity] < SEVERITY_RANK[entry.finding.severity]) entry.finding = finding;
       const simulationId = simulationOf.get(finding.runId);
       if (simulationId !== undefined) entry.simulations.add(simulationId);
-      entry.people.add(personIdOf(finding.agentId));
+      entry.people.add(personIdOfAgentId(finding.agentId));
       bySignature.set(finding.signature, entry);
     }
 
@@ -159,10 +161,14 @@ export class ProjectReadModel {
           simulations: [...entry.simulations].map((id) => ({ id, name: named.get(id) ?? id })),
           // A headcount, not a roster: how many people is information, who they are is a click away.
           peopleHit: entry.people.size,
-          triage: triageViewOf(byTriage.get(signature), entry.finding.title),
+          // `primaryTool`, not `finding.tool`: the key was hashed at file time over the tool the
+          // finding NAMES or, when it named none, the last tool it reproduced with. Recomputing
+          // it over the bare field would never match a finding that named no tool, and every one
+          // of them would read as drifted.
+          triage: triageViewOf(byTriage.get(signature), { kind: entry.finding.kind, tool: primaryTool(entry.finding), title: entry.finding.title }),
         }))
         .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.peopleHit - a.peopleHit),
-      spentTodayUsd: round(sum(spentToday.map((w) => w.costUsd))),
+      spentTodayUsd: round(spentToday),
       dailyCeilingUsd: settings?.guardrails.dailyUsd ?? 0,
       killSwitch,
     };
@@ -183,7 +189,6 @@ export class ProjectReadModel {
   async simulationSummary(simulation: Simulation, projectRuns?: Run[]): Promise<SimulationSummaryView> {
     const runs = (projectRuns ?? (await this.store.listRuns({ simulationId: simulation.id }))).filter((run) => run.simulationId === simulation.id).sort((a, b) => a.seq - b.seq);
     const latest = runs.at(-1);
-    const previous = runs.at(-2);
     const [population, cohorts, target] = await Promise.all([
       this.store.getPopulation(simulation.populationId),
       this.store.listCohorts(simulation.projectId),
@@ -194,8 +199,12 @@ export class ProjectReadModel {
       runs.length === 0 ? Promise.resolve<Wake[]>([]) : this.store.listWakes({ runIds: runs.map((r) => r.id) }),
       runs.length === 0 ? Promise.resolve<Finding[]>([]) : this.store.listFindings({ runIds: runs.map((r) => r.id) }),
     ]);
-    const latestSignatures = new Set(findings.filter((f) => f.runId === latest?.id).map((f) => f.signature));
-    const previousSignatures = new Set(findings.filter((f) => f.runId === previous?.id).map((f) => f.signature));
+    // "New" and "fixed" are asked of the last two executions that actually SENT somebody. A run
+    // that exists but has not visited yet reports nothing, and counting that silence would put
+    // "4 fixed" on the project home the moment somebody pressed start.
+    const reported = runs.filter((run) => wakes.some((w) => w.runId === run.id));
+    const latestSignatures = new Set(findings.filter((f) => f.runId === reported.at(-1)?.id).map((f) => f.signature));
+    const previousSignatures = new Set(findings.filter((f) => f.runId === reported.at(-2)?.id).map((f) => f.signature));
     const running = new Set(this.options.runningRunIds?.() ?? []);
     const agents = latest ? await this.store.listAgents({ runId: latest.id }) : [];
     const upcoming = agents.map((a) => a.nextWakeAt).filter((v): v is string => v !== null);
@@ -237,8 +246,8 @@ export class ProjectReadModel {
       status,
       latest: latest ? { runId: latest.id, seq: latest.seq, startedAt: latest.startedAt, endedAt: latest.endedAt, status: latest.status, totals: latest.totals } : null,
       confirmed: findings.filter((f) => f.runId === latest?.id && f.verification?.verdict === "confirmed").length,
-      newSinceLast: previous === undefined ? 0 : [...latestSignatures].filter((s) => !previousSignatures.has(s)).length,
-      fixedSinceLast: previous === undefined ? 0 : [...previousSignatures].filter((s) => !latestSignatures.has(s)).length,
+      newSinceLast: reported.length < 2 ? 0 : [...latestSignatures].filter((s) => !previousSignatures.has(s)).length,
+      fixedSinceLast: reported.length < 2 ? 0 : [...previousSignatures].filter((s) => !latestSignatures.has(s)).length,
       costUsd: round(sum(wakes.map((w) => w.costUsd))),
       nextVisitAt: upcoming.length ? upcoming.reduce((a, b) => (a < b ? a : b)) : null,
     };
@@ -379,17 +388,21 @@ export class ProjectReadModel {
    */
   async results(simulation: Simulation, coverage: ToolUsageView): Promise<SimulationResultsView> {
     const context = await this.simulationContext(simulation);
-    const { runs, latest, agents, findings, wakes, members } = context;
+    const { runs, evidence, agents, findings, wakes, members } = context;
     const summary = await this.simulationSummary(simulation, runs);
-    const latestFindings = findings.filter((f) => f.runId === latest?.id);
-    const latestWakes = wakes.filter((w) => w.runId === latest?.id);
+    // Everything below is about ONE execution — the most recent one that visited — so the stats,
+    // the cards and the people who walked away are all counted off the same set of rows. `latest`
+    // is still in `summary.latest` and in `history`, which is where a run that has not visited yet
+    // belongs.
+    const latestFindings = findings.filter((f) => f.runId === evidence?.id);
+    const latestWakes = wakes.filter((w) => w.runId === evidence?.id);
     const cards = this.resultCards(context, latestFindings);
     const walkedAwayWakes = latestWakes.filter((w) => w.status === "gave-up");
     const cohortOf = new Map(agents.map((a) => [a.id, a]));
 
     const confirmed = latestFindings.filter((f) => f.verification?.verdict === "confirmed").length;
     const headline =
-      latest === undefined
+      evidence === undefined
         ? `${summary.population.people} people are ready to go; nothing has run yet.`
         : `${agents.length} people made ${latestWakes.length} visits, filed ${latestFindings.length} report(s)${confirmed > 0 ? `, ${confirmed} of them confirmed` : ""}${walkedAwayWakes.length > 0 ? `, and ${walkedAwayWakes.length} walked away` : ""}.`;
 
@@ -399,7 +412,7 @@ export class ProjectReadModel {
     const settled = new Set(cards.filter((c) => c.triage?.state === "wont-fix" || (c.triage?.state === "fixed" && c.state !== "regressed")).map((c) => c.signature));
     return {
       simulation: summary,
-      execution: latest ? ((await this.read.getRun(latest.id)) ?? null) : null,
+      execution: evidence ? ((await this.read.getRun(evidence.id)) ?? null) : null,
       headline,
       stats: {
         people: agents.length,
@@ -413,7 +426,7 @@ export class ProjectReadModel {
       coverage,
       // Person id and cohort, never a name: this is level two (SPEC §7.1).
       walkedAway: walkedAwayWakes.map((wake) => ({
-        personId: cohortOf.get(wake.agentId)?.personId ?? personIdOf(wake.agentId),
+        personId: cohortOf.get(wake.agentId)?.personId ?? personIdOfAgentId(wake.agentId),
         cohortSlug: cohortOf.get(wake.agentId)?.cohortSlug ?? "",
         wakeId: wake.id,
         quote: wake.summary,
@@ -427,8 +440,8 @@ export class ProjectReadModel {
   /** One cluster in full — the first screen where people are named, as the authors of quotes. */
   async cluster(simulation: Simulation, signature: string): Promise<ClusterDetailView | undefined> {
     const context = await this.simulationContext(simulation);
-    const { runs, latest, findings, wakes } = context;
-    const latestFindings = findings.filter((f) => f.runId === latest?.id);
+    const { runs, evidence, findings, wakes } = context;
+    const latestFindings = findings.filter((f) => f.runId === evidence?.id);
     const card = this.resultCards(context, latestFindings).find((c) => c.signature === signature);
     if (!card) return undefined;
 
@@ -440,7 +453,7 @@ export class ProjectReadModel {
     const mine = findings.filter((f) => f.runId === reportedIn.id && f.signature === signature);
     const representative = mine[0];
     if (!representative) return undefined;
-    const agents = reportedIn.id === latest?.id ? context.agents : await this.store.listAgents({ runId: reportedIn.id });
+    const agents = reportedIn.id === evidence?.id ? context.agents : await this.store.listAgents({ runId: reportedIn.id });
 
     // Scoped to that one execution. Agent ids are deterministic within a simulation
     // (`populationSlug/cohortSlug#ordinal`), so the cross-execution sets the history below is built
@@ -467,7 +480,7 @@ export class ProjectReadModel {
       quotes: mine.map((finding) => {
         const agent = byAgent.get(finding.agentId);
         return {
-          personId: agent?.personId ?? personIdOf(finding.agentId),
+          personId: agent?.personId ?? personIdOfAgentId(finding.agentId),
           // A name, at last: this is the one place where it is information rather than decoration.
           name: agent?.name ?? finding.agentId,
           cohortSlug: agent?.cohortSlug ?? "",
@@ -500,14 +513,17 @@ export class ProjectReadModel {
     if (!a || !b) return undefined;
     const [detailA, detailB] = await Promise.all([this.read.getRun(a.id), this.read.getRun(b.id)]);
     if (!detailA || !detailB) return undefined;
-    const cardsA = this.cards(context, context.findings.filter((f) => f.runId === a.id));
-    const cardsB = this.cards(context, context.findings.filter((f) => f.runId === b.id));
+    // Each side is counted against ITS OWN roster. Neither execution need be the latest, and
+    // "3 of 12 planners" with the newest execution's 12 under it is a number about nothing.
+    const [castA, castB] = await Promise.all([this.store.listAgents({ runId: a.id }), this.store.listAgents({ runId: b.id })]);
+    const cardsA = this.cards(context, context.findings.filter((f) => f.runId === a.id), censusFrom(castA, context.members));
+    const cardsB = this.cards(context, context.findings.filter((f) => f.runId === b.id), censusFrom(castB, context.members));
     const inA = new Set(cardsA.map((c) => c.signature));
     const inB = new Set(cardsB.map((c) => c.signature));
-    const castOf = async (runId: string): Promise<string> => (await this.store.listAgents({ runId })).map((agent) => agent.personId).sort().join(",");
-    const [castA, castB] = await Promise.all([castOf(a.id), castOf(b.id)]);
+    const rosterOf = (agents: Agent[]): string => agents.map((agent) => agent.personId).sort().join(",");
+    const identicalCast = rosterOf(castA) === rosterOf(castB);
     const notes: string[] = [];
-    if (castA !== castB) notes.push("The two executions did not send the same people, so a difference may be who went rather than what changed.");
+    if (!identicalCast) notes.push("The two executions did not send the same people, so a difference may be who went rather than what changed.");
     if (a.mode !== b.mode) notes.push("These executions ran in different modes.");
     return {
       a: detailA,
@@ -515,7 +531,7 @@ export class ProjectReadModel {
       persisting: cardsB.filter((c) => inA.has(c.signature)),
       fixed: cardsA.filter((c) => !inB.has(c.signature)),
       appeared: cardsB.filter((c) => !inA.has(c.signature)),
-      castIdentical: castA === castB,
+      castIdentical: identicalCast,
       notes,
     };
   }
@@ -523,9 +539,11 @@ export class ProjectReadModel {
   async triage(projectId: string): Promise<TriageView[]> {
     const [triage, runs] = await Promise.all([this.store.listTriage(projectId), this.store.listRuns({ projectId })]);
     const findings = runs.length === 0 ? [] : await this.store.listFindings({ runIds: runs.map((r) => r.id) });
-    const title = new Map(findings.map((f) => [f.signature, f.title]));
+    // The finding this judgement currently sits on, which is what says whether it still fits.
+    const current = new Map(findings.map((f) => [f.signature, f]));
     return triage.flatMap((row) => {
-      const view = triageViewOf(row, title.get(row.signature) ?? row.titleAtTriage);
+      const finding = current.get(row.signature);
+      const view = triageViewOf(row, finding ? { kind: finding.kind, tool: primaryTool(finding), title: finding.title } : null);
       return view ? [view] : [];
     });
   }
@@ -545,9 +563,34 @@ export class ProjectReadModel {
       ids.length === 0 ? Promise.resolve<Finding[]>([]) : this.store.listFindings({ runIds: ids }),
       this.store.listTriage(simulation.projectId),
     ]);
-    const agents = latest ? await this.store.listAgents({ runId: latest.id }) : [];
-    const snapshot = latest?.configSnapshotId ? await this.store.getConfigSnapshot(latest.configSnapshotId) : undefined;
-    return { runs, latest, agents, wakes, findings, triage, members: (snapshot?.config.population.members ?? []).map((m) => ({ cohort: m.cohort, cohortName: m.cohortName, count: m.count })) };
+    // The execution the screens REPORT on. Normally the latest — but a run that has been created
+    // and has not visited yet has nothing to say, and reading its silence as an absence turns every
+    // open problem into `fixed` in the seconds between pressing start and the first visit landing
+    // (and forever, for a run that never gets off the ground). So the report is of the most recent
+    // execution that actually sent somebody; `latest` still drives the status and the history, so
+    // the screen can say "execution 3 is starting" over execution 2's results.
+    const visited = new Set(wakes.map((w) => w.runId));
+    const evidence = [...runs].reverse().find((run) => visited.has(run.id)) ?? latest;
+    const agents = evidence ? await this.store.listAgents({ runId: evidence.id }) : [];
+    const snapshot = evidence?.configSnapshotId ? await this.store.getConfigSnapshot(evidence.configSnapshotId) : undefined;
+    return {
+      runs,
+      latest,
+      evidence,
+      agents,
+      wakes,
+      findings,
+      triage,
+      members: (snapshot?.config.population.members ?? []).map((m) => ({ cohort: m.cohort, cohortName: m.cohortName, count: m.count })),
+      histories: signatureHistories(
+        runs.map((run) => ({ runId: run.id, seq: run.seq, visited: wakes.some((w) => w.runId === run.id), findings: findings.filter((f) => f.runId === run.id) })),
+        // One clustering across every execution, so that a problem reported in different words in
+        // different executions has ONE history. Asked per signature it would read as an old
+        // problem fixed and a new one appearing, which is precisely the question this screen is
+        // for and precisely the wrong answer.
+        groupsOf(findings),
+      ),
+    };
   }
 
   /**
@@ -555,8 +598,8 @@ export class ProjectReadModel {
    * said about it: a signature triaged `fixed` that is here again is a REGRESSION, which is the
    * whole reason triage is keyed by signature rather than by finding id (ADR-0028).
    */
-  private cards(context: SimulationContext, findings: Finding[]): ClusterCardView[] {
-    return clusterFindings(findings).map((cluster) => this.cardOf(context, cluster, true));
+  private cards(context: SimulationContext, findings: Finding[], census: CohortCensus[]): ClusterCardView[] {
+    return clusterFindings(findings, { census }).map((cluster) => this.cardOf(context, cluster, true, census));
   }
 
   /**
@@ -569,13 +612,18 @@ export class ProjectReadModel {
    * present and then absent, so an absence has to be something you can look at.
    */
   private resultCards(context: SimulationContext, latestFindings: Finding[]): ClusterCardView[] {
-    const present = this.cards(context, latestFindings);
+    const census = censusOf(context);
+    const present = this.cards(context, latestFindings, census);
     const here = new Set(latestFindings.map((f) => f.signature));
     for (const card of present) here.add(card.signature);
-    const gone = context.findings.filter((f) => f.runId !== context.latest?.id && !here.has(f.signature));
-    const fixed = clusterFindings(gone)
-      .filter((cluster) => !here.has(cluster.signature))
-      .map((cluster) => this.cardOf(context, cluster, false));
+    // Clustered across EVERY execution, not just over the findings that are gone. A signature is a
+    // hash of an exact token set while the clusterer merges titles that are merely similar, so one
+    // problem routinely carries several signatures — and the same search bug, worded differently in
+    // two executions, would otherwise appear twice on one screen: once open, once claimed fixed.
+    // A cluster that holds anything the reported execution filed is already on screen.
+    const fixed = clusterFindings(context.findings, { census })
+      .filter((cluster) => !here.has(cluster.signature) && cluster.findings.every((f) => f.runId !== context.evidence?.id))
+      .map((cluster) => this.cardOf(context, cluster, false, census));
     return [...present, ...fixed];
   }
 
@@ -584,26 +632,16 @@ export class ProjectReadModel {
    * when it is not, the incidence numbers are zeroes, because nobody in this execution hit it —
    * which is the whole point of the `fixed` state.
    */
-  private cardOf(context: SimulationContext, cluster: ReturnType<typeof clusterFindings>[number], inLatest: boolean): ClusterCardView {
+  private cardOf(context: SimulationContext, cluster: ReturnType<typeof clusterFindings>[number], inLatest: boolean, census: CohortCensus[]): ClusterCardView {
     const byTriage = new Map(context.triage.map((t) => [t.signature, t]));
-    const byAgent = new Map(context.agents.map((a) => [a.id, a]));
-    const total = new Map<string, number>();
-    for (const agent of context.agents) total.set(agent.cohortSlug, (total.get(agent.cohortSlug) ?? 0) + 1);
-    const cohortName = new Map(context.members.map((m) => [m.cohort, m.cohortName]));
-    const seqOf = new Map(context.runs.map((r) => [r.id, r.seq]));
-
-    const people = inLatest ? new Set(cluster.findings.map((f) => byAgent.get(f.agentId)?.personId ?? personIdOf(f.agentId))) : new Set<string>();
-    const hit = new Map<string, number>();
-    if (inLatest) {
-      for (const finding of cluster.findings) {
-        const slug = byAgent.get(finding.agentId)?.cohortSlug;
-        if (slug === undefined) continue;
-        hit.set(slug, (hit.get(slug) ?? 0) + 1);
-      }
-    }
-    const triage = triageViewOf(byTriage.get(cluster.signature), cluster.title);
-    const seen = context.findings.filter((f) => f.signature === cluster.signature);
-    const stamps = seen.map((f) => f.createdAt).sort();
+    const triage = triageViewOf(byTriage.get(cluster.signature), { kind: cluster.kind, tool: cluster.tool ?? "", title: cluster.title });
+    const history = context.histories.get(cluster.signature);
+    // A cluster the latest execution did not report shows its incidence as zeroes: nobody in this
+    // execution hit it, which is the whole point of the `fixed` state. The roster is still there,
+    // so the bar reads "0 of 12" rather than disappearing.
+    const cohorts = inLatest
+      ? cluster.cohorts.map((c) => ({ slug: c.slug, name: c.name, hit: c.peopleHit, total: c.peopleTotal }))
+      : census.map((c) => ({ slug: c.slug, name: c.name, hit: 0, total: c.people }));
     return {
       signature: cluster.signature,
       title: cluster.title,
@@ -611,48 +649,77 @@ export class ProjectReadModel {
       kind: cluster.kind,
       tool: cluster.tool ?? null,
       verdict: cluster.representative.verification?.verdict ?? null,
-      peopleHit: people.size,
-      peopleTotal: context.agents.length,
+      peopleHit: inLatest ? cluster.personIds.length : 0,
+      peopleTotal: sum(census.map((c) => c.people)),
       reports: inLatest ? cluster.findings.length : 0,
-      cohorts: [...total.entries()].map(([slug, count]) => ({ slug, name: cohortName.get(slug) ?? slug, hit: hit.get(slug) ?? 0, total: count })),
-      state: stateOf(context, cluster.signature, inLatest, triage),
-      seenIn: [...new Set(seen.map((f) => seqOf.get(f.runId)).filter((v): v is number => v !== undefined))].sort((a, b) => a - b),
-      firstSeenAt: stamps[0] ?? null,
-      lastSeenAt: stamps.at(-1) ?? null,
+      cohorts,
+      state: stateOf(history, inLatest, triage),
+      seenIn: history?.seenIn ?? [],
+      firstSeenAt: history?.firstSeenAt ?? null,
+      lastSeenAt: history?.lastSeenAt ?? null,
       triage,
     };
   }
 }
 
 /**
- * Where one problem stands across the executions of one simulation (SPEC §4.3).
- *
- * Only executions where somebody actually VISITED count as evidence. An execution that made no
- * visits at all — killed on the way up, or refused by a guardrail — says nothing about whether a
- * problem is still there, and counting it as an absence would call every signature in the next
- * execution a regression. An execution that ran and did not report this problem is a real absence.
+ * Signature -> the key of the problem it belongs to, taken from one clustering over every
+ * execution's findings. The clusterer's representative signature is the key.
  */
-function stateOf(context: SimulationContext, signature: string, inLatest: boolean, triage: TriageView | null): ClusterCardView["state"] {
+function groupsOf(findings: Finding[]): Map<string, string> {
+  const groups = new Map<string, string>();
+  for (const cluster of clusterFindings(findings)) for (const finding of cluster.findings) groups.set(finding.signature, cluster.signature);
+  return groups;
+}
+
+/**
+ * One execution's roster, by cohort: the denominator under every incidence bar.
+ *
+ * It is passed the agents rather than reading them off the context because the denominator has to
+ * belong to the execution being counted. Comparing executions 1 and 2 while 5 exists would
+ * otherwise read "3 of 12 planners" with 12 being execution 5's headcount.
+ */
+function censusFrom(agents: readonly Agent[], members: readonly { cohort: string; cohortName: string }[]): CohortCensus[] {
+  const named = new Map(members.map((m) => [m.cohort, m.cohortName]));
+  const total = new Map<string, number>();
+  for (const agent of agents) total.set(agent.cohortSlug, (total.get(agent.cohortSlug) ?? 0) + 1);
+  return [...total.entries()].map(([slug, people]) => ({ slug, name: named.get(slug) ?? slug, people }));
+}
+
+/** The evidence execution's roster, by cohort. */
+function censusOf(context: SimulationContext): CohortCensus[] {
+  return censusFrom(context.agents, context.members);
+}
+
+/**
+ * Where one problem stands, with a human's judgement layered over the arithmetic.
+ *
+ * The arithmetic itself lives in `signatureHistories` in `@populace/reports`, next to the
+ * clusterer, so the same rules apply to a digest as to a screen. What is added here is the one
+ * thing the reports package has no business knowing: a signature a human marked `fixed` and which
+ * has turned up ANYWAY is a regression, and belongs at the top of the screen rather than under
+ * "known". That is the whole reason triage is keyed by signature (ADR-0028).
+ */
+function stateOf(history: SignatureHistory | undefined, inLatest: boolean, triage: TriageView | null): ClusterCardView["state"] {
   if (!inLatest) return "fixed";
-  // A human said this was fixed and here it is again. That belongs at the top of the screen, not
-  // under "known" — which is the whole reason triage is keyed by signature (ADR-0028).
   if (triage?.state === "fixed") return "regressed";
-  const ran = context.runs.filter((run) => run.id !== context.latest?.id && context.wakes.some((w) => w.runId === run.id));
-  const presence = ran.map((run) => context.findings.some((f) => f.runId === run.id && f.signature === signature));
-  if (!presence.some(Boolean)) return "new";
-  // Present, absent, present again.
-  if (presence.at(-1) === false) return "regressed";
-  return "open";
+  return history?.state ?? "new";
 }
 
 interface SimulationContext {
   runs: Run[];
+  /** The newest execution, whatever state it is in: what the screen's status line is about. */
   latest: Run | undefined;
+  /** The newest execution that actually visited: what the screen's RESULTS are about. */
+  evidence: Run | undefined;
+  /** The roster of the evidence execution — the denominator under every incidence bar. */
   agents: Agent[];
   wakes: Wake[];
   findings: Finding[];
   triage: Triage[];
   members: { cohort: string; cohortName: string; count: number }[];
+  /** Every signature this simulation has ever reported, and where it stands across its executions. */
+  histories: Map<string, SignatureHistory>;
 }
 
 function visitOf(wake: Wake): ParticipantDetailView["visits"][number] {
@@ -735,7 +802,7 @@ function cohortRollUp(agents: Agent[], wakes: Wake[], findings: Finding[], membe
  * one it was triaged under — a clustering change detaches judgement loudly rather than silently
  * carrying it onto a different problem (ADR-0028).
  */
-function triageViewOf(triage: Triage | undefined, currentTitle: string): TriageView | null {
+function triageViewOf(triage: Triage | undefined, current: { kind: FindingKind; tool: string; title: string } | null): TriageView | null {
   if (!triage) return null;
   return {
     signature: triage.signature,
@@ -744,6 +811,10 @@ function triageViewOf(triage: Triage | undefined, currentTitle: string): TriageV
     externalRef: triage.externalRef,
     titleAtTriage: triage.titleAtTriage,
     updatedAt: triage.updatedAt,
-    drifted: triage.titleAtTriage !== "" && triage.titleAtTriage !== currentTitle,
+    // Drift is a HASH question, not a string question. A title that was reworded but still hashes
+    // to the same signature is the same problem described twice, which is exactly what tokenising
+    // the title was for. A title that no longer hashes to the signature it was filed under is a
+    // human's judgement sitting on something else, and says so.
+    drifted: current !== null && triage.titleAtTriage !== "" && signatureOf(current.kind, current.tool, triage.titleAtTriage) !== triage.signature,
   };
 }

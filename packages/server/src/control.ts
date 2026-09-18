@@ -31,7 +31,9 @@ import {
 } from "@populace/contract";
 import {
   expandPopulation,
+  handleFor,
   instantiatePersona,
+  nameFrom,
   newCohortId,
   newPersonaId,
   newPopulationId,
@@ -58,6 +60,7 @@ import { personaSystemPrompt } from "@populace/runner";
 import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { ensureRoster } from "./cohort-store.js";
+import { generatePeople, type GenerateOptions, type GeneratedRoster } from "./people-writer.js";
 import {
   ConfigIncomplete,
   cohortsOf,
@@ -72,6 +75,7 @@ import {
 } from "./config-store.js";
 import { estimateRun } from "./estimate.js";
 import { fail, page, param, parseBody, parseQuery } from "./http.js";
+import type { JobHandler, JobReport, JobSpend } from "./jobs.js";
 import { ProjectReadModel } from "./project-read-model.js";
 import { ReadModel } from "./read-model.js";
 import { STARTER_PERSONAS, starterBySlug } from "./starters.js";
@@ -500,7 +504,11 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       personaId: cohort.personaId,
       personaName: persona?.spec.name ?? cohort.name,
       size: cohort.size,
-      generated: { model: live.filter((p) => p.generatedBy === "model").length, seeded: live.filter((p) => p.generatedBy === "seeded").length },
+      generated: {
+        model: live.filter((p) => p.generatedBy === "model").length,
+        seeded: live.filter((p) => p.generatedBy === "seeded").length,
+        authored: live.filter((p) => p.generatedBy === "authored").length,
+      },
       cadence: cohort.cadence ?? null,
       maxWakes: cohort.maxWakes ?? null,
       notes: cohort.notes,
@@ -520,6 +528,34 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     traits: person.persona.traits,
     archived: person.archivedAt !== null || person.ordinal >= size,
   });
+
+  /**
+   * Writing people is refused while anything is executing. A live run is reading this cast through
+   * its config snapshot and signing accounts up from these handles; re-casting underneath it would
+   * leave that run's own participants unexplainable.
+   */
+  const refuseWhileRunning = async (projectId: string, cohortName: string): Promise<string | null> => {
+    const live = [...(await deps.store.listRuns({ projectId, status: "running" })), ...(await deps.store.listRuns({ projectId, status: "pending" }))];
+    return live.length === 0 ? null : `${live.length} execution(s) are reading these people right now; pause or stop them before writing the ${cohortName} cohort`;
+  };
+
+  /**
+   * The `people.generate` handler. Tier 1 fills every empty slot for free before a token is spent,
+   * so this succeeds with a complete cast even when there is no API key — what the model adds is
+   * names and individuating details, and what it cannot do is leave a cohort half-cast.
+   */
+  const runWriter = async (cohortId: string, options: GenerateOptions, report: JobReport, spend: JobSpend): Promise<GeneratedRoster> => {
+    const generated = await generatePeople({ store: deps.store, ...(deps.provider ? { provider: deps.provider } : {}), report, spend }, cohortId, options);
+    await report({ label: generated.fellBackBecause ?? `wrote ${generated.written} of ${generated.written + generated.seeded}` });
+    return generated;
+  };
+
+  const writePeople =
+    (cohortId: string, options: GenerateOptions = {}): JobHandler =>
+    async (_job, report, spend) => {
+      await runWriter(cohortId, options, report, spend);
+      return undefined;
+    };
 
   app.get(routes.cohorts(":p"), async (c) => {
     const s = await scope(c);
@@ -628,20 +664,18 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.json({ items: roster.map((person) => personView(person, cohort.size)), nextCursor: null });
   });
 
-  /** Fills the empty slots. A job, because tier 2 (a model writing them) is a model call. */
+  /**
+   * Fills the slots nobody has written yet. A job, because tier 2 — a model writing them — is a
+   * model call, and it is the first model call this product makes outside a wake (SPEC §5.4).
+   */
   app.post(routes.cohortPeople(":p", ":c"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
     const cohort = owned(await deps.store.getCohort(param(c, "c")), s.project.id);
     if (!cohort) return fail(c, "not_found", "no such cohort");
-    const job = await deps.jobs.enqueue(
-      "people.generate",
-      async () => {
-        await ensureRoster(deps.store, cohort.id);
-        return undefined;
-      },
-      { projectId: s.project.id, label: `filling out the ${cohort.name} cohort` },
-    );
+    const refusal = await refuseWhileRunning(s.project.id, cohort.name);
+    if (refusal) return fail(c, "conflict", refusal);
+    const job = await deps.jobs.enqueue("people.generate", writePeople(cohort.id), { projectId: s.project.id, label: `writing the ${cohort.name} cohort` });
     return c.json(job, 202);
   });
 
@@ -656,18 +690,39 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!cohort) return fail(c, "not_found", "no such cohort");
     const body = await parseBody(c, GeneratePeopleBodySchema);
     if (!body.ok) return body.response;
-    if (!body.value.confirm) return fail(c, "conflict", "re-casting replaces people that past executions name; send confirm: true");
+    // A refusal, not a conflict: nothing about the cohort's state makes this impossible, the
+    // request is simply missing the acknowledgement that it rewrites who these people are and
+    // breaks comparison with every execution that already named them.
+    if (!body.value.confirm) return fail(c, "bad_request", "re-casting changes who these people are and breaks comparison with earlier executions; send confirm: true");
+    const refusal = await refuseWhileRunning(s.project.id, cohort.name);
+    if (refusal) return fail(c, "conflict", refusal);
     const ordinals = body.value.ordinals;
     const job = await deps.jobs.enqueue(
       "people.generate",
-      async () => {
+      async (_job, report, spend) => {
+        // Re-casting is the one path that lets go of people who already exist. The rows are not
+        // deleted — a past execution's participants still name them, and the id is the slot — they
+        // are put back to being placeholders, which is the one state the writer will write into.
+        //
+        // Put back PROPERLY: the name is re-drawn from the seeded bank as well. A reset that kept
+        // the old model-written name while stamping the row `seeded` with no details left a person
+        // who was neither re-cast nor intact — and if the model then could not be reached, that is
+        // what the cohort was left holding.
+        const at = now();
         const roster = await deps.store.listPeople({ cohortId: cohort.id, includeArchived: true });
-        for (const person of roster) {
-          if (ordinals !== undefined && !ordinals.includes(person.ordinal)) continue;
-          await deps.store.savePerson({ ...person, archivedAt: new Date().toISOString(), updatedAt: now() });
+        const recast = roster.filter((person) => person.ordinal < cohort.size && (ordinals === undefined || ordinals.includes(person.ordinal)));
+        const used = new Set(roster.filter((person) => !recast.includes(person)).map((person) => person.name));
+        for (const person of recast) {
+          const name = nameFrom(person.seed, used);
+          used.add(name);
+          // The handle follows the name here, unlike a hand rename: re-casting is refused while
+          // anything is running, so nobody has signed an account up as this person yet.
+          await deps.store.savePerson({ ...person, name, handle: handleFor(name, cohort.slug, person.ordinal), details: "", generatedBy: "seeded", generatedByModel: "", archivedAt: null, updatedAt: at });
         }
-        // The seeded bank is tier 1 and is always available; a model writing them is stage 6.
-        await ensureRoster(deps.store, cohort.id);
+        const generated = await runWriter(cohort.id, ordinals ? { ordinals } : {}, report, spend);
+        // A confirmed re-cast that wrote nobody is a failure, not a quiet success: the cast the
+        // user asked to replace is gone and what stands in its place is the free one.
+        if (generated.written === 0 && generated.fellBackBecause !== null) throw new Error(`nobody was re-cast: ${generated.fellBackBecause}`);
         return undefined;
       },
       { projectId: s.project.id, label: `re-casting the ${cohort.name} cohort` },
@@ -688,7 +743,12 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!person) return fail(c, "not_found", "nobody at that place in the cohort");
     // The handle is NOT re-derived from a new name: it is what the account on the target was
     // signed up with, and a rename must not orphan it (SPEC §5.3.5).
-    const updated: Person = { ...person, name: body.value.name ?? person.name, details: body.value.details ?? person.details, updatedAt: now() };
+    //
+    // And the row is stamped `authored`, which is what takes it out of the writer's reach. A
+    // rename that left it looking like a placeholder — seeded, no details — would be handed
+    // straight back to the next generate, which would overwrite the typed name AND re-derive the
+    // handle this line just refused to move.
+    const updated: Person = { ...person, name: body.value.name ?? person.name, details: body.value.details ?? person.details, generatedBy: "authored", updatedAt: now() };
     await deps.store.savePerson(updated);
     return c.json(personView(updated, cohort.size));
   });

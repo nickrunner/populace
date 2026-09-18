@@ -71,6 +71,27 @@ export function personIdFor(cohortSlug: string, ordinal: number): string {
 }
 
 /**
+ * The cohort slug out of an agent id. Agent ids are `populationSlug/cohortSlug#ordinal`, so
+ * "which group was this?" is readable from a finding's `agentId` alone — which is what lets the
+ * clusterer report per-cohort incidence without a second query per report.
+ */
+export function cohortSlugOfAgentId(agentId: string): string {
+  const slash = agentId.indexOf("/");
+  const hash = agentId.lastIndexOf("#");
+  if (slash === -1 || hash <= slash) return "";
+  return agentId.slice(slash + 1, hash);
+}
+
+/**
+ * The person id out of an agent id. The person outlives the execution and the agent does not, so
+ * counting PEOPLE hit — rather than agents — is what makes a number comparable across executions.
+ */
+export function personIdOfAgentId(agentId: string): string {
+  const slash = agentId.indexOf("/");
+  return slash === -1 ? agentId : agentId.slice(slash + 1);
+}
+
+/**
  * The cohort's cadence, layered over the population's. Keyed by COHORT — it used to be keyed by
  * persona, which is the single line that made two cohorts on one persona impossible.
  */
