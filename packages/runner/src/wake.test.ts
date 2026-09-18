@@ -263,4 +263,23 @@ describe("runWake against the mock target", () => {
     expect(calls.every((c) => c.model === "claude-opus-5" && c.effort === "max")).toBe(true);
     await store.close();
   });
+
+  it("retires an agent that gives up, and does not schedule it again", async () => {
+    const store = new SqliteStore(":memory:");
+    const config = makeConfig();
+    const giveUp: ScriptPolicy = sequence([
+      () => ({ calls: [call("get_product_info")] }),
+      () => ({ calls: [call("give_up", { title: "Not for me", reason: "Too fiddly for a grocery list.", would_return: false, severity: "medium", evidence_calls: [] })] }),
+    ]);
+    const result = await runWake({ agent: firstAgent(config), config }, { store, provider: new ScriptedProvider(giveUp), identityProvider: new SelfSignupProvider(config.identity as never) });
+
+    expect(result.wake.status).toBe("gave-up");
+    // "For good" is literal: the agent retires itself rather than waking again on cadence.
+    expect(result.agent.status).toBe("retired");
+    expect(result.agent.retiredReason).toBe("gave-up");
+    expect(result.agent.nextWakeAt).toBeNull();
+    const [stored] = await store.listAgents({ runId: result.agent.runId });
+    expect(stored?.status).toBe("retired");
+    await store.close();
+  });
 });

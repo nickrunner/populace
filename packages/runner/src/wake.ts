@@ -210,6 +210,9 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
     const skipped = snapshot.turns === 0 && (status === "killed" || status === "budget-exceeded");
     if (!skipped) {
       agent = { ...agent, wakeCount: wakeNumber, lastWakeAt: ended.toISOString(), identityId: identity?.id ?? null };
+      // give_up means "for good". Without this the agent wakes again on cadence, re-files the
+      // same abandonment, and reads memory from a session where it decided to leave.
+      if (status === "gave-up") agent = { ...agent, status: "retired", retiredReason: "gave-up", nextWakeAt: null };
     } else {
       agent = { ...agent, identityId: identity?.id ?? null };
     }

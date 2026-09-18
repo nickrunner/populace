@@ -18,7 +18,7 @@ This document is the map. Each fixed decision has an ADR in `docs/adr/`.
 | **Persona** | Static description: role, traits, goals, patience, budget, constraints, backstory. | core `PersonaSchema` |
 | **Agent** | A persona instance with an identity, persistent memory and a schedule. | core `AgentSchema`, rows in the store |
 | **Population** | Persona specs with counts and trait distributions, plus a scale factor. Expanded into agents. | core `PopulationSchema`, `expandPopulation()` |
-| **Wake** | One scheduled execution of an agent. A stateless job: load memory, run one session, persist memory/trace/findings/cost, exit. | `@populace/runner` `runWake()` |
+| **Wake** | One scheduled execution of an agent. A stateless job: load memory, run one session, persist memory/trace/findings/cost, exit. A wake that ends in `give_up` retires the agent. | `@populace/runner` `runWake()` |
 | **Trace** | Ordered log of one wake: every tool call, model turn, token usage, dollar cost. | core `TraceEventSchema`, `trace_events` table |
 | **Finding** | Structured report item (`bug`, `friction`, `coverage-gap`, `suggestion`, `abandonment`, `praise`) carrying the exact tool calls that led to it. | core `FindingSchema` |
 | **Digest** | Verified, clustered findings over a window, rendered for humans. | `@populace/reports` |

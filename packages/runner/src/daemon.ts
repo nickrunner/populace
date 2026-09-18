@@ -52,7 +52,9 @@ export class LocalDaemon {
       const current = byId.get(agent.id);
       if (current) {
         // Keep runtime state; refresh persona and limits from config.
-        const merged: Agent = { ...current, persona: agent.persona, maxWakes: agent.maxWakes, status: current.status === "retired" && agent.maxWakes !== null && current.wakeCount < agent.maxWakes ? "active" : current.status };
+        // Raising maxWakes brings back an agent the limit retired, but never one that walked away.
+        const revivable = current.status === "retired" && current.retiredReason !== "gave-up" && agent.maxWakes !== null && current.wakeCount < agent.maxWakes;
+        const merged: Agent = { ...current, persona: agent.persona, maxWakes: agent.maxWakes, ...(revivable ? { status: "active" as const, retiredReason: null } : {}) };
         if (merged.status === "active" && merged.nextWakeAt === null) merged.nextWakeAt = this.scheduler.firstWakeAt(merged, cadence, now).toISOString();
         await this.store.upsertAgent(merged);
         agents.push(merged);
@@ -64,7 +66,7 @@ export class LocalDaemon {
     }
     // Scale-down: agents no longer in the population are retired, never deleted (their history stays).
     for (const agent of existing) {
-      if (!wanted.has(agent.id) && agent.status === "active") await this.store.upsertAgent({ ...agent, status: "retired", nextWakeAt: null });
+      if (!wanted.has(agent.id) && agent.status === "active") await this.store.upsertAgent({ ...agent, status: "retired", retiredReason: "scaled-down", nextWakeAt: null });
     }
     return agents;
   }
@@ -83,8 +85,9 @@ export class LocalDaemon {
           const result = await runWake({ agent, config: this.options.config }, this.deps);
           this.totalWakes++;
           const after = result.agent;
-          const next = result.skipped ? new Date(now.getTime() + this.cadenceOf(after).every) : this.scheduler.nextWakeAt(after, this.cadenceOf(after), this.deps.now?.() ?? new Date());
-          await this.store.upsertAgent(next ? { ...after, nextWakeAt: next.toISOString() } : { ...after, status: "retired", nextWakeAt: null });
+          // An agent that retired itself during the wake is never rescheduled.
+          const next = after.status === "retired" ? null : result.skipped ? new Date(now.getTime() + this.cadenceOf(after).every) : this.scheduler.nextWakeAt(after, this.cadenceOf(after), this.deps.now?.() ?? new Date());
+          await this.store.upsertAgent(next ? { ...after, nextWakeAt: next.toISOString() } : { ...after, status: "retired", retiredReason: after.retiredReason ?? "max-wakes", nextWakeAt: null });
           this.options.onWake?.(result);
         } finally {
           this.inFlight--;

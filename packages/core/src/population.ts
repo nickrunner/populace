@@ -89,6 +89,7 @@ export function expandPopulation(population: Population, runId: string, now: Dat
         persona,
         ordinal,
         status: "active",
+        retiredReason: null,
         identityId: null,
         wakeCount: 0,
         maxWakes: member.maxWakes ?? population.maxWakes ?? null,

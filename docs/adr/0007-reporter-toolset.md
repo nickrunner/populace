@@ -9,7 +9,7 @@ Every wake gets a runner-owned toolset alongside the target tools:
 | Tool | Effect |
 | --- | --- |
 | `file_finding` | Files a finding of any kind (`bug`, `friction`, `coverage-gap`, `suggestion`, `praise`, `abandonment`) with expected vs observed, severity, confidence and evidence call refs. `kind` selects which; for a `coverage-gap`, `tool` names the tool the persona wished existed |
-| `give_up` | Files an `abandonment` finding and ends the wake |
+| `give_up` | Files an `abandonment` finding, ends the wake and retires the agent (ADR-0019 amendment) |
 | `remember` | Appends to memory (note, waiting_on, annoyance, done, or resolves a waiting_on) |
 | `done` | Ends the wake with a one-line summary |
 

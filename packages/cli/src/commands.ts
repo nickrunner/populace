@@ -285,7 +285,8 @@ export async function status(options: GlobalOptions): Promise<string[]> {
     lines.push(`${agents.length} agent(s), ${wakes.length} wake(s), ${findings.length} finding(s), $${wakes.reduce((s, w) => s + w.costUsd, 0).toFixed(4)} spent`);
     for (const a of agents) {
       const own = wakes.filter((w) => w.agentId === a.id);
-      lines.push(`  ${a.id}: ${a.status}, ${a.wakeCount} wake(s), ${findings.filter((f) => f.agentId === a.id).length} finding(s), identity ${a.identityId ?? "none"}, next ${a.nextWakeAt ?? "-"}${own.length ? `, last ${own[own.length - 1]?.status}` : ""}`);
+      const status = a.retiredReason ? `${a.status} (${a.retiredReason})` : a.status;
+      lines.push(`  ${a.id}: ${status}, ${a.wakeCount} wake(s), ${findings.filter((f) => f.agentId === a.id).length} finding(s), identity ${a.identityId ?? "none"}, next ${a.nextWakeAt ?? "-"}${own.length ? `, last ${own[own.length - 1]?.status}` : ""}`);
     }
     for (const line of lines) ctx.log(line);
     return lines;
