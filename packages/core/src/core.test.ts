@@ -93,7 +93,7 @@ describe("population expansion", () => {
 
 describe("memory", () => {
   it("applies operations and caps notes", () => {
-    let memory = emptyMemory("a");
+    let memory = emptyMemory("run_a_aaaaaa", "pop/p#1");
     memory = applyMemoryOperation(memory, { kind: "waiting_on", text: "email verification" }, 1, 2);
     memory = applyMemoryOperation(memory, { kind: "note", text: "n1" }, 1, 2);
     memory = applyMemoryOperation(memory, { kind: "note", text: "n2" }, 1, 2);
