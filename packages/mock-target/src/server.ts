@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { PRODUCT_INFO, TaskletApp } from "./app.js";
+import { PRODUCT_INFO, TaskletApp, type Repairable } from "./app.js";
 import { buildMcpServer } from "./mcp.js";
 
 export interface MockTargetOptions {
@@ -9,6 +9,8 @@ export interface MockTargetOptions {
   host?: string;
   /** Mirror state to this JSON file so restarts keep accounts. */
   stateFile?: string;
+  /** Planted defects to repair; see `REPAIRABLE`. Empty means the app ships broken, as intended. */
+  repaired?: ReadonlySet<Repairable>;
   adminToken?: string;
   quiet?: boolean;
 }
@@ -52,7 +54,7 @@ function send(res: ServerResponse, status: number, body: string, type = "applica
 }
 
 export async function startMockTarget(options: MockTargetOptions = {}): Promise<RunningMockTarget> {
-  const app = new TaskletApp(options.stateFile);
+  const app = new TaskletApp(options.stateFile, options.repaired);
   const adminToken = options.adminToken ?? process.env.MOCK_TARGET_ADMIN_TOKEN ?? "admin";
   const host = options.host ?? "127.0.0.1";
 

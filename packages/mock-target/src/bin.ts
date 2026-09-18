@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseRepairs } from "./app.js";
 import { startMockTarget } from "./server.js";
 
 const args = process.argv.slice(2);
@@ -9,7 +10,9 @@ function flag(name: string): string | undefined {
 
 const port = Number(flag("port") ?? process.env.PORT ?? "4310");
 const stateFile = flag("state") ?? process.env.MOCK_TARGET_STATE;
-const running = await startMockTarget({ port, ...(stateFile ? { stateFile } : {}) });
+const repaired = parseRepairs(flag("fix") ?? process.env.MOCK_TARGET_FIX);
+const running = await startMockTarget({ port, ...(stateFile ? { stateFile } : {}), ...(repaired.size > 0 ? { repaired } : {}) });
+if (repaired.size > 0) console.log(`repaired: ${[...repaired].join(", ")}`);
 
 const stop = (): void => {
   void running.close().then(() => process.exit(0));

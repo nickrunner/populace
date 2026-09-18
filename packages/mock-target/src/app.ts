@@ -67,13 +67,35 @@ export function publicUser(user: User): { id: string; email: string; displayName
   return { id: user.id, email: user.email, displayName: user.displayName, plan: user.plan, createdAt: user.createdAt };
 }
 
+/**
+ * Planted defects that can be repaired at startup. Testing populace's continuation runs
+ * (`--continue-from`) needs a version of the target where a reported bug is actually fixed,
+ * so the agents who complained can be asked whether they are satisfied. Nothing is repaired
+ * by default: the reference app ships broken on purpose.
+ */
+export const REPAIRABLE = ["search-case", "due-date", "pagination"] as const;
+export type Repairable = (typeof REPAIRABLE)[number];
+
+export function parseRepairs(value: string | undefined): Set<Repairable> {
+  const wanted = (value ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const unknown = wanted.filter((w) => !(REPAIRABLE as readonly string[]).includes(w));
+  if (unknown.length > 0) throw new Error(`unknown repair(s): ${unknown.join(", ")}. Known: ${REPAIRABLE.join(", ")}`);
+  return new Set(wanted as Repairable[]);
+}
+
 export class TaskletApp {
   private users = new Map<string, User>();
   private projects = new Map<string, Project>();
   private tasks = new Map<string, Task>();
   private comments = new Map<string, Comment>();
 
-  constructor(private readonly stateFile?: string) {
+  constructor(
+    private readonly stateFile?: string,
+    private readonly repaired: ReadonlySet<Repairable> = new Set(),
+  ) {
     if (stateFile) this.load(stateFile);
   }
 
@@ -270,7 +292,7 @@ export class TaskletApp {
       .filter((t) => !input.status || t.status === input.status)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const page = input.page ?? 1;
-    const offset = input.page === undefined ? 0 : input.page * pageSize; // <- should be (page - 1) * pageSize
+    const offset = this.repaired.has("pagination") ? Math.max(0, (page - 1) * pageSize) : input.page === undefined ? 0 : input.page * pageSize; // <- should be (page - 1) * pageSize
     return { tasks: all.slice(offset, offset + pageSize), page, pageSize, total: all.length };
   }
 
@@ -286,7 +308,8 @@ export class TaskletApp {
       title: input.title?.trim() || task.title,
       notes: input.notes !== undefined ? input.notes.trim() : task.notes,
       priority: input.priority ?? task.priority,
-      // dueDate intentionally not applied
+      // dueDate intentionally not applied unless repaired
+      ...(this.repaired.has("due-date") && input.dueDate !== undefined ? { dueDate: input.dueDate } : {}),
     };
     this.tasks.set(task.id, next);
     this.persist();
@@ -315,6 +338,11 @@ export class TaskletApp {
    */
   searchTasks(user: User, query: string): { query: string; tasks: Task[] } {
     const q = query.trim();
+    if (this.repaired.has("search-case")) {
+      const needle = q.toLowerCase();
+      const fixed = [...this.tasks.values()].filter((t) => t.ownerId === user.id && (t.title.toLowerCase().includes(needle) || t.notes.toLowerCase().includes(needle)));
+      return { query: q, tasks: fixed };
+    }
     const tasks = [...this.tasks.values()].filter((t) => t.ownerId === user.id && (t.title.includes(q) || t.notes.includes(q)));
     return { query: q, tasks };
   }
