@@ -1,0 +1,290 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f9f6f2; color: #1a1510; font-family: "Instrument Sans", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #236292; text-decoration: none; }
+    a:hover { color: #4280b2; text-decoration: underline; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 980px; display: flex; background: #f9f6f2; overflow: hidden;">
+
+  <div style="width: 228px; flex-shrink: 0; background: #fefdfb; border-right: 1px solid #e1ded7; display: flex; flex-direction: column;">
+    <div style="padding: 18px 20px 16px; border-bottom: 1px solid #e1ded7;">
+      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;">populace</div>
+      <div style="margin-top: 2px; font-size: 11px; color: #857f79;">running on this machine</div>
+    </div>
+      <div style="padding: 14px 12px 0;">
+        <div style="display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 12px; border-radius: 6px; background: #236292; color: #fefdfb; font-size: 13.5px; font-weight: 600;">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4.5 3.2v9.6l8-4.8z"/></svg>Start a run
+        </div>
+      </div>
+    <div style="padding: 12px 12px; display: flex; flex-direction: column; gap: 14px;">
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; background: #dbeefe; color: #236292; font-size: 13.5px; font-weight: 600;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>
+          <span style="flex-grow: 1;">Overview</span>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="padding: 0 10px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">What we found</div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3.5 14V2.5h8l-1.6 2.6 1.6 2.6h-8"/></svg>
+          <span style="flex-grow: 1;">Findings</span><span style="color: #857f79; font-size: 12px;">12</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke-dasharray="2.4 2"/><path d="M8 5.5v5M5.5 8h5"/></svg>
+          <span style="flex-grow: 1;">Coverage gaps</span><span style="color: #857f79; font-size: 12px;">2</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9.5 2.5h3v11h-3M9.5 8H2.5M5 5l-2.5 3L5 11"/></svg>
+          <span style="flex-grow: 1;">Who walked away</span><span style="color: #857f79; font-size: 12px;">1</span>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="padding: 0 10px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">How it ran</div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="5.5" r="2.3"/><path d="M2 13.5c0-2.2 1.8-3.6 4-3.6s4 1.4 4 3.6"/><path d="M10.6 3.6a2.3 2.3 0 0 1 0 4.4M11.6 10.4c1.5.4 2.4 1.6 2.4 3.1"/></svg>
+          <span style="flex-grow: 1;">Population</span><span style="color: #857f79; font-size: 12px;">3</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"/></svg>
+          <span style="flex-grow: 1;">Wakes</span><span style="color: #857f79; font-size: 12px;">11</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 4.8v6.4M9.8 6.3c-.4-.6-1-.9-1.8-.9-1 0-1.7.5-1.7 1.3 0 1.9 3.6.9 3.6 2.8 0 .8-.8 1.4-1.9 1.4-.9 0-1.5-.3-1.9-1"/></svg>
+          <span style="flex-grow: 1;">Cost</span>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="padding: 0 10px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">Set up</div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.8"/><circle cx="8" cy="8" r="2.2"/></svg>
+          <span style="flex-grow: 1;">The target</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5.4" r="2.6"/><path d="M2.8 13.6c0-2.6 2.3-4.2 5.2-4.2s5.2 1.6 5.2 4.2"/></svg>
+          <span style="flex-grow: 1;">The people</span><span style="color: #857f79; font-size: 12px;">3</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 5h11M2.5 11h11"/><circle cx="6" cy="5" r="1.8"/><circle cx="10.5" cy="11" r="1.8"/></svg>
+          <span style="flex-grow: 1;">Limits and spending</span>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top: auto; padding: 16px 18px; border-top: 1px solid #e1ded7;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline;">
+        <div style="font-size: 11.5px; color: #57514c;">This run</div>
+        <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; font-weight: 600;">$2.14</div>
+      </div>
+      <div style="margin-top: 7px; height: 6px; border-radius: 3px; background: #dbeefe; overflow: hidden;">
+        <div style="width: 27%; height: 6px; border-radius: 3px; background: #236292;"></div>
+      </div>
+      <div style="margin-top: 6px; font-size: 11px; color: #857f79;">of the $8.00 you set for it</div>
+    </div>
+  </div>
+
+  <div style="flex-grow: 1; display: flex; flex-direction: column; min-width: 0;">
+    <div style="height: 56px; flex-shrink: 0; border-bottom: 1px solid #e1ded7; background: #fefdfb; display: flex; align-items: center; gap: 14px; padding: 0 24px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 7px; height: 7px; border-radius: 4px; background: #0ca30c;"></span>
+        <span style="font-size: 15px; font-weight: 600;">Tasklet</span>
+      </div>
+      <span style="display: flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 13px; background: #e2f6e2; color: #0a7a0a; font-size: 12px; font-weight: 600;">
+        <span style="width: 6px; height: 6px; border-radius: 3px; background: #0ca30c;"></span>Running
+      </span>
+      <span style="font-size: 12px; color: #857f79;">6 minutes in · 7 of 12 visits done</span>
+      <div style="flex-grow: 1;"></div>
+      <span style="padding: 6px 12px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Send one more round</span>
+      <span style="padding: 6px 12px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Let them finish, then stop</span>
+      <span style="padding: 6px 12px; border-radius: 5px; background: #fbe4e4; border: 1px solid #f0c9c9; color: #a32a2a; font-size: 12.5px; font-weight: 600;">Stop everything now</span>
+    </div>
+
+    <div style="flex-grow: 1; display: flex; min-height: 0;">
+
+      <div style="width: 306px; flex-shrink: 0; border-right: 1px solid #e1ded7; padding: 18px 16px; overflow-y: auto;">
+        <div style="font-size: 13px; font-weight: 600;">Where everyone is</div>
+        <div style="margin-top: 11px; display: flex; flex-direction: column; gap: 9px;">
+          <div style="background: #fefdfb; border: 1px solid #236292; border-radius: 7px; padding: 12px 13px;">
+            <div style="display: flex; align-items: center; gap: 9px;">
+              <span style="width: 26px; height: 26px; border-radius: 13px; background: #f3f0ea; color: #57514c; font-size: 10.5px; font-weight: 600; display: flex; align-items: center; justify-content: center;">PD</span>
+              <div style="flex-grow: 1; min-width: 0;">
+                <div style="font-size: 13px; font-weight: 600;">Priya Desai</div>
+                <div style="font-size: 11.5px; color: #857f79;">visit 3, turn 6</div>
+              </div>
+              <span style="font-size: 11px; font-weight: 600; color: #0a7a0a;">here now</span>
+            </div>
+            <div style="margin-top: 9px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #1a1510; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">update_task({ dueDate: "2026-12-24" })</div>
+            <div style="margin-top: 9px; height: 4px; border-radius: 2px; background: #e1ded7; overflow: hidden;">
+              <div style="width: 50%; height: 4px; border-radius: 2px; background: #236292;"></div>
+            </div>
+            <div style="margin-top: 5px; font-size: 11px; color: #857f79;">2 of 4 visits</div>
+          </div>
+          <div style="background: #fefdfb; border: 1px solid #236292; border-radius: 7px; padding: 12px 13px;">
+            <div style="display: flex; align-items: center; gap: 9px;">
+              <span style="width: 26px; height: 26px; border-radius: 13px; background: #f3f0ea; color: #57514c; font-size: 10.5px; font-weight: 600; display: flex; align-items: center; justify-content: center;">TR</span>
+              <div style="flex-grow: 1; min-width: 0;">
+                <div style="font-size: 13px; font-weight: 600;">Tomás Ruiz</div>
+                <div style="font-size: 11.5px; color: #857f79;">visit 3, turn 2</div>
+              </div>
+              <span style="font-size: 11px; font-weight: 600; color: #0a7a0a;">here now</span>
+            </div>
+            <div style="margin-top: 9px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #1a1510; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">list_tasks({ projectId: "prj_8x1", page: 1 })</div>
+            <div style="margin-top: 9px; height: 4px; border-radius: 2px; background: #e1ded7; overflow: hidden;">
+              <div style="width: 50%; height: 4px; border-radius: 2px; background: #236292;"></div>
+            </div>
+            <div style="margin-top: 5px; font-size: 11px; color: #857f79;">2 of 4 visits</div>
+          </div>
+          <div style="background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 12px 13px;">
+            <div style="display: flex; align-items: center; gap: 9px;">
+              <span style="width: 26px; height: 26px; border-radius: 13px; background: #f3f0ea; color: #57514c; font-size: 10.5px; font-weight: 600; display: flex; align-items: center; justify-content: center;">CM</span>
+              <div style="flex-grow: 1; min-width: 0;">
+                <div style="font-size: 13px; font-weight: 600;">Casey Morgan</div>
+                <div style="font-size: 11.5px; color: #857f79;">finished visit 3</div>
+              </div>
+              <span style="font-size: 11px; font-weight: 600; color: #857f79;">away</span>
+            </div>
+            <div style="margin-top: 9px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #a09a92; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">waiting for the next one</div>
+            <div style="margin-top: 9px; height: 4px; border-radius: 2px; background: #e1ded7; overflow: hidden;">
+              <div style="width: 75%; height: 4px; border-radius: 2px; background: #236292;"></div>
+            </div>
+            <div style="margin-top: 5px; font-size: 11px; color: #857f79;">3 of 4 visits</div>
+          </div>
+        </div>
+        <div style="margin-top: 18px; padding: 12px 13px; border-radius: 7px; background: #f3f0ea;">
+          <div style="font-size: 12px; font-weight: 600;">Next visit in</div>
+          <div style="margin-top: 4px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 20px; font-weight: 600;">1m 12s</div>
+          <div style="margin-top: 4px; font-size: 11.5px; color: #857f79;">Casey, visit 4. Two run at a time.</div>
+        </div>
+      </div>
+
+      <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid #e1ded7;">
+        <div style="flex-shrink: 0; padding: 14px 18px 12px; border-bottom: 1px solid #e1ded7; display: flex; align-items: center; gap: 10px;">
+          <span style="width: 26px; height: 26px; border-radius: 13px; background: #f3f0ea; color: #57514c; font-size: 10.5px; font-weight: 600; display: flex; align-items: center; justify-content: center;">PD</span>
+          <div style="flex-grow: 1;">
+            <div style="font-size: 13.5px; font-weight: 600;">Priya Desai, visit 3</div>
+            <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79;">turn 6 · 11 calls · $0.41 so far</div>
+          </div>
+          <span style="font-size: 12px; color: #236292;">Follow whoever is active</span>
+        </div>
+        <div style="flex-grow: 1; overflow-y: auto; padding: 6px 0;">
+            <div style="display: flex; gap: 10px; padding: 9px 14px; ">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #cecac2; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="display: flex; align-items: center; gap: 8px;"><span style="font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 12.5px; font-weight: 500;">Turn 4</span></div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">notices the date came back unchanged</div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 10px; padding: 9px 14px; ">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #864e18; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="display: flex; align-items: center; gap: 8px;"><span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #864e18; background: #fde9d4; padding: 1px 5px; border-radius: 3px;">c5</span><span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12.5px; font-weight: 600;">get_task</span></div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{ taskId: "tsk_91b7" } → dueDate 2026-10-01</div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 10px; padding: 9px 14px; ">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #4280b2; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="display: flex; align-items: center; gap: 8px;"><span style="font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 12.5px; font-weight: 500;">Writes it down</span></div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">annoyance: the deadline did not save again</div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 10px; padding: 9px 14px; ">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #cecac2; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="display: flex; align-items: center; gap: 8px;"><span style="font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 12.5px; font-weight: 500;">Turn 5</span></div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">tries once more with a different date format</div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 10px; padding: 9px 14px; ">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #864e18; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="display: flex; align-items: center; gap: 8px;"><span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #864e18; background: #fde9d4; padding: 1px 5px; border-radius: 3px;">c6</span><span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12.5px; font-weight: 600;">update_task</span></div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{ dueDate: "2026-12-24T00:00:00Z" } → ok, dueDate 2026-10-01</div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 10px; padding: 9px 14px; ">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #ec835a; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="display: flex; align-items: center; gap: 8px;"><span style="font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 12.5px; font-weight: 500;">Files a bug</span></div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Moving a deadline appears to work and does not stick</div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 10px; padding: 9px 14px; background: #dbeefe;">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #cecac2; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="display: flex; align-items: center; gap: 8px;"><span style="font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 12.5px; font-weight: 500;">Turn 6</span><span style="padding: 1px 7px; border-radius: 3px; background: #236292; color: #fefdfb; font-size: 10px; font-weight: 600;">happening now</span></div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">deciding what to do next</div>
+              </div>
+            </div>
+        </div>
+      </div>
+
+      <div style="width: 340px; flex-shrink: 0; padding: 18px 18px; overflow-y: auto;">
+        <div style="font-size: 13px; font-weight: 600;">As it happens</div>
+        <div style="margin-top: 6px;">
+            <div style="display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #e1ded7;">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #ec835a; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="font-size: 12.5px; line-height: 1.45; color: #1a1510;">Priya filed a bug about <strong style="font-weight: 600;">update_task</strong></div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79;">high · evidence c3 c4 c5 c6</div>
+              </div>
+              <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #a09a92; flex-shrink: 0;">just now</span>
+            </div>
+            <div style="display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #e1ded7;">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #fab219; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="font-size: 12.5px; line-height: 1.45; color: #1a1510;">Tomás was held back from <strong style="font-weight: 600;">delete_project</strong></div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79;">he has to confirm destructive tools</div>
+              </div>
+              <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #a09a92; flex-shrink: 0;">40s</span>
+            </div>
+            <div style="display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #e1ded7;">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #864e18; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="font-size: 12.5px; line-height: 1.45; color: #1a1510;">Casey finished visit 3 and said she would be back</div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79;">7 turns · 9 calls · $0.22</div>
+              </div>
+              <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #a09a92; flex-shrink: 0;">1m</span>
+            </div>
+            <div style="display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #e1ded7;">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #ec835a; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="font-size: 12.5px; line-height: 1.45; color: #1a1510;">Casey filed friction about the free plan cap</div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79;">medium · evidence c4</div>
+              </div>
+              <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #a09a92; flex-shrink: 0;">2m</span>
+            </div>
+            <div style="display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #e1ded7;">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #4280b2; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="font-size: 12.5px; line-height: 1.45; color: #1a1510;">Tomás signed up</div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79;">tomas.ruiz+m1abc2de@populace.test</div>
+              </div>
+              <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #a09a92; flex-shrink: 0;">3m</span>
+            </div>
+            <div style="display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #e1ded7;">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: #0ca30c; flex-shrink: 0; margin-top: 5px;"></span>
+              <div style="min-width: 0; flex-grow: 1;">
+                <div style="font-size: 12.5px; line-height: 1.45; color: #1a1510;">The run started</div>
+                <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79;">3 people · 12 visits planned · $8.00 ceiling</div>
+              </div>
+              <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #a09a92; flex-shrink: 0;">4m</span>
+            </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

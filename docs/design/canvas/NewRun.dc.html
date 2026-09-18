@@ -1,0 +1,265 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f9f6f2; color: #1a1510; font-family: "Instrument Sans", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #236292; text-decoration: none; }
+    a:hover { color: #4280b2; text-decoration: underline; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 1120px; display: flex; background: #f9f6f2; overflow: hidden;">
+
+  <div style="width: 228px; flex-shrink: 0; background: #fefdfb; border-right: 1px solid #e1ded7; display: flex; flex-direction: column;">
+    <div style="padding: 18px 20px 16px; border-bottom: 1px solid #e1ded7;">
+      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;">populace</div>
+      <div style="margin-top: 2px; font-size: 11px; color: #857f79;">running on this machine</div>
+    </div>
+      <div style="padding: 14px 12px 0;">
+        <div style="display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 12px; border-radius: 6px; background: #236292; color: #fefdfb; font-size: 13.5px; font-weight: 600;">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4.5 3.2v9.6l8-4.8z"/></svg>Start a run
+        </div>
+      </div>
+    <div style="padding: 12px 12px; display: flex; flex-direction: column; gap: 14px;">
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>
+          <span style="flex-grow: 1;">Overview</span>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="padding: 0 10px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">What we found</div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3.5 14V2.5h8l-1.6 2.6 1.6 2.6h-8"/></svg>
+          <span style="flex-grow: 1;">Findings</span><span style="color: #857f79; font-size: 12px;">12</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke-dasharray="2.4 2"/><path d="M8 5.5v5M5.5 8h5"/></svg>
+          <span style="flex-grow: 1;">Coverage gaps</span><span style="color: #857f79; font-size: 12px;">2</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9.5 2.5h3v11h-3M9.5 8H2.5M5 5l-2.5 3L5 11"/></svg>
+          <span style="flex-grow: 1;">Who walked away</span><span style="color: #857f79; font-size: 12px;">1</span>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="padding: 0 10px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">How it ran</div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="5.5" r="2.3"/><path d="M2 13.5c0-2.2 1.8-3.6 4-3.6s4 1.4 4 3.6"/><path d="M10.6 3.6a2.3 2.3 0 0 1 0 4.4M11.6 10.4c1.5.4 2.4 1.6 2.4 3.1"/></svg>
+          <span style="flex-grow: 1;">Population</span><span style="color: #857f79; font-size: 12px;">3</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"/></svg>
+          <span style="flex-grow: 1;">Wakes</span><span style="color: #857f79; font-size: 12px;">11</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 4.8v6.4M9.8 6.3c-.4-.6-1-.9-1.8-.9-1 0-1.7.5-1.7 1.3 0 1.9 3.6.9 3.6 2.8 0 .8-.8 1.4-1.9 1.4-.9 0-1.5-.3-1.9-1"/></svg>
+          <span style="flex-grow: 1;">Cost</span>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="padding: 0 10px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">Set up</div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.8"/><circle cx="8" cy="8" r="2.2"/></svg>
+          <span style="flex-grow: 1;">The target</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5.4" r="2.6"/><path d="M2.8 13.6c0-2.6 2.3-4.2 5.2-4.2s5.2 1.6 5.2 4.2"/></svg>
+          <span style="flex-grow: 1;">The people</span><span style="color: #857f79; font-size: 12px;">3</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; background: #dbeefe; color: #236292; font-size: 13.5px; font-weight: 600;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 5h11M2.5 11h11"/><circle cx="6" cy="5" r="1.8"/><circle cx="10.5" cy="11" r="1.8"/></svg>
+          <span style="flex-grow: 1;">Limits and spending</span>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top: auto; padding: 16px 18px; border-top: 1px solid #e1ded7;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline;">
+        <div style="font-size: 11.5px; color: #57514c;">Spent today</div>
+        <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; font-weight: 600;">$4.37</div>
+      </div>
+      <div style="margin-top: 7px; height: 6px; border-radius: 3px; background: #dbeefe; overflow: hidden;">
+        <div style="width: 9%; height: 6px; border-radius: 3px; background: #236292;"></div>
+      </div>
+      <div style="margin-top: 6px; font-size: 11px; color: #857f79;">of the $50.00 daily ceiling</div>
+    </div>
+  </div>
+
+  <div style="flex-grow: 1; display: flex; flex-direction: column; min-width: 0;">
+    <div style="height: 56px; flex-shrink: 0; border-bottom: 1px solid #e1ded7; background: #fefdfb; display: flex; align-items: center; gap: 14px; padding: 0 24px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 7px; height: 7px; border-radius: 4px; background: #0ca30c;"></span>
+        <span style="font-size: 15px; font-weight: 600;">Tasklet</span>
+      </div>
+      <span style="font-size: 12px; color: #857f79;">nothing is running</span>
+      <div style="flex-grow: 1;"></div>
+      <span style="padding: 6px 12px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Carry on from an earlier run</span>
+    </div>
+
+    <div style="flex-grow: 1; overflow-y: auto; padding: 22px 28px 28px;">
+      <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.01em;">Start a run</div>
+      <div style="margin-top: 5px; font-size: 13.5px; color: #57514c; max-width: 820px;">A run is a fresh start: everyone forgets what they knew and meets Tasklet for the first time. Nothing is spent until you press the button.</div>
+
+      <div style="margin-top: 20px; display: grid; grid-template-columns: minmax(0, 1fr) 396px; gap: 26px; align-items: start;">
+
+        <div style="display: flex; flex-direction: column; gap: 22px;">
+          <div>
+            <div style="font-size: 15px; font-weight: 600;">Who goes</div>
+            <div style="margin-top: 10px; background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: 13px; padding: 12px 15px; border-bottom: 1px solid #e1ded7;">
+                <span style="width: 28px; height: 28px; border-radius: 14px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center;">CM</span>
+                <div style="width: 210px;"><div style="font-size: 13.5px; font-weight: 600;">Casey Morgan</div></div>
+                <div style="flex-grow: 1; font-size: 12.5px; color: #857f79;">leaves fast, will not pay</div>
+                <div style="display: flex; align-items: center; gap: 0; border: 1px solid #cecac2; border-radius: 5px; overflow: hidden; background: #fefdfb;">
+              <span style="padding: 5px 10px; font-size: 14px; color: #57514c; border-right: 1px solid #e1ded7;">&minus;</span>
+              <span style="padding: 5px 14px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 600;">1</span>
+              <span style="padding: 5px 10px; font-size: 14px; color: #57514c; border-left: 1px solid #e1ded7;">+</span>
+            </div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 13px; padding: 12px 15px; border-bottom: 1px solid #e1ded7;">
+                <span style="width: 28px; height: 28px; border-radius: 14px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center;">PD</span>
+                <div style="width: 210px;"><div style="font-size: 13.5px; font-weight: 600;">Priya Desai</div></div>
+                <div style="flex-grow: 1; font-size: 12.5px; color: #857f79;">patient, lives by dates</div>
+                <div style="display: flex; align-items: center; gap: 0; border: 1px solid #cecac2; border-radius: 5px; overflow: hidden; background: #fefdfb;">
+              <span style="padding: 5px 10px; font-size: 14px; color: #57514c; border-right: 1px solid #e1ded7;">&minus;</span>
+              <span style="padding: 5px 14px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 600;">1</span>
+              <span style="padding: 5px 10px; font-size: 14px; color: #57514c; border-left: 1px solid #e1ded7;">+</span>
+            </div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 13px; padding: 12px 15px; border-bottom: 1px solid #e1ded7;">
+                <span style="width: 28px; height: 28px; border-radius: 14px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center;">TR</span>
+                <div style="width: 210px;"><div style="font-size: 13.5px; font-weight: 600;">Tomás Ruiz</div></div>
+                <div style="flex-grow: 1; font-size: 12.5px; color: #857f79;">pushes every limit</div>
+                <div style="display: flex; align-items: center; gap: 0; border: 1px solid #cecac2; border-radius: 5px; overflow: hidden; background: #fefdfb;">
+              <span style="padding: 5px 10px; font-size: 14px; color: #57514c; border-right: 1px solid #e1ded7;">&minus;</span>
+              <span style="padding: 5px 14px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 600;">1</span>
+              <span style="padding: 5px 10px; font-size: 14px; color: #57514c; border-left: 1px solid #e1ded7;">+</span>
+            </div>
+              </div>
+              <div style="padding: 11px 15px; display: flex; align-items: center; gap: 12px;">
+                <span style="font-size: 12.5px; color: #236292;">+ Add someone</span>
+                <div style="flex-grow: 1;"></div>
+                <span style="font-size: 12.5px; color: #57514c;">Send this many of each</span>
+                <div style="display: flex; align-items: center; gap: 0; border: 1px solid #cecac2; border-radius: 5px; overflow: hidden; background: #fefdfb;">
+              <span style="padding: 5px 10px; font-size: 14px; color: #57514c; border-right: 1px solid #e1ded7;">&minus;</span>
+              <span style="padding: 5px 14px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 600;">1 each</span>
+              <span style="padding: 5px 10px; font-size: 14px; color: #57514c; border-left: 1px solid #e1ded7;">+</span>
+            </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size: 15px; font-weight: 600;">How often they come back</div>
+            <div style="margin-top: 10px; background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; overflow: hidden;">
+          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 15px; border-bottom: 1px solid #e1ded7;">
+            <span style="font-size: 13.5px; flex-grow: 1;">A visit every</span>
+            <span style="padding: 6px 11px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 500; width: 118px; text-align: right;">2 minutes</span>
+            <span style="font-size: 12px; color: #857f79; width: 250px;">Short, so you see results while you watch.</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 15px; border-bottom: 1px solid #e1ded7;">
+            <span style="font-size: 13.5px; flex-grow: 1;">Give or take</span>
+            <span style="padding: 6px 11px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 500; width: 118px; text-align: right;">30 seconds</span>
+            <span style="font-size: 12px; color: #857f79; width: 250px;">So they do not all arrive at once.</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 15px; border-bottom: 1px solid #e1ded7;">
+            <span style="font-size: 13.5px; flex-grow: 1;">Stop each person after</span>
+            <span style="padding: 6px 11px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 500; width: 118px; text-align: right;">4 visits</span>
+            <span style="font-size: 12px; color: #857f79; width: 250px;">Leave empty and they keep coming back.</span>
+          </div>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size: 15px; font-weight: 600;">What it may spend</div>
+            <div style="margin-top: 10px; background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; overflow: hidden;">
+          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 15px; border-bottom: 1px solid #e1ded7;">
+            <span style="font-size: 13.5px; flex-grow: 1;">At most, per visit</span>
+            <span style="padding: 6px 11px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 500; width: 118px; text-align: right;">$3.00</span>
+            <span style="font-size: 12px; color: #857f79; width: 250px;">The visit ends and says why.</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 15px; border-bottom: 1px solid #e1ded7;">
+            <span style="font-size: 13.5px; flex-grow: 1;">At most, per visit</span>
+            <span style="padding: 6px 11px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 500; width: 118px; text-align: right;">40 turns</span>
+            <span style="font-size: 12px; color: #857f79; width: 250px;">Long enough to finish an errand, short enough to catch a loop.</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 15px; border-bottom: 1px solid #e1ded7;">
+            <span style="font-size: 13.5px; flex-grow: 1;">At most, today, everyone</span>
+            <span style="padding: 6px 11px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 500; width: 118px; text-align: right;">$50.00</span>
+            <span style="font-size: 12px; color: #857f79; width: 250px;">Across every run on this machine.</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 15px; border-bottom: 1px solid #e1ded7;">
+            <span style="font-size: 13.5px; flex-grow: 1;">When they reach for a destructive tool</span>
+            <span style="padding: 6px 11px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 500; width: 118px; text-align: right;">ask them to confirm</span>
+            <span style="font-size: 12px; color: #857f79; width: 250px;">Driven by the tool’s own destructive flag.</span>
+          </div>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size: 15px; font-weight: 600;">Which models</div>
+            <div style="margin-top: 10px; background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; overflow: hidden;">
+          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 15px; border-bottom: 1px solid #e1ded7;">
+            <span style="font-size: 13.5px; flex-grow: 1;">The people</span>
+            <span style="padding: 6px 11px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 500; width: 118px; text-align: right;">claude-sonnet-5 · medium</span>
+            <span style="font-size: 12px; color: #857f79; width: 250px;">What each of them thinks with.</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 15px; border-bottom: 1px solid #e1ded7;">
+            <span style="font-size: 13.5px; flex-grow: 1;">The judge</span>
+            <span style="padding: 6px 11px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 500; width: 118px; text-align: right;">claude-opus-5 · high</span>
+            <span style="font-size: 12px; color: #857f79; width: 250px;">It decides what reaches your report, so it runs stronger than the people it judges.</span>
+          </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="position: sticky; top: 0; display: flex; flex-direction: column; gap: 14px;">
+          <div style="background: #fefdfb; border: 2px solid #236292; border-radius: 7px; padding: 17px 19px;">
+            <div style="font-size: 15px; font-weight: 600;">Before you press go</div>
+            <div style="margin-top: 14px; display: flex; align-items: baseline; gap: 8px;">
+              <span style="font-size: 32px; font-weight: 600; letter-spacing: -0.02em;">$4.20</span>
+              <span style="font-size: 16px; color: #57514c;">to $6.10</span>
+            </div>
+            <div style="margin-top: 5px; font-size: 12.5px; line-height: 1.5; color: #57514c;">12 visits in all, three people coming back four times each. Worked out from what a visit actually cost on your last run, which was 40&cent; on average.</div>
+            <div style="margin-top: 15px; height: 1px; background: #e1ded7;"></div>
+            <div style="margin-top: 14px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">It stops on its own when</div>
+            <div style="margin-top: 9px; display: flex; flex-direction: column; gap: 8px;">
+              <div style="display: flex; gap: 9px; align-items: flex-start;">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#857f79" stroke-width="1.6" style="flex-shrink: 0; margin-top: 2px;"><circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.4l2.2 1.3"/></svg>
+                <span style="font-size: 12.5px; line-height: 1.5; color: #57514c;">All three have been back four times</span>
+              </div>
+              <div style="display: flex; gap: 9px; align-items: flex-start;">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#857f79" stroke-width="1.6" style="flex-shrink: 0; margin-top: 2px;"><circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.4l2.2 1.3"/></svg>
+                <span style="font-size: 12.5px; line-height: 1.5; color: #57514c;">The day’s $50.00 is gone</span>
+              </div>
+              <div style="display: flex; gap: 9px; align-items: flex-start;">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#857f79" stroke-width="1.6" style="flex-shrink: 0; margin-top: 2px;"><circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.4l2.2 1.3"/></svg>
+                <span style="font-size: 12.5px; line-height: 1.5; color: #57514c;">You stop it</span>
+              </div>
+            </div>
+            <div style="margin-top: 17px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; border-radius: 6px; background: #236292; color: #fefdfb; font-size: 14.5px; font-weight: 600;">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4.5 3.2v9.6l8-4.8z"/></svg>Start the run
+            </div>
+            <div style="margin-top: 9px; text-align: center; font-size: 12px; color: #857f79;">You can stop it at any moment.</div>
+          </div>
+
+          <div style="background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 14px 16px;">
+            <div style="font-size: 13px; font-weight: 600;">Every account gets cleaned up</div>
+            <div style="margin-top: 6px; font-size: 12.5px; line-height: 1.55; color: #57514c;">The three accounts this run signs up are tagged with the run, and deleting the run deletes them from Tasklet through <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px;">delete_account</span>.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

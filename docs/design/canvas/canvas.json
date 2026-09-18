@@ -1,20 +1,32 @@
 {
+  "pages": [
+    { "id": "page-1", "name": "M1 — see it locally" },
+    { "id": "page-2", "name": "M2 — run it from the browser" }
+  ],
   "artboards": [
-    { "file": "Flow.dc.html", "x": 0, "y": 0, "w": 1440, "h": 880, "title": "How the screens connect" },
-    { "file": "Main.dc.html", "x": 1560, "y": 0, "w": 1440, "h": 900, "title": "M1 · Overview" },
-    { "file": "Trace.dc.html", "x": 3120, "y": 0, "w": 1440, "h": 980, "title": "M1 · Watch a visit", "is_interactive": true },
-    { "file": "Foundations.dc.html", "x": 4680, "y": 0, "w": 1040, "h": 1280, "title": "Foundations" },
-    { "file": "Evidence.dc.html", "x": 0, "y": 1440, "w": 1440, "h": 980, "title": "M1 · Findings" },
-    { "file": "Cluster.dc.html", "x": 1560, "y": 1440, "w": 1440, "h": 1120, "title": "M1 · A finding in full" },
-    { "file": "Gaps.dc.html", "x": 3120, "y": 1440, "w": 1440, "h": 900, "title": "M1 · Coverage gaps" },
-    { "file": "Population.dc.html", "x": 0, "y": 2720, "w": 1440, "h": 980, "title": "M1 · Population" },
-    { "file": "Wakes.dc.html", "x": 1560, "y": 2720, "w": 1440, "h": 900, "title": "M1 · Wakes" }
+    { "file": "Flow.dc.html", "x": 0, "y": 0, "w": 1440, "h": 880, "title": "How the screens connect", "page": "page-1" },
+    { "file": "Main.dc.html", "x": 1560, "y": 0, "w": 1440, "h": 900, "title": "M1 · Overview", "page": "page-1" },
+    { "file": "Trace.dc.html", "x": 3120, "y": 0, "w": 1440, "h": 980, "title": "M1 · Watch a visit", "is_interactive": true, "page": "page-1" },
+    { "file": "Foundations.dc.html", "x": 4680, "y": 0, "w": 1040, "h": 1280, "title": "Foundations", "page": "page-1" },
+    { "file": "Evidence.dc.html", "x": 0, "y": 1440, "w": 1440, "h": 980, "title": "M1 · Findings", "page": "page-1" },
+    { "file": "Cluster.dc.html", "x": 1560, "y": 1440, "w": 1440, "h": 1120, "title": "M1 · A finding in full", "page": "page-1" },
+    { "file": "Gaps.dc.html", "x": 3120, "y": 1440, "w": 1440, "h": 900, "title": "M1 · Coverage gaps", "page": "page-1" },
+    { "file": "Population.dc.html", "x": 0, "y": 2720, "w": 1440, "h": 980, "title": "M1 · Population", "page": "page-1" },
+    { "file": "Wakes.dc.html", "x": 1560, "y": 2720, "w": 1440, "h": 900, "title": "M1 · Wakes", "page": "page-1" },
+
+    { "file": "Connect.dc.html", "x": 0, "y": 0, "w": 1440, "h": 1120, "title": "M2 · The target", "page": "page-2" },
+    { "file": "Personas.dc.html", "x": 1560, "y": 0, "w": 1440, "h": 1120, "title": "M2 · The people", "page": "page-2" },
+    { "file": "NewRun.dc.html", "x": 3120, "y": 0, "w": 1440, "h": 1120, "title": "M2 · Start a run", "page": "page-2" },
+    { "file": "LiveRun.dc.html", "x": 0, "y": 1280, "w": 1440, "h": 980, "title": "M2 · While it runs", "page": "page-2" }
   ],
   "annotations": [
-    { "id": "the-rule", "x": 0, "y": -210, "w": 700, "text": "M1 is read-only: every screen here reads what the SQLite store already holds, so nothing on the canvas needs a write path.\n\nThe design rule: one navigation, no role switch, no expert mode. Prose carries what we found; monospace carries how we know. Start at 'How the screens connect'." },
-    { "id": "trace-note", "x": 3120, "y": -210, "w": 620, "text": "The trace viewer is live on the canvas — click any step in the left column and the right pane follows it.\n\nThe band at the top is the thing nothing else in this category has: what she walked back in remembering." },
-    { "id": "seam-note", "x": 1560, "y": 1250, "w": 620, "text": "This is where the two audiences look at the same thing for different reasons. The quotes and the cost are for the product owner; the four calls on the right are for the developer. Neither is hidden behind a mode." },
-    { "id": "memory-note", "x": 0, "y": 2520, "w": 620, "text": "Memory is per run and per agent, so this panel is empty on a fresh run and is the whole story by visit three. It is what makes 'she came back and she is still annoyed' visible." }
+    { "id": "the-rule", "x": 0, "y": -210, "w": 700, "page": "page-1", "text": "M1 is read-only: every screen here reads what the SQLite store already holds, so nothing on the canvas needs a write path.\n\nThe design rule: one navigation, no role switch, no expert mode. Prose carries what we found; monospace carries how we know. Start at 'How the screens connect'." },
+    { "id": "trace-note", "x": 3120, "y": -210, "w": 620, "page": "page-1", "text": "The trace viewer is live on the canvas — click any step in the left column and the right pane follows it.\n\nThe band at the top is the thing nothing else in this category has: what she walked back in remembering." },
+    { "id": "seam-note", "x": 1560, "y": 1250, "w": 620, "page": "page-1", "text": "This is where the two audiences look at the same thing for different reasons. The quotes and the cost are for the product owner; the four calls on the right are for the developer. Neither is hidden behind a mode." },
+    { "id": "memory-note", "x": 0, "y": 2520, "w": 620, "page": "page-1", "text": "Memory is per run and per agent, so this panel is empty on a fresh run and is the whole story by visit three. It is what makes 'she came back and she is still annoyed' visible." },
+    { "id": "m2-config", "x": 0, "y": -250, "w": 760, "page": "page-2", "text": "These three setup screens are drawn for config living in the database, which is what the architecture thread recommends and Nick has not answered yet.\n\nIf YAML stays the source of truth instead, three things change: 'saved 4 minutes ago' becomes 'written to populace.yaml', the persona list loses 'in 1 population' (a YAML file has no cross-reference), and every screen needs a visible file path plus a reload-from-disk affordance for edits made in an editor. The layouts survive either answer." },
+    { "id": "m2-live", "x": 1560, "y": 1280, "w": 620, "page": "page-2", "text": "Watching a run is the same trace viewer as M1 with a live cursor, not a second component. The only additions are the 'happening now' row, the people panel on the left, and the feed on the right." },
+    { "id": "m2-estimate", "x": 3120, "y": -250, "w": 620, "page": "page-2", "text": "The estimate is the thing that makes a product owner willing to press the button at all. It is worked out from the average cost of a visit on the last run, so it is honest about being a range." }
   ],
-  "launch": { "view": "canvas" }
+  "launch": { "view": "canvas", "page": "page-2" }
 }
