@@ -114,7 +114,16 @@ what it buys, because none of it is available today:
 Secrets do not go in the snapshot. `bearerToken`, `apiKey` and anything substituted from `${VAR}`
 are redacted to a reference before storage; the snapshot records *that* an env var was used, never
 its value. This matters before M5, because a local database gets copied around and attached to bug
-reports.
+reports. The hash is taken over the redacted config with object keys ordered, so it is a hash of
+content rather than of assembly order, and two runs on unchanged config share one row.
+
+**A snapshot is a record of what ran, never a source of credentials.** It is redacted by
+construction, so anything that opens a connection — the verifier's replay, sweep's teardown calls —
+must take its credentials from the authored `targets` row and use the snapshot only for the shape
+of what ran. Connecting with a snapshot directly sends `[redacted]` as a bearer token, and the
+failure is silent in the worst way: replays that cannot authenticate come back `not-reproduced`,
+and the digest drops not-reproduced findings before clustering, so real findings disappear with
+nothing on screen to say why.
 
 ## 5. Config as rows (M2)
 
@@ -221,10 +230,18 @@ Event { seq: number, at: string, runId: string | null, wakeId: string | null,
 ```
 
 `trace_events` is ordered per wake, which is right for replay and useless for "what happened next
-anywhere". The log gives SSE a resumable cursor (ADR-0025), gives the run screen a single
-subscription, and in M5 is how separate runner and API processes meet. It is written by the
-runner's existing trace writer and by the daemon at run boundaries — not by new instrumentation
-scattered through the wake loop.
+anywhere". The log gives SSE a resumable cursor (ADR-0026), gives the run screen a single
+subscription, and in M5 is how separate runner and API processes meet.
+
+It is written by a `RecordingStore` decorator around the `Store` the runner already writes to, plus
+the daemon at run boundaries — not by new instrumentation scattered through the wake loop. Every
+row it appends is derived from a write that was happening anyway, which is what keeps `runWake()`
+untouched and keeps the log honestly derived.
+
+**Every event about a run carries its `runId`.** Both ends of delivery filter on it — the in-process
+fan-out compares `event.runId` to the subscriber's filter, and `listEvents` filters with `run_id =
+?`, which excludes NULL in SQL — so an event about a run written with a null `runId` is invisible to
+the screen that run owns. A null `runId` means the event is genuinely not about a run.
 
 Retention: the log is derived from rows that already exist and can be truncated to the last
 N events or the last M days without losing anything. That is stated up front so nobody later
@@ -240,15 +257,21 @@ Job { id, kind, status: "queued"|"running"|"succeeded"|"failed"|"cancelled",
       runId?, progress: { done, total, label }, error?, createdAt, startedAt?, endedAt? }
 ```
 
-One in-process runner drains the queue in M2 (ADR-0026). In M5 the same table is the queue hosted
-workers pull from; the interface does not change.
+One in-process runner drains the queue serially in M2 (ADR-0027). In M5 the same table is the queue
+hosted workers pull from; the interface does not change.
 
-## 11. Schema change without a migration framework
+Two rules the M2 implementation settled. A settled job never changes again: `run.start` outlives its
+own handler, because the handler returns once the run row exists and the daemon keeps ticking behind
+it, so progress reported after the job succeeded belongs to the run and its own events. And a job
+left `running` or `queued` by a process that died is failed on the next open, along with the run it
+was driving — a dashboard that shows a dead run as live is worse than one that shows it as failed.
 
-The store has none, by design: `CREATE TABLE IF NOT EXISTS`, plus an explicit drop where a shape
-had to change (`memories` losing its run scope is the precedent). That was affordable when the
-only data was a developer's throwaway local runs. It stops being affordable at M2, when a user's
-personas and targets live in the same file.
+## 11. Schema change and the migration gate
+
+Up to M1 the store had no versioning: `CREATE TABLE IF NOT EXISTS`, plus an explicit drop where a
+shape had to change (`memories` losing its run scope is the precedent). That was affordable when
+the only data was a developer's throwaway local runs. It stopped being affordable at M2, when a
+user's personas and targets began living in the same file.
 
 The rule from here:
 
@@ -260,8 +283,13 @@ The rule from here:
 - **Snapshots are versioned, never migrated.** A snapshot records the `PopulaceConfig` version it
   was written with and is read through the schema of that version.
 
-That is a real migration runner, small, and M2 is when it has to exist. It is cheaper to write it
-with two tables in it than with twelve.
+**Shipped in M2** as `packages/store-sqlite/src/migrations.ts`: a `MIGRATIONS` list of forward
+steps, each applied once inside a transaction, gated on the `schema_version` row. A fresh database
+and an M1 database both read as version 1, because the M1 shape is created by `CREATE TABLE IF NOT
+EXISTS` before the gate runs — so "no version row" and "version 1" are the same state and neither
+needs a special case. There are no down migrations and there will not be any: a local database's
+recovery story is to delete it, and an authored table is exactly what must not be in that blast
+radius.
 
 ## 12. What this model deliberately does not have
 
