@@ -8,6 +8,7 @@ import {
   ModelConfigSchema,
   PersonaSpecSchema,
   RunStatusSchema,
+  TraitValueSchema,
   VerifierConfigSchema,
 } from "@populace/core/isomorphic";
 import { z } from "zod";
@@ -142,6 +143,110 @@ export const StarterPersonaViewSchema = z.object({
 export type StarterPersonaView = z.infer<typeof StarterPersonaViewSchema>;
 
 export const AddStarterBodySchema = z.object({ slug: z.string().min(1), count: z.number().int().nonnegative().default(1) });
+
+/**
+ * The assembled system prompt, rendered from the same function the runner calls (`prompt.ts`).
+ * A reimplementation would drift and then lie to the person writing the persona, which is the one
+ * thing this panel exists not to do.
+ *
+ * `spec` in the request is the draft in the editor, so the preview follows what is being typed
+ * rather than what was last saved. Omitting it previews the stored person.
+ */
+/**
+ * A person as the editor holds them while they are being written: a name not typed yet, an errand
+ * added but still blank. The saved schema requires all of those, and rightly — but a preview that
+ * refuses to render the moment someone presses "+ Add one" is a preview that breaks exactly when
+ * it is being used.
+ */
+export const DraftPersonaSpecSchema = PersonaSpecSchema.omit({ id: true }).extend({
+  name: z.string().default(""),
+  role: z.string().default(""),
+  backstory: z.string().default(""),
+  goals: z.array(z.string()).default([]),
+});
+export type DraftPersonaSpec = z.infer<typeof DraftPersonaSpecSchema>;
+
+export const PersonaPreviewBodySchema = z.object({ spec: DraftPersonaSpecSchema.optional() });
+
+export const PersonaPreviewSchema = z.object({
+  systemPrompt: z.string(),
+  /** The immutable slug, which is what agent ids are built from and what a rename never touches. */
+  slug: z.string(),
+  /** What the first agent grown from this person will be called, in full. */
+  agentId: z.string(),
+  /**
+   * Traits are sampled per agent, so a spec with a range produces a different person each time.
+   * These are the values the first of them gets, which is what the prompt above is written with.
+   */
+  sampled: z.object({ patience: z.number(), budgetUsd: z.number(), traits: z.record(z.string(), TraitValueSchema) }),
+  /** Without a target there is still a prompt, but it names no product; the screen says so. */
+  target: z.object({ name: z.string(), configured: z.boolean(), describes: z.boolean() }),
+  model: z.object({ model: z.string(), effort: z.string(), inherited: z.boolean() }),
+});
+export type PersonaPreview = z.infer<typeof PersonaPreviewSchema>;
+
+// ---- the config file ------------------------------------------------------
+
+/**
+ * A config as YAML, with every credential replaced by the environment variable that supplies it.
+ * A file carrying a live token is a file nobody can commit, which is what export is for.
+ */
+export const ConfigExportSchema = z.object({
+  yaml: z.string(),
+  filename: z.string(),
+  placeholders: z.array(z.string()),
+});
+export type ConfigExport = z.infer<typeof ConfigExportSchema>;
+
+export const ConfigImportBodySchema = z.object({
+  yaml: z.string().min(1),
+  /**
+   * False parses and reports without writing anything, which is what the import box shows before
+   * it asks whether to go ahead.
+   */
+  apply: z.boolean().default(false),
+});
+export type ConfigImportBody = z.infer<typeof ConfigImportBodySchema>;
+
+export const ConfigImportResultSchema = z.object({
+  applied: z.boolean(),
+  /** What this file would do, or did, one line each. */
+  lines: z.array(z.string()),
+  personas: z.number().int().nonnegative(),
+  targetName: z.string(),
+  /** `${VAR}` placeholders the server's environment did not supply; they arrived empty. */
+  missingEnv: z.array(z.string()),
+  /** The undo point written before the change, when one was. */
+  revisionId: z.string().nullable(),
+});
+export type ConfigImportResult = z.infer<typeof ConfigImportResultSchema>;
+
+/**
+ * One point in the authored layer's history. The document itself is not on the wire — it holds
+ * the target's credentials — so the list carries what a person needs to recognise a revision and
+ * `restore` is what puts it back.
+ */
+export const ConfigRevisionViewSchema = z.object({
+  id: z.string(),
+  at: z.iso.datetime(),
+  summary: z.string(),
+  source: z.enum(["editor", "import", "restore", "baseline"]),
+  targetName: z.string().nullable(),
+  personaCount: z.number().int().nonnegative(),
+  agentCount: z.number().int().nonnegative(),
+  /** True for the revision that matches what the forms hold right now. */
+  current: z.boolean(),
+});
+export type ConfigRevisionView = z.infer<typeof ConfigRevisionViewSchema>;
+
+/** A revision rendered as YAML, for reading what a past config actually said before restoring it. */
+export const ConfigRevisionDetailSchema = ConfigRevisionViewSchema.extend({
+  yaml: z.string(),
+  /** A revision of a project that had no target yet cannot be rendered as a runnable config. */
+  renderable: z.boolean(),
+  personas: z.array(z.object({ slug: z.string(), name: z.string(), count: z.number().int().nonnegative() })),
+});
+export type ConfigRevisionDetail = z.infer<typeof ConfigRevisionDetailSchema>;
 
 // ---- population and settings ---------------------------------------------
 

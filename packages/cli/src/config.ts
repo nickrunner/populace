@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { PersonaSpecSchema, PopulaceConfigSchema, type PopulaceConfig } from "@populace/core";
+import { PersonaSpecSchema, PopulaceConfigSchema, substituteEnv, type PopulaceConfig } from "@populace/core";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
@@ -8,17 +8,6 @@ export interface LoadedConfig {
   config: PopulaceConfig;
   path: string;
   dir: string;
-}
-
-/** Replaces `${VAR}` with the environment value; unset variables become empty strings and are reported. */
-export function substituteEnv(text: string, env: NodeJS.ProcessEnv = process.env): { text: string; missing: string[] } {
-  const missing: string[] = [];
-  const out = text.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, name: string) => {
-    const value = env[name];
-    if (value === undefined) missing.push(name);
-    return value ?? "";
-  });
-  return { text: out, missing: [...new Set(missing)] };
 }
 
 const RawMemberSchema = z.looseObject({ persona: z.union([z.string(), z.record(z.string(), z.json())]) });
@@ -29,7 +18,7 @@ export function loadConfig(path = "populace.yaml"): LoadedConfig {
   const absolute = resolve(path);
   if (!existsSync(absolute)) throw new Error(`config not found: ${absolute} (run \`populace init\` to create one)`);
   const dir = dirname(absolute);
-  const { text, missing } = substituteEnv(readFileSync(absolute, "utf8"));
+  const { text, missing } = substituteEnv(readFileSync(absolute, "utf8"), process.env);
   if (missing.length) console.warn(`warning: environment variables not set: ${missing.join(", ")}`);
   // eslint-disable-next-line no-restricted-syntax -- YAML boundary, validated with zod below.
   const raw = RawConfigSchema.parse(parseYaml(text) as unknown);

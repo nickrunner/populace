@@ -21,6 +21,9 @@ export const DEFAULT_COST_PER_WAKE_USD = 0.12;
 /** How far either side of the central figure the range runs, when it comes from history. */
 const SPREAD = 0.4;
 
+/** How many recent visits the median is taken over. */
+const SAMPLE_SIZE = 50;
+
 export interface EstimateInput {
   config: PopulaceConfig;
   /** Visits per agent to assume when neither the member nor the population caps them. */
@@ -39,9 +42,9 @@ function median(values: number[]): number | null {
 
 /**
  * Visits the population will make if every agent runs to its cap. An uncapped population has no
- * arithmetic answer, so it is reported as unbounded and the estimate becomes a per-hour rate
- * rather than a total — a number that says "this does not stop on its own" is more use than a
- * large one that pretends it does.
+ * arithmetic answer at all, so it is reported as `bounded: false` with the visits worked out from
+ * an assumed number per agent: the figure is then what that many visits would cost, and the screen
+ * says the run does not stop on its own rather than pretending the total is a ceiling.
  */
 export function plannedVisits(config: PopulaceConfig, assumed: number): { agents: number; visits: number; bounded: boolean; perAgent: { personaId: string; agents: number; visits: number; capped: boolean }[] } {
   const perAgent: { personaId: string; agents: number; visits: number; capped: boolean }[] = [];
@@ -67,9 +70,11 @@ export async function estimateRun(store: Store, input: EstimateInput): Promise<R
   // History from this machine, whatever population produced it: a visit's cost is a property of
   // the model and the target far more than of the persona, and a narrow filter would usually find
   // nothing on the run that most needs the estimate — the first one after a config change.
-  const wakes: Wake[] = await store.listWakes({});
-  const priced = wakes.filter((w) => w.costUsd > 0).map((w) => w.costUsd);
-  const recent = priced.slice(-50);
+  // Bounded in the query rather than in this function: the screen is opened repeatedly while
+  // someone tunes a run, and loading every wake the machine has ever recorded to keep fifty of
+  // them is a cost that grows with the user's history.
+  const wakes: Wake[] = await store.listWakes({ limit: SAMPLE_SIZE });
+  const recent = wakes.filter((w) => w.costUsd > 0).map((w) => w.costUsd);
   const observed = median(recent);
 
   const perWake = observed ?? DEFAULT_COST_PER_WAKE_USD;

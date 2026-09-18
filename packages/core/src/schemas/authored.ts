@@ -89,3 +89,38 @@ export const StoredSettingsSchema = z.object({
   updatedAt: z.iso.datetime(),
 });
 export type StoredSettings = z.infer<typeof StoredSettingsSchema>;
+
+/**
+ * The whole authored layer of one project, as one value (`DATA-MODEL.md` §5). This is what a
+ * config revision holds and what a restore writes back, so it has to be the complete set of rows
+ * a person can edit: anything missing here silently survives a restore and makes history lie.
+ */
+export const AuthoredDocumentSchema = z.object({
+  version: z.literal(1).default(1),
+  targets: z.array(StoredTargetSchema).default([]),
+  personas: z.array(StoredPersonaSchema).default([]),
+  population: StoredPopulationSchema,
+  settings: StoredSettingsSchema,
+});
+export type AuthoredDocument = z.infer<typeof AuthoredDocumentSchema>;
+
+/**
+ * One point in the authored layer's history: the state *after* a change, with a line saying what
+ * the change was. Stored rather than derived, because the cheapest correct undo is a copy.
+ *
+ * These rows carry whatever credentials the target rows carry. That is not a new exposure — the
+ * `targets` table in the same database already holds them — and it is the reason a restore can
+ * put a working target back rather than a target that has forgotten how to authenticate. The
+ * redaction rule in `redactConfig` is about the *frozen* snapshots, which get copied out of this
+ * database and attached to bug reports; a revision never leaves it.
+ */
+export const ConfigRevisionSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1).default(DEFAULT_PROJECT_ID),
+  at: z.iso.datetime(),
+  /** One line in the words the history screen shows: "renamed Casey Morgan", "imported a file". */
+  summary: z.string().min(1),
+  source: z.enum(["editor", "import", "restore", "baseline"]),
+  document: AuthoredDocumentSchema,
+});
+export type ConfigRevision = z.infer<typeof ConfigRevisionSchema>;

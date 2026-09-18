@@ -101,6 +101,10 @@ export function LiveRun({ runId }: { runId: string }) {
             <Button onClick={() => stop.mutate("drain")} disabled={stop.isPending}>
               Let them finish, then stop
             </Button>
+            {/* This is the store's kill switch, which every in-flight wake checks (ADR-0009). It
+                is global by construction, which is honest only because one run goes at a time:
+                `POST /runs` refuses a second while this one is going. It stays engaged until it is
+                released, and the line under the controls says so. */}
             <Button tone="stop" onClick={() => stop.mutate("now")} disabled={stop.isPending}>
               Stop everything now
             </Button>

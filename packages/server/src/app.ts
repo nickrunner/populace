@@ -2,6 +2,7 @@ import { API_BASE, DigestQuerySchema, FindingListQuerySchema, RunListQuerySchema
 import type { Finding, TraceEvent } from "@populace/core";
 import { buildDigest, verifyPending } from "@populace/reports";
 import { Hono } from "hono";
+import { withLiveCredentials } from "./config-store.js";
 import { mountControl } from "./control.js";
 import type { ServerDeps } from "./deps.js";
 import { fail, page, parseQuery } from "./http.js";
@@ -101,7 +102,9 @@ export function createApp(deps: ServerDeps): Hono {
     const stored = await deps.store.getRun(runId);
     if (stored?.configSnapshotId) {
       const snapshot = await deps.store.getConfigSnapshot(stored.configSnapshotId);
-      if (snapshot) return snapshot.config;
+      // A snapshot never carries a credential (ADR-0024), and `?verify=true` below replays tool
+      // calls against the live target, so the secrets go back in from the authored row first.
+      if (snapshot) return withLiveCredentials(deps.store, snapshot.config, deps.control?.projectId);
     }
     return deps.config().then(
       (config) => config,

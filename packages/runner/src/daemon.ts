@@ -157,6 +157,10 @@ export class LocalDaemon {
         } catch (err) {
           this.deps.log?.(`[daemon] tick failed: ${err instanceof Error ? err.message : String(err)}`);
         }
+        // `stop()` can land while the tick above is awaiting, and it resolves `run()` at once — so
+        // whoever was waiting on the daemon is already free to close the store. Reading it after
+        // that point is a use-after-close, which is what this second check is for.
+        if (!this.running) return;
         const active = await this.store.listAgents({ runId: this.options.runId, populationId: this.options.config.population.id, status: "active" });
         const limitReached = this.options.stopAfterTotalWakes !== undefined && this.totalWakes >= this.options.stopAfterTotalWakes;
         if ((active.length === 0 && this.inFlight === 0) || limitReached) {

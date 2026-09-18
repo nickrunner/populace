@@ -15,6 +15,8 @@ import { LiveRun } from "./screens/LiveRun.jsx";
 import { NewRun } from "./screens/NewRun.jsx";
 import { Connect } from "./screens/setup/Connect.jsx";
 import { People } from "./screens/setup/People.jsx";
+import { PersonEditor } from "./screens/setup/PersonEditor.jsx";
+import { ConfigFile } from "./screens/setup/ConfigFile.jsx";
 import { Limits } from "./screens/setup/Limits.jsx";
 
 /** One navigation and one page frame, whether or not there is a run to be scoped to. */
@@ -91,7 +93,9 @@ export function App() {
         <Route path="/" element={<Landing />} />
         <Route path="/setup/target" element={<SetupFrame><Connect /></SetupFrame>} />
         <Route path="/setup/people" element={<SetupFrame><People /></SetupFrame>} />
+        <Route path="/setup/people/:personaId" element={<SetupFrame><PersonEditor /></SetupFrame>} />
         <Route path="/setup/limits" element={<SetupFrame><Limits /></SetupFrame>} />
+        <Route path="/setup/config" element={<SetupFrame><ConfigFile /></SetupFrame>} />
         <Route path="/start" element={<SetupFrame><NewRun /></SetupFrame>} />
         <Route path="/runs/:runId/*" element={<RunShell />} />
       </Routes>

@@ -1,5 +1,5 @@
 import type { Agent } from "../schemas/agent.js";
-import type { Project, StoredPersona, StoredPopulation, StoredSettings, StoredTarget } from "../schemas/authored.js";
+import type { ConfigRevision, Project, StoredPersona, StoredPopulation, StoredSettings, StoredTarget } from "../schemas/authored.js";
 import type { Event, EventInput, EventQuery } from "../schemas/event.js";
 import type { Job } from "../schemas/job.js";
 import type { ConfigSnapshot, Run } from "../schemas/run.js";
@@ -22,6 +22,12 @@ export interface WakeQuery {
   agentId?: string;
   since?: Date;
   until?: Date;
+  /**
+   * Keep only the most recent `limit` wakes. The result stays oldest-first either way, so a caller
+   * asking "what did the last fifty visits cost" does not have to know, or guess, what order the
+   * store returns rows in.
+   */
+  limit?: number;
 }
 
 /**
@@ -52,6 +58,7 @@ export interface Store {
   // wakes and traces
   saveWake(wake: Wake): Promise<void>;
   getWake(id: string): Promise<Wake | undefined>;
+  /** Ordered oldest first. With `query.limit`, the most recent that many, still oldest first. */
   listWakes(query?: WakeQuery): Promise<Wake[]>;
   appendTraceEvent(event: TraceEvent): Promise<void>;
   getTrace(wakeId: string): Promise<TraceEvent[]>;
@@ -118,6 +125,16 @@ export interface Store {
 
   saveSettings(settings: StoredSettings): Promise<void>;
   getSettings(projectId: string): Promise<StoredSettings | undefined>;
+
+  /**
+   * The authored layer's history (`DATA-MODEL.md` §5). Revisions are immutable copies of the
+   * authored rows, newest first, and are the undo behind every edit the dashboard makes.
+   */
+  saveConfigRevision(revision: ConfigRevision): Promise<void>;
+  getConfigRevision(id: string): Promise<ConfigRevision | undefined>;
+  listConfigRevisions(projectId: string, limit?: number): Promise<ConfigRevision[]>;
+  /** Drops all but the newest `keepLast` revisions of a project. Returns how many went. */
+  pruneConfigRevisions(projectId: string, keepLast: number): Promise<number>;
 
   // event log (ADR-0026). Append-only, one monotonic cursor across the whole store.
   appendEvent(event: EventInput): Promise<Event>;

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type StoredTarget, type TargetCheck } from "../../api.js";
 import type { TargetInput } from "@populace/contract";
@@ -152,6 +153,11 @@ export function Connect() {
         </div>
         <div className="flex items-center gap-3 shrink-0">
           <Saved at={existing?.updatedAt ?? null} />
+          {/* The design puts "Export as YAML" here; the file is the whole config rather than the
+              target alone, so this is a way in to the screen that holds it. */}
+          <Link to="/setup/config" className="t-body px-3 py-1.5 rounded-md border bg-card text-ink-soft border-rule hover:bg-well">
+            Export as YAML
+          </Link>
           <Button tone="go" onClick={() => save.mutate()} disabled={save.isPending || draft.name === "" || draft.mcp[0]?.url === ""}>
             {save.isPending ? "Saving…" : "Save"}
           </Button>
