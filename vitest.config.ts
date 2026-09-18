@@ -8,6 +8,7 @@ export default defineConfig({
     alias: [
       { find: /^@populace\/adapters\/(.+)$/, replacement: `${root}packages/adapters/src/$1/index.ts` },
       { find: /^@populace\/runner\/testing$/, replacement: `${root}packages/runner/src/testing/index.ts` },
+      { find: /^@populace\/core\/isomorphic$/, replacement: `${root}packages/core/src/isomorphic.ts` },
       { find: /^@populace\/([^/]+)$/, replacement: `${root}packages/$1/src/index.ts` },
     ],
   },

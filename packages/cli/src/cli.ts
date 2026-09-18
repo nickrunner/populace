@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { digest, init, kill, run, scale, status, sweep, validate, wake } from "./commands.js";
+import { digest, init, kill, run, scale, serve, status, sweep, validate, wake } from "./commands.js";
 
 // node:sqlite prints an ExperimentalWarning on Node 22; keep every other warning.
 process.removeAllListeners("warning");
@@ -141,6 +141,22 @@ program
   .action(async () => {
     try {
       await status(globals());
+    } catch (err) {
+      fail(err as Error);
+    }
+  });
+
+program
+  .command("serve")
+  .description("start the local HTTP API and dashboard (read-only)")
+  .option("--port <n>", "port to listen on", (v: string) => Number.parseInt(v, 10))
+  .option("--host <host>", "host to bind; defaults to 127.0.0.1 and should stay there")
+  .action(async (opts: { port?: number; host?: string }) => {
+    try {
+      const server = await serve({ ...globals(), ...opts });
+      const stop = (): void => void server.close().then(() => process.exit(0));
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
     } catch (err) {
       fail(err as Error);
     }

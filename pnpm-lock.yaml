@@ -50,6 +50,9 @@ importers:
       '@populace/runner':
         specifier: workspace:*
         version: link:../runner
+      '@populace/server':
+        specifier: workspace:*
+        version: link:../server
       '@populace/store-sqlite':
         specifier: workspace:*
         version: link:../store-sqlite
@@ -66,6 +69,15 @@ importers:
       '@populace/mock-target':
         specifier: workspace:*
         version: link:../mock-target
+
+  packages/contract:
+    dependencies:
+      '@populace/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^4.1.0
+        version: 4.6.5
 
   packages/core:
     dependencies:
@@ -132,6 +144,40 @@ importers:
         specifier: workspace:*
         version: link:../store-sqlite
 
+  packages/server:
+    dependencies:
+      '@hono/node-server':
+        specifier: ^1.15.0
+        version: 1.19.17(hono@4.13.8)
+      '@populace/adapters':
+        specifier: workspace:*
+        version: link:../adapters
+      '@populace/contract':
+        specifier: workspace:*
+        version: link:../contract
+      '@populace/core':
+        specifier: workspace:*
+        version: link:../core
+      '@populace/reports':
+        specifier: workspace:*
+        version: link:../reports
+      '@populace/runner':
+        specifier: workspace:*
+        version: link:../runner
+      '@populace/store-sqlite':
+        specifier: workspace:*
+        version: link:../store-sqlite
+      hono:
+        specifier: ^4.9.0
+        version: 4.13.8
+      zod:
+        specifier: ^4.1.0
+        version: 4.6.5
+    devDependencies:
+      '@populace/mock-target':
+        specifier: workspace:*
+        version: link:../mock-target
+
   packages/store-sqlite:
     dependencies:
       '@populace/core':
@@ -193,6 +239,12 @@ packages:
   '@eslint/plugin-kit@0.4.1':
     resolution: {integrity: sha512-43/qtrDUokr7LJqoF2c3+RInu/t4zfrpYdoSDfYyhg52rwLV6TnOvdG4fXm7IkSB3wErkcmJS9iEhjVtOSEjjA==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+
+  '@hono/node-server@1.19.17':
+    resolution: {integrity: sha512-dSneS5qhiauZWGDCeK4o695Xd9nUNjviSZCMQrj10eetr8Uln1ucn6bbphOM6UynAMMtNIzZNSpL9vnASJwrPQ==}
+    engines: {node: '>=18.14.1'}
+    peerDependencies:
+      hono: ^4
 
   '@hono/node-server@2.1.1':
     resolution: {integrity: sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg==}
@@ -1412,6 +1464,10 @@ snapshots:
     dependencies:
       '@eslint/core': 0.17.0
       levn: 0.4.1
+
+  '@hono/node-server@1.19.17(hono@4.13.8)':
+    dependencies:
+      hono: 4.13.8
 
   '@hono/node-server@2.1.1(hono@4.13.8)':
     dependencies:

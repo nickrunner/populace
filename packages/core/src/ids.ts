@@ -1,9 +1,9 @@
-import { randomBytes } from "node:crypto";
-
 const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
 
 function randomSuffix(length: number): string {
-  const bytes = randomBytes(length);
+  // Web Crypto rather than node:crypto: core is imported by the browser bundle (ADR-0021).
+  const bytes = new Uint8Array(length);
+  globalThis.crypto.getRandomValues(bytes);
   let out = "";
   for (const b of bytes) out += alphabet.charAt(b % alphabet.length);
   return out;

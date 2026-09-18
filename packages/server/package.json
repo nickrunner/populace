@@ -1,5 +1,5 @@
 {
-  "name": "@populace/cli",
+  "name": "@populace/server",
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
@@ -10,24 +10,22 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "public"
   ],
   "scripts": {
     "build": "tsc -b"
   },
   "dependencies": {
+    "@hono/node-server": "^1.15.0",
     "@populace/adapters": "workspace:*",
+    "@populace/contract": "workspace:*",
     "@populace/core": "workspace:*",
     "@populace/reports": "workspace:*",
     "@populace/runner": "workspace:*",
-    "@populace/server": "workspace:*",
     "@populace/store-sqlite": "workspace:*",
-    "commander": "^14.0.0",
-    "yaml": "^2.8.0",
+    "hono": "^4.9.0",
     "zod": "^4.1.0"
-  },
-  "bin": {
-    "populace": "./dist/cli.js"
   },
   "devDependencies": {
     "@populace/mock-target": "workspace:*"

@@ -8,6 +8,8 @@ import { loadConfig } from "./config.js";
 import { openContext, type CliContext } from "./context.js";
 import { configTemplate } from "./template.js";
 
+const VERSION = "0.1.0";
+
 export interface GlobalOptions {
   config?: string;
   run?: string;
@@ -304,5 +306,41 @@ export async function status(options: GlobalOptions): Promise<string[]> {
     return lines;
   } finally {
     await ctx.close();
+  }
+}
+
+// ---- serve -----------------------------------------------------------------
+
+/**
+ * Starts the local HTTP API and the dashboard. M1 is read-only: it reads the store the CLI
+ * already writes (ADR-0024). From M2 this process also hosts the daemon and takes the store
+ * lock (ADR-0022), at which point `serve` and `run` stop being safe to use at the same time.
+ */
+export async function serve(options: GlobalOptions & { port?: number; host?: string }): Promise<{ url: string; close: () => Promise<void> }> {
+  const ctx = openContext(options);
+  const { startServer } = await import("@populace/server");
+  const hasKey = Boolean(process.env.ANTHROPIC_API_KEY ?? ctx.loaded.config.model.apiKey);
+  try {
+    const server = await startServer({
+      store: ctx.store,
+      config: ctx.loaded.config,
+      storePath: ctx.loaded.config.store.path,
+      version: VERSION,
+      ...(hasKey ? { verifier: ctx.provider() } : {}),
+      ...(options.port !== undefined ? { port: options.port } : {}),
+      ...(options.host !== undefined ? { host: options.host } : {}),
+      log: (line) => ctx.log(line),
+    });
+    ctx.log("Ctrl-C to stop.");
+    return {
+      url: server.url,
+      close: async () => {
+        await server.close();
+        await ctx.close();
+      },
+    };
+  } catch (err) {
+    await ctx.close();
+    throw err;
   }
 }
