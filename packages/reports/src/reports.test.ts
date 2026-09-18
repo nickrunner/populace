@@ -56,12 +56,15 @@ const searcher: ScriptPolicy = byWake(
       () => ({ calls: [call("list_tasks", {})] }),
       (ctx) => ({
         calls: [
-          call("report_coverage_gap", {
+          call("file_finding", {
+            kind: "coverage-gap",
             title: "No way to delete a task",
-            wanted_tool: "delete_task",
             description: "The product info promises I can delete tasks I no longer need, but the only delete tool removes a whole project.",
-            workaround: "Complete the task and ignore it.",
+            expected: "A delete_task tool exists.",
+            observed: "No such tool. Workaround: complete the task and ignore it.",
             severity: "medium",
+            confidence: 0.8,
+            tool: "delete_task",
             evidence_calls: [refOf(ctx, "get_product_info"), refOf(ctx, "list_tasks")],
           }),
           call("remember", { kind: "annoyance", text: "Cannot delete a single task." }),
@@ -129,12 +132,14 @@ const power: ScriptPolicy = byWake(
       () => ({ calls: [call("create_project", { name: "P4" })] }),
       (ctx) => ({
         calls: [
-          call("note_friction", {
+          call("file_finding", {
+            kind: "friction",
             title: "Free plan caps projects at 3 without warning up front",
             description: "I only found out about the limit when the fourth project failed.",
             expected: "The limit is visible before I hit it.",
             observed: "create_project returned an error about the free plan.",
             severity: "low",
+            confidence: 0.7,
             tool: "create_project",
             evidence_calls: [refOf(ctx, "create_project", "free plan")],
           }),

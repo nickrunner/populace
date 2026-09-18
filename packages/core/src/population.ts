@@ -56,6 +56,7 @@ export function instantiatePersona(spec: PersonaSpec, seed: string): Persona {
     budgetUsd,
     traits,
     tools: spec.tools,
+    model: spec.model,
   };
 }
 

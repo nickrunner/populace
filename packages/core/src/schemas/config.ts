@@ -2,7 +2,7 @@ import { z } from "zod";
 import { DurationSchema } from "../duration.js";
 import { GuardrailsSchema } from "./guardrails.js";
 import { IdentityConfigSchema } from "./identity-config.js";
-import { ModelConfigSchema } from "./model.js";
+import { DEFAULT_MODEL, ModelConfigSchema, ModelOverrideSchema } from "./model.js";
 import { PopulationSchema } from "./population.js";
 import { TargetSchema } from "./target.js";
 
@@ -22,6 +22,11 @@ export const VerifierConfigSchema = z.object({
   judge: z.enum(["model", "heuristic"]).default("model"),
   /** Verify at most this many findings per digest run. */
   maxFindings: z.number().int().positive().default(50),
+  /**
+   * The judge's model. It decides what reaches the digest, so it defaults to the strongest
+   * model at high effort regardless of what the agents themselves run.
+   */
+  model: ModelOverrideSchema.prefault({ model: DEFAULT_MODEL, effort: "high" }),
 });
 
 export const PopulaceConfigSchema = z.object({

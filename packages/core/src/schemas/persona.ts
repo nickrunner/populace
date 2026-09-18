@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ModelOverrideSchema } from "./model.js";
 
 export const TraitValueSchema = z.union([z.string(), z.number(), z.boolean()]);
 export type TraitValue = z.infer<typeof TraitValueSchema>;
@@ -34,6 +35,8 @@ export const PersonaSchema = z.object({
   budgetUsd: z.number().nonnegative().default(0),
   traits: z.record(z.string(), TraitValueSchema).default({}),
   tools: ToolPolicySchema.prefault({}),
+  /** Per-persona model and effort. Unset fields fall through to the global `model` block. */
+  model: ModelOverrideSchema.prefault({}),
 });
 export type Persona = z.infer<typeof PersonaSchema>;
 

@@ -33,3 +33,26 @@ export const ModelConfigSchema = z.object({
   apiKey: z.string().optional(),
 });
 export type ModelConfig = z.infer<typeof ModelConfigSchema>;
+
+/**
+ * A partial `ModelConfig`. Personas and the verifier each carry one: whatever it sets wins
+ * over the global `model` block, so a population can mix cheap and capable agents and the
+ * judge can stay on a stronger model than the agents it judges.
+ */
+export const ModelOverrideSchema = z.object({
+  model: z.string().optional(),
+  effort: EffortSchema.optional(),
+  maxTokens: z.number().int().positive().optional(),
+});
+export type ModelOverride = z.infer<typeof ModelOverrideSchema>;
+
+/** Layers an override over the global model config. Unset fields fall through to the base. */
+export function resolveModel(base: ModelConfig, override: ModelOverride | undefined): ModelConfig {
+  if (!override) return base;
+  return {
+    ...base,
+    ...(override.model === undefined ? {} : { model: override.model }),
+    ...(override.effort === undefined ? {} : { effort: override.effort }),
+    ...(override.maxTokens === undefined ? {} : { maxTokens: override.maxTokens }),
+  };
+}

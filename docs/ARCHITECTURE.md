@@ -61,6 +61,7 @@ process; a local daemon and a cloud job both just call `runWake()`.
       |
  system prompt = persona + behaviour        stable, cached
  tools        = target tools + reporter     stable order, cached
+ model/effort = persona override or global  resolveModel()
  user turn 1  = wake context: wake #, date, memory, identity state, goals
       |
  +--> stream model call, finalMessage()     (ModelProvider)  -> trace: model.call
@@ -83,9 +84,12 @@ trace, it did not happen.
 ### Reporter toolset
 
 Alongside the target's tools, every wake gets a runner-owned toolset:
-`file_finding`, `note_friction`, `report_coverage_gap`, `give_up`, `remember`,
-`done`. These are the only way findings and memory are produced (ADR-0007).
-Reporter tools are declared `strict: true` so their arguments always validate.
+`file_finding`, `give_up`, `remember`, `done`, and `fetch_page` when the target
+has a web base URL. These are the only way findings and memory are produced
+(ADR-0007). One `file_finding` covers every finding kind; `kind` selects which.
+The tools are not declared `strict` — the API's grammar-complexity budget
+rejected the toolset outright — so the runner validates every reporter call
+against its zod schema itself (ADR-0007 amendment).
 
 Each target tool call is given a call ref (`c1`, `c2`, ...) that is echoed in
 the tool result. `file_finding` takes `evidence_calls: ["c3", "c4"]`; the runner
@@ -146,11 +150,15 @@ designed now; only SQLite and the in-process loop are implemented (ADR-0004).
 
 ## Model calls
 
-Claude via `@anthropic-ai/sdk`. Default model `claude-opus-5`, server-side
-refusal fallbacks on by default, adaptive thinking, `output_config.effort`
-configurable per wake (default `high`), every call streamed with
-`finalMessage()`, append-only message history, stable prefix (system prompt +
-tools) cached, SDK types throughout (ADR-0006). The provider sits behind a thin
+Claude via `@anthropic-ai/sdk`. Server-side refusal fallbacks on by default,
+adaptive thinking, every call streamed with `finalMessage()`, append-only message
+history, SDK types throughout (ADR-0006). Model and effort resolve per wake: a
+persona's `model` override layers over the global `model` block, and the
+verifier's judge resolves its own from `verifier.model`, so cheap agents and a
+strong judge coexist in one run. Caching covers both the stable prefix (system
+prompt, tool list) and the conversation: one breakpoint rolls to the end of
+`messages` each turn, without which the transcript is re-sent at full price
+every turn and input dominates the bill. The provider sits behind a thin
 `ModelProvider` interface; only the Anthropic implementation exists, plus a
 scripted provider used by tests (ADR-0016).
 

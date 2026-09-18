@@ -23,9 +23,10 @@ identity:
   teardownTool: delete_account
   emailDomain: populace.test
 
+# What the agents run. A persona can override model/effort/maxTokens for itself.
 model:
-  model: claude-opus-5
-  effort: high                 # low | medium | high | xhigh | max
+  model: claude-sonnet-5
+  effort: medium               # low | medium | high | xhigh | max
   maxTokens: 16000
   fallbacks: true              # server-side refusal fallbacks
 
@@ -45,6 +46,8 @@ daemon:
 verifier:
   judge: model                 # model | heuristic
   maxFindings: 50
+  # The judge decides what reaches the digest, so it runs stronger than the agents it judges.
+  model: { model: claude-opus-5, effort: high }
 
 digestDir: digests
 
@@ -101,6 +104,8 @@ population:
           - Never deletes a whole project by accident
         patience: 3
         budgetUsd: 20
+        # Tomás pushes hardest on scale and paging, so he gets the stronger model.
+        model: { model: claude-opus-5, effort: high }
         tools:
           destructive: confirm
       count: 1

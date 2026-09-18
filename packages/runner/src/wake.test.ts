@@ -219,4 +219,48 @@ describe("runWake against the mock target", () => {
     expect(second.skipped).toBe(true);
     await store.close();
   });
+
+  it("moves a single cache breakpoint to the end of the conversation each turn", async () => {
+    const store = new SqliteStore(":memory:");
+    const config = makeConfig();
+    // Where cache_control sat on each request, as "<message index>/<block index>".
+    const marks: string[][] = [];
+    const script: ScriptPolicy = (ctx) => {
+      marks.push(
+        ctx.messages.flatMap((message, m) =>
+          typeof message.content === "string"
+            ? []
+            : message.content.flatMap((block, b) => ("cache_control" in block && block.cache_control ? [`${m}/${b}`] : [])),
+        ),
+      );
+      return ctx.turn < 3 ? { calls: [call("get_product_info")] } : { calls: [call("done", { summary: "enough", would_return: true })] };
+    };
+    const result = await runWake({ agent: firstAgent(config), config }, { store, provider: new ScriptedProvider(script), identityProvider: new SelfSignupProvider(config.identity as never) });
+
+    expect(result.wake.status).toBe("done");
+    expect(marks.length).toBe(3);
+    // Exactly one breakpoint per request, never a stale one left behind on an earlier turn.
+    for (const perRequest of marks) expect(perRequest.length).toBe(1);
+    // And it advances: each turn's breakpoint is on a later message than the one before.
+    const messageIndex = marks.map((m) => Number(m[0]!.split("/")[0]));
+    expect(messageIndex).toEqual([...messageIndex].sort((a, b) => a - b));
+    expect(new Set(messageIndex).size).toBe(3);
+    await store.close();
+  });
+
+  it("runs a persona on its own model, overriding the global one", async () => {
+    const store = new SqliteStore(":memory:");
+    const config = makeConfig({}, { model: { model: "claude-opus-5", effort: "max" } });
+    config.model.model = "claude-sonnet-5";
+    config.model.effort = "medium";
+    const script: ScriptPolicy = () => ({ calls: [call("done", { summary: "done", would_return: false })] });
+    const result = await runWake({ agent: firstAgent(config), config }, { store, provider: new ScriptedProvider(script), identityProvider: new SelfSignupProvider(config.identity as never) });
+
+    // The persona's override wins over the global model block, and the wake records what actually ran.
+    expect(result.wake.model).toBe("claude-opus-5");
+    expect(result.wake.effort).toBe("max");
+    const calls = ofType(await store.getTrace(result.wake.id), "model.call");
+    expect(calls.every((c) => c.model === "claude-opus-5" && c.effort === "max")).toBe(true);
+    await store.close();
+  });
 });

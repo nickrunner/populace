@@ -43,6 +43,15 @@ export type ScriptPolicy = (ctx: ScriptContext) => ScriptedTurn;
  * Deterministic ModelProvider for tests (ADR-0016). Produces real BetaMessage
  * objects with usage so the trace, cost accounting and guardrails are exercised.
  */
+/** The runner sends user turns as a string or as text blocks (a cache breakpoint needs the block form). */
+function textOf(content: Anthropic.Beta.BetaMessageParam["content"]): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((block): block is Anthropic.Beta.BetaTextBlockParam => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
+
 export class ScriptedProvider implements ModelProvider {
   readonly name = "scripted";
   private readonly seen = new Map<string, SeenToolResult[]>();
@@ -64,7 +73,7 @@ export class ScriptedProvider implements ModelProvider {
     allResults.push(...lastResults);
     this.seen.set(key, allResults);
     const first = request.messages[0];
-    const wakeContext = first && typeof first.content === "string" ? first.content : "";
+    const wakeContext = first ? textOf(first.content) : "";
 
     const scripted = this.policy({ turn, metadata: request.metadata, wakeContext, lastResults, allResults, toolNames: request.tools.map((t) => t.name), messages: request.messages });
     const content: Anthropic.Beta.BetaContentBlock[] = [];

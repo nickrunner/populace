@@ -10,6 +10,7 @@ import {
   newIdentityId,
   newWakeId,
   priceFor,
+  resolveModel,
   stableStringify,
   tagForRun,
   truncate,
@@ -40,9 +41,7 @@ import {
   FetchPageInput,
   FileFindingInput,
   GiveUpInput,
-  NoteFrictionInput,
   RememberInput,
-  ReportCoverageGapInput,
   isReporterTool,
   reporterTools,
 } from "./reporter/tools.js";
@@ -87,6 +86,37 @@ interface FindingDraft {
   evidence: string[];
 }
 
+/** Every content block carries `cache_control` except these three, so a breakpoint cannot land on them. */
+type CacheableBlockParam = Extract<Anthropic.Beta.BetaContentBlockParam, { cache_control?: Anthropic.Beta.BetaCacheControlEphemeral | null }>;
+const UNCACHEABLE_BLOCKS = new Set(["thinking", "redacted_thinking", "fallback"]);
+
+function isCacheable(block: Anthropic.Beta.BetaContentBlockParam): block is CacheableBlockParam {
+  return !UNCACHEABLE_BLOCKS.has(block.type);
+}
+
+/**
+ * Moves the conversation's cache breakpoint to the end of the history.
+ *
+ * The stable prefix (system prompt, tool list) carries its own breakpoints, but `messages`
+ * grows every turn and without a breakpoint on it the whole transcript is re-sent as fresh
+ * input each time: uncached input was ~70% of a wake's cost, rising with the square of the
+ * session length. One rolling breakpoint means each turn reads the previous turn's prefix at
+ * the cache rate instead. Older breakpoints are cleared first so the request stays within the
+ * four the API allows (the system block and the last tool hold two of them).
+ */
+function rollCacheBreakpoint(messages: Anthropic.Beta.BetaMessageParam[]): void {
+  for (const message of messages) {
+    if (typeof message.content === "string") continue;
+    for (const block of message.content) if (isCacheable(block)) block.cache_control = null;
+  }
+  const last = messages[messages.length - 1];
+  if (!last) return;
+  // A string body cannot carry cache_control; the block form is equivalent on the wire.
+  if (typeof last.content === "string") last.content = [{ type: "text", text: last.content }];
+  const tail = last.content.findLast(isCacheable);
+  if (tail) tail.cache_control = { type: "ephemeral" };
+}
+
 const WRAP_UP_NOTICE =
   "[runner notice] Your session budget is used up. Do not call any more product tools. If there is anything future-you should know, call remember now, then call done. This is your last turn.";
 
@@ -126,8 +156,10 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
   const wakeId = newWakeId();
   const wakeNumber = agent.wakeCount + 1;
   const startedAt = now();
-  const effort = options.effort ?? config.model.effort;
-  const price = priceFor(config.model.model, config.model.prices);
+  // Persona overrides layer over the global model block, so one population can mix models.
+  const modelConfig = resolveModel(config.model, agent.persona.model);
+  const effort = options.effort ?? modelConfig.effort;
+  const price = priceFor(modelConfig.model, modelConfig.prices);
 
   const wake: Wake = {
     id: wakeId,
@@ -139,7 +171,7 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
     wakeNumber,
     status: "running",
     summary: "",
-    model: config.model.model,
+    model: modelConfig.model,
     effort,
     usage: ZERO_USAGE,
     costUsd: 0,
@@ -400,29 +432,6 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
         const f = await fileFinding({ ...parsed.data, evidence: parsed.data.evidence_calls });
         return reporterResult(block, true, `Filed ${f.kind} ${f.id}: ${f.title} (${f.reproduction.length} evidence calls attached).`);
       }
-      case "note_friction": {
-        const parsed = NoteFrictionInput.safeParse(block.input);
-        if (!parsed.success) return invalid(block, parsed.error);
-        const f = await fileFinding({ ...parsed.data, kind: "friction", confidence: 0.7, evidence: parsed.data.evidence_calls });
-        return reporterResult(block, true, `Noted friction ${f.id}: ${f.title}.`);
-      }
-      case "report_coverage_gap": {
-        const parsed = ReportCoverageGapInput.safeParse(block.input);
-        if (!parsed.success) return invalid(block, parsed.error);
-        const d = parsed.data;
-        const f = await fileFinding({
-          kind: "coverage-gap",
-          title: d.title,
-          description: d.description,
-          expected: `A tool like ${d.wanted_tool} exists.`,
-          observed: d.workaround ? `No such tool. Workaround: ${d.workaround}` : "No such tool and no workaround.",
-          severity: d.severity,
-          confidence: 0.8,
-          tool: d.wanted_tool,
-          evidence: d.evidence_calls,
-        });
-        return reporterResult(block, true, `Reported coverage gap ${f.id}: ${f.title}.`);
-      }
       case "give_up": {
         const parsed = GiveUpInput.safeParse(block.input);
         if (!parsed.success) return invalid(block, parsed.error);
@@ -482,14 +491,15 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
         break;
       }
 
+      rollCacheBreakpoint(messages);
       const request: ModelRequest = {
-        model: config.model.model,
+        model: modelConfig.model,
         effort,
-        maxTokens: config.model.maxTokens,
+        maxTokens: modelConfig.maxTokens,
         system,
         tools: modelTools,
         messages,
-        fallbacks: config.model.fallbacks,
+        fallbacks: modelConfig.fallbacks,
         metadata: { wakeId, wakeNumber, agentId: agent.id, personaId: agent.persona.id, runId },
       };
       const turn = budget.snapshot.turns + 1;
@@ -510,7 +520,7 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
       await trace.write({
         type: "model.call",
         turn,
-        model: config.model.model,
+        model: modelConfig.model,
         effort,
         request: { messageCount: messages.length, lastUserContent: lastUserText(messages) },
         response: { stopReason: response.message.stop_reason, content: toJson(response.message.content), servedBy: response.servedBy },

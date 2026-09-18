@@ -68,6 +68,10 @@ Edit `populace.yaml`:
   file), or `admin-mint` (Firebase Admin custom tokens; install `firebase-admin`).
 - `population.members[]`: personas with counts and trait distributions, a
   cadence, and a scale factor. A persona can be inline or `persona: ./file.yaml`.
+  A persona may set `model: { model, effort, maxTokens }` to override the global
+  `model` block, so one population can mix cheap and capable agents.
+- `verifier.model`: the judge's own model. It decides what reaches the digest, so
+  it defaults to a stronger model and effort than the agents it judges.
 - `guardrails`: per-wake token and dollar ceilings, a per-population daily
   ceiling, per-persona tool allow/deny lists and a destructive-tool policy.
 

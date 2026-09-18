@@ -19,14 +19,16 @@ export function emptyMemory(agentId: string, now: Date = new Date()): Memory {
   return { agentId, notes: [], waitingOn: [], annoyances: [], done: [], updatedAt: now.toISOString() };
 }
 
-export const MemoryOperationSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("note"), text: z.string().min(1) }),
-  z.object({ kind: z.literal("waiting_on"), text: z.string().min(1) }),
-  z.object({ kind: z.literal("annoyance"), text: z.string().min(1) }),
-  z.object({ kind: z.literal("done"), text: z.string().min(1) }),
-  /** Removes waitingOn entries containing the text (case-insensitive). */
-  z.object({ kind: z.literal("resolved"), text: z.string().min(1) }),
-]);
+/** "resolved" removes waitingOn entries containing the text (case-insensitive); the rest append. */
+export const MemoryKindSchema = z.enum(["note", "waiting_on", "annoyance", "done", "resolved"]);
+export type MemoryKind = z.infer<typeof MemoryKindSchema>;
+
+/**
+ * A flat object rather than a discriminated union on `kind`: this schema is handed to the
+ * model as a strict tool schema, and a union serialises to a root-level anyOf, which is not
+ * an object schema and so cannot be a tool input.
+ */
+export const MemoryOperationSchema = z.object({ kind: MemoryKindSchema, text: z.string().min(1) });
 export type MemoryOperation = z.infer<typeof MemoryOperationSchema>;
 
 export function applyMemoryOperation(memory: Memory, op: MemoryOperation, wake: number, maxNotes: number, now: Date = new Date()): Memory {

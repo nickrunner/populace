@@ -75,7 +75,7 @@ const policy: ScriptPolicy = byWake(
       },
       (ctx) => ({
         calls: [
-          call("report_coverage_gap", { title: "No way to delete a task", wanted_tool: "delete_task", description: "d", workaround: null, severity: "medium", evidence_calls: [ref(ctx, "list_tasks")] }),
+          call("file_finding", { kind: "coverage-gap", title: "No way to delete a task", description: "d", expected: "A delete_task tool exists.", observed: "No such tool and no workaround.", severity: "medium", confidence: 0.8, tool: "delete_task", evidence_calls: [ref(ctx, "list_tasks")] }),
         ],
       }),
     ]),

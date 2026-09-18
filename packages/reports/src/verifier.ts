@@ -3,6 +3,7 @@ import {
   JsonObjectSchema,
   costOf,
   priceFor,
+  resolveModel,
   stableStringify,
   truncate,
   type Finding,
@@ -172,17 +173,22 @@ export async function modelJudge(finding: Finding, replay: ReplayOutcome, deps: 
     `Report (${finding.kind}, severity ${finding.severity}, persona ${finding.personaId}):\nTitle: ${finding.title}\nDescription: ${finding.description}\nExpected: ${finding.expected}\nObserved: ${finding.observed}\n\n` +
     `Original calls:\n${describeSteps(finding.reproduction)}\n\nReplay just now${replay.identityUsed ? " (same account)" : " (no account)"}:\n${describeSteps(replay.steps)}\n\n` +
     `Tools currently on the target: ${replay.toolNames.join(", ")}\n\nCall verdict.`;
+  // The judge decides what reaches the digest, so it runs on its own model, independent of
+  // whatever the agents were run with (`verifier.model`, defaulting to the strongest at high effort).
+  const judge = resolveModel(deps.config.model, deps.config.verifier.model);
   const response = await deps.provider.complete({
-    model: deps.config.model.model,
-    effort: "medium",
-    maxTokens: 4000,
+    model: judge.model,
+    effort: judge.effort,
+    // A verdict is a couple of sentences; the cap stays low unless the config raises it,
+    // because with thinking on, headroom here is spend.
+    maxTokens: deps.config.verifier.model.maxTokens ?? 4000,
     system,
     tools,
     messages: [{ role: "user", content: user }],
-    fallbacks: deps.config.model.fallbacks,
+    fallbacks: judge.fallbacks,
     metadata: { wakeId: `verify:${finding.id}`, wakeNumber: 0, agentId: "verifier", personaId: "verifier", runId: finding.runId },
   });
-  const costUsd = costOf(response.usage, priceFor(deps.config.model.model, deps.config.model.prices));
+  const costUsd = costOf(response.usage, priceFor(judge.model, judge.prices));
   const call = response.message.content.find((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use" && b.name === "verdict");
   const parsed = call ? VerdictInput.safeParse(call.input) : undefined;
   if (!parsed?.success) return { verdict: "inconclusive", reason: "judge did not return a verdict", costUsd };
