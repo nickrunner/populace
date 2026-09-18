@@ -80,6 +80,18 @@ CREATE INDEX IF NOT EXISTS wakes_run_agent_started ON wakes(run_id, agent_id, st
 CREATE INDEX IF NOT EXISTS agents_run_status ON agents(run_id, status);
 `;
 
+/**
+ * The authored layer's history (`DATA-MODEL.md` §5). An authored table, so it is additive and
+ * never dropped: it is the only copy of what a config looked like before someone changed it.
+ */
+const CONFIG_REVISIONS = `
+CREATE TABLE IF NOT EXISTS config_revisions (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, at TEXT NOT NULL, source TEXT NOT NULL,
+  summary TEXT NOT NULL, json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS config_revisions_project ON config_revisions(project_id, at);
+`;
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 2,
@@ -90,6 +102,13 @@ export const MIGRATIONS: Migration[] = [
       // is why nothing has to be backfilled and no produced table is touched.
       db.exec(M2_TABLES);
       db.exec(DASHBOARD_INDEXES);
+    },
+  },
+  {
+    version: 3,
+    name: "m2-config-history",
+    up(db) {
+      db.exec(CONFIG_REVISIONS);
     },
   },
 ];

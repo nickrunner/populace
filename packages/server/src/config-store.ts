@@ -213,7 +213,7 @@ export async function seedProjectFromConfig(store: Store, config: PopulaceConfig
 }
 
 /** What a redacted secret is replaced by, so a reader can see that one was used. */
-const REDACTED = "[redacted]";
+export const REDACTED = "[redacted]";
 
 /**
  * Strips credentials out of a config before it is written to a snapshot (`DATA-MODEL.md` §4). A
@@ -241,6 +241,46 @@ export function redactConfig(config: PopulaceConfig): { config: PopulaceConfig; 
     redacted.push("model.apiKey");
   }
   return { config: { ...config, target: { ...config.target, mcp }, model }, redacted };
+}
+
+/**
+ * Puts the live credentials back into a config that came out of a snapshot.
+ *
+ * A snapshot is the record of *what ran* and deliberately carries `[redacted]` in place of every
+ * secret, because it gets copied around and attached to bug reports. Two things read a snapshot
+ * and then open a connection with it — the verifier replaying a finding's tool calls, and sweep
+ * deleting the accounts a run created — and against an authenticated target both would send
+ * `Authorization: Bearer [redacted]`. Replay would 401, every finding would come back
+ * `not-reproduced`, the digest would drop them without a word, and sweep would leave real accounts
+ * on someone's product.
+ *
+ * So the snapshot stays redacted and the credential is put back at the point of use, from the
+ * authored `targets` row, which is the only place a secret lives. An endpoint whose credential is
+ * gone fails loudly here rather than connecting with a placeholder.
+ */
+export async function withLiveCredentials(store: Store, config: PopulaceConfig, projectId = DEFAULT_PROJECT_ID): Promise<PopulaceConfig> {
+  const needsToken = config.target.mcp.some((e) => e.bearerToken === REDACTED || Object.values(e.headers).includes(REDACTED));
+  if (!needsToken) return config;
+
+  const live = (await store.listTargets(projectId)).flatMap((target) => target.mcp);
+  const byName = new Map(live.map((e) => [e.name, e]));
+  const byUrl = new Map(live.map((e) => [e.url, e]));
+  const mcp = config.target.mcp.map((endpoint) => {
+    // Name first, url second: an endpoint that was renamed is still the same endpoint, and one
+    // that moved is still the one that answers at that name.
+    const source = byName.get(endpoint.name) ?? byUrl.get(endpoint.url);
+    const headers = { ...endpoint.headers };
+    for (const [key, value] of Object.entries(headers)) {
+      if (value !== REDACTED) continue;
+      const replacement = source?.headers[key];
+      if (replacement === undefined) throw new Error(`the ${key} header for the ${endpoint.name} endpoint is not in this project's target any more; reconnect the target and try again`);
+      headers[key] = replacement;
+    }
+    if (endpoint.bearerToken !== REDACTED) return { ...endpoint, headers };
+    if (source?.bearerToken === undefined) throw new Error(`the credential for the ${endpoint.name} endpoint is not in this project's target any more; reconnect the target and try again`);
+    return { ...endpoint, bearerToken: source.bearerToken, headers };
+  });
+  return { ...config, target: { ...config.target, mcp } };
 }
 
 /**

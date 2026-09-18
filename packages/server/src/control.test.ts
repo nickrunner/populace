@@ -1,6 +1,11 @@
 import { SelfSignupProvider } from "@populace/adapters/self-signup";
 import {
+  ConfigExportSchema,
+  ConfigImportResultSchema,
+  ConfigRevisionDetailSchema,
+  ConfigRevisionViewSchema,
   JobViewSchema,
+  PersonaPreviewSchema,
   PersonaViewSchema,
   PopulationViewSchema,
   RunEstimateSchema,
@@ -14,15 +19,15 @@ import {
   pageOf,
   routes,
 } from "@populace/contract";
-import { PopulaceConfigSchema, expandPopulation, newRunId, type PopulaceConfig, type Store } from "@populace/core";
+import { PopulaceConfigSchema, expandPopulation, instantiatePersona, newRunId, type PopulaceConfig, type Store } from "@populace/core";
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
-import { runWake } from "@populace/runner";
+import { personaSystemPrompt, runWake } from "@populace/runner";
 import { ScriptedProvider, call, sequence, type ScriptContext } from "@populace/runner/testing";
 import { SqliteStore } from "@populace/store-sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
-import { ensurePopulation, ensureProject, ensureSettings, redactConfig, resolveProjectConfig, seedProjectFromConfig, snapshotConfig } from "./config-store.js";
+import { ensurePopulation, ensureProject, ensureSettings, redactConfig, resolveProjectConfig, seedProjectFromConfig, snapshotConfig, withLiveCredentials } from "./config-store.js";
 import { EventHub, RecordingStore } from "./events.js";
 import { JobRunner } from "./jobs.js";
 import { RunController } from "./runs.js";
@@ -59,6 +64,8 @@ interface Harness {
   store: Store;
   jobs: JobRunner;
   runs: RunController;
+  /** The config a run executed, credentials and all — what `serve` hands the verifier and sweep. */
+  configForRun(runId: string): Promise<PopulaceConfig>;
   close(): Promise<void>;
 }
 
@@ -67,18 +74,29 @@ interface Harness {
  * the hub, the job queue and the run controller — so what these tests drive is the process, not a
  * hand-assembled subset of it.
  */
-async function harness(options: { hasApiKey?: boolean; seed?: boolean } = {}): Promise<Harness> {
+async function harness(options: { hasApiKey?: boolean; seed?: boolean; config?: PopulaceConfig; script?: ConstructorParameters<typeof ScriptedProvider>[0] } = {}): Promise<Harness> {
   const inner = new SqliteStore(":memory:");
   const hub = new EventHub();
   const store: Store = new RecordingStore(inner, hub.publish);
   const processConfig = { store: { kind: "sqlite" as const, path: ":memory:" }, digestDir: "digests" };
   await ensureProject(store);
   await ensureSettings(store);
-  if (options.seed !== false) await seedProjectFromConfig(store, config());
+  if (options.seed !== false) await seedProjectFromConfig(store, options.config ?? config());
 
-  const provider = new ScriptedProvider(() => ({ calls: [call("done", { summary: "looked around", would_return: true })] }));
+  const provider = new ScriptedProvider(options.script ?? (() => ({ calls: [call("done", { summary: "looked around", would_return: true })] })));
   const jobs = new JobRunner(store);
   const runs = new RunController({ store, provider: () => provider });
+  /**
+   * Exactly what `serve` wires (`serve.ts`): the snapshot is the record of what ran and carries
+   * no credential, so the live one goes back in before this config reaches anything that opens a
+   * connection with it.
+   */
+  const configForRun = async (runId: string): Promise<PopulaceConfig> => {
+    const run = await store.getRun(runId);
+    const snapshot = run?.configSnapshotId ? await store.getConfigSnapshot(run.configSnapshotId) : undefined;
+    if (snapshot) return withLiveCredentials(store, snapshot.config);
+    return (await resolveProjectConfig(store, processConfig)).config;
+  };
   const app = createApp({
     store,
     storePath: ":memory:",
@@ -91,11 +109,11 @@ async function harness(options: { hasApiKey?: boolean; seed?: boolean } = {}): P
       jobs,
       runs,
       hub,
-      configForRun: async () => (await resolveProjectConfig(store, processConfig)).config,
+      configForRun,
       sweep: () => Promise.resolve({ identities: 0, removed: 0, failures: 0, lines: [] }),
     },
   });
-  return { app, store, jobs, runs, close: () => inner.close() };
+  return { app, store, jobs, runs, configForRun, close: () => inner.close() };
 }
 
 // eslint-disable-next-line no-restricted-syntax -- HTTP boundary: every caller parses with a contract schema.
@@ -418,6 +436,216 @@ describe("the store underneath", () => {
     // `--force` takes it over.
     expect((await takeLock(store, { force: true })).pid).toBe(process.pid);
     await store.close();
+  });
+});
+
+describe("writing a person", () => {
+  it("previews the very prompt the runner assembles, not a description of it", async () => {
+    const h = await harness();
+    const people = pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas)));
+    const person = people.items[0]!;
+    const preview = PersonaPreviewSchema.parse(await json(await post(h.app, routes.personaPreview(person.id))));
+
+    // The assertion that matters: the panel is the runner's own function over the same inputs, so
+    // a change to the prompt cannot drift away from what the editor shows.
+    const population = await ensurePopulation(h.store);
+    const expected = personaSystemPrompt(instantiatePersona(person.spec, `${population.seed}:${person.slug}:0`), config().target);
+    expect(preview.systemPrompt).toBe(expected);
+    expect(preview.slug).toBe("casual-lister");
+    expect(preview.agentId).toBe(`${population.slug}/casual-lister#1`);
+    expect(preview.target.configured).toBe(true);
+    expect(preview.model.inherited).toBe(true);
+    await h.close();
+  });
+
+  it("follows the draft being typed rather than what is saved", async () => {
+    const h = await harness();
+    const people = pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas)));
+    const person = people.items[0]!;
+    const { id: _id, ...spec } = person.spec;
+    const preview = PersonaPreviewSchema.parse(await json(await post(h.app, routes.personaPreview(person.id), { spec: { ...spec, name: "Not Yet Saved", goals: ["buy a hat"] } })));
+    expect(preview.systemPrompt).toContain("Not Yet Saved");
+    expect(preview.systemPrompt).toContain("buy a hat");
+    // Previewing writes nothing.
+    expect((await h.store.getPersona(person.id))?.spec.name).toBe("Casey Morgan");
+    await h.close();
+  });
+
+  it("copies a person under a new id and leaves the copy at home", async () => {
+    const h = await harness();
+    const people = pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas)));
+    const copy = PersonaViewSchema.parse(await json(await post(h.app, routes.personaDuplicate(people.items[0]!.id))));
+    expect(copy.slug).toBe("casual-lister-2");
+    expect(copy.spec.id).toBe("casual-lister-2");
+    expect(copy.count).toBe(0);
+    // The original is untouched, which is the point of copying rather than editing.
+    expect((await h.store.getPersona(people.items[0]!.id))?.spec.name).toBe("Casey Morgan");
+    await h.close();
+  });
+});
+
+describe("the config file", () => {
+  it("exports without a secret in it and imports the same file back", async () => {
+    const h = await harness();
+    const exported = ConfigExportSchema.parse(await json(await h.app.request(routes.configExport)));
+    expect(exported.yaml).not.toContain("gateway-secret");
+    expect(exported.yaml).toContain("${POPULACE_DEFAULT_TOKEN}");
+    expect(exported.placeholders.join(" ")).toContain("bearer token");
+
+    const before = (await resolveProjectConfig(h.store, { store: { kind: "sqlite", path: ":memory:" }, digestDir: "digests" })).config;
+    const result = ConfigImportResultSchema.parse(await json(await post(h.app, routes.configImport, { yaml: exported.yaml, apply: true })));
+    expect(result.applied).toBe(true);
+    expect(result.missingEnv).toContain("POPULACE_DEFAULT_TOKEN");
+
+    const after = (await resolveProjectConfig(h.store, { store: { kind: "sqlite", path: ":memory:" }, digestDir: "digests" })).config;
+    // Lossless: both ends are the same zod schema, so a round trip changes nothing — and the
+    // credential the file deliberately does not carry is still the one that was stored.
+    expect(after).toEqual(before);
+    expect(after.target.mcp[0]?.bearerToken).toBe("gateway-secret");
+    await h.close();
+  });
+
+  it("says what a file would do before it does any of it", async () => {
+    const h = await harness();
+    const exported = ConfigExportSchema.parse(await json(await h.app.request(routes.configExport)));
+    const yaml = exported.yaml.replace("name: Tasklet", "name: Something Else");
+    const dry = ConfigImportResultSchema.parse(await json(await post(h.app, routes.configImport, { yaml, apply: false })));
+    expect(dry.applied).toBe(false);
+    expect(dry.targetName).toBe("Something Else");
+    expect(dry.lines.join(" ")).toContain("Casey Morgan");
+    // Nothing was written.
+    expect((await h.store.listTargets("default"))[0]?.name).toBe("Tasklet");
+    await h.close();
+  });
+
+  it("refuses a file it cannot read whole, rather than importing part of it", async () => {
+    const h = await harness();
+    const referenced = await post(h.app, routes.configImport, {
+      yaml: "version: 1\ntarget:\n  name: Tasklet\n  mcp:\n    - url: http://127.0.0.1:1/\nidentity:\n  strategy: self-signup\n  signupTool: sign_up\npopulation:\n  id: p\n  members:\n    - persona: ./someone.yaml\n",
+      apply: true,
+    });
+    expect(referenced.status).toBe(400);
+    expect(await referenced.text()).toContain("another file");
+    expect((await post(h.app, routes.configImport, { yaml: "nonsense: true", apply: true })).status).toBe(400);
+    await h.close();
+  });
+});
+
+describe("the history of the config", () => {
+  it("records an undo point around every edit, and puts one back", async () => {
+    const h = await harness();
+    const people = pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas)));
+    const person = people.items[0]!;
+    const { id: _id, ...spec } = person.spec;
+    await put(h.app, routes.persona(person.id), { spec: { ...spec, name: "Casey Renamed" } });
+
+    const history = pageOf(ConfigRevisionViewSchema).parse(await json(await h.app.request(routes.configHistory)));
+    // Newest first: the rename, and under it where the project started.
+    expect(history.items[0]?.summary).toBe("renamed Casey Morgan to Casey Renamed");
+    expect(history.items[0]?.current).toBe(true);
+    expect(history.items[0]?.personaCount).toBe(1);
+    const baseline = history.items.find((r) => r.source === "baseline");
+    expect(baseline).toBeDefined();
+
+    const detail = ConfigRevisionDetailSchema.parse(await json(await h.app.request(routes.configRevision(baseline!.id))));
+    expect(detail.renderable).toBe(true);
+    expect(detail.yaml).toContain("Casey Morgan");
+    expect(detail.yaml).not.toContain("gateway-secret");
+
+    await post(h.app, routes.configRestore(baseline!.id));
+    expect((await h.store.getPersona(person.id))?.spec.name).toBe("Casey Morgan");
+    // A restore is itself an edit, so the rename is still in the history to go forward to.
+    const after = pageOf(ConfigRevisionViewSchema).parse(await json(await h.app.request(routes.configHistory)));
+    expect(after.items[0]?.source).toBe("restore");
+    expect(after.items.some((r) => r.summary === "renamed Casey Morgan to Casey Renamed")).toBe(true);
+    await h.close();
+  });
+
+  it("puts a deleted person back, rather than only adding what is missing", async () => {
+    const h = await harness();
+    const people = pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas)));
+    await post(h.app, routes.personaStarters, { slug: "first-timer", count: 1 });
+    const withStarter = pageOf(ConfigRevisionViewSchema).parse(await json(await h.app.request(routes.configHistory)));
+    expect(withStarter.items[0]?.personaCount).toBe(2);
+
+    await h.app.request(routes.persona(people.items[0]!.id), { method: "DELETE" });
+    expect((await h.store.listPersonas("default"))).toHaveLength(1);
+
+    await post(h.app, routes.configRestore(withStarter.items[0]!.id));
+    expect((await h.store.listPersonas("default")).map((p) => p.slug).sort()).toEqual(["casual-lister", "first-timer"]);
+    await h.close();
+  });
+});
+
+describe("what the review of the first slice turned up", () => {
+  it("hands the live credential to anything that reconnects, while the snapshot keeps none", async () => {
+    const h = await harness();
+    const started = await json(await post(h.app, routes.runs));
+    const runId = (started as { runId: string }).runId;
+    await h.jobs.idle();
+    await h.runs.settled(runId);
+
+    const snapshot = await h.store.getConfigSnapshot((await h.store.getRun(runId))!.configSnapshotId);
+    expect(snapshot?.config.target.mcp[0]?.bearerToken).toBe("[redacted]");
+
+    // The verifier's replay and sweep both go through this, and both open an MCP session with it.
+    const forRun = await h.configForRun(runId);
+    expect(forRun.target.mcp[0]?.bearerToken).toBe("gateway-secret");
+
+    // A credential that is genuinely gone fails loudly rather than connecting with a placeholder.
+    for (const target of await h.store.listTargets("default")) await h.store.deleteTarget(target.id);
+    await expect(h.configForRun(runId)).rejects.toThrow(/not in this project's target/);
+    await h.close();
+  });
+
+  it("stamps the run id on every event, including the ones only a wake knows about", async () => {
+    const h = await harness({
+      script: sequence([() => ({ calls: [call("no_such_tool", {})] }), () => ({ calls: [call("done", { summary: "gave up on that", would_return: false })] })]),
+    });
+    const started = await json(await post(h.app, routes.runs));
+    const runId = (started as { runId: string }).runId;
+    await h.jobs.idle();
+    await h.runs.settled(runId);
+
+    // Both ends of the live stream filter on the run, and SQL excludes NULL, so an event written
+    // without a run id is one no browser can ever see.
+    const events = await h.store.listEvents({ runId, limit: 500 });
+    const types = new Set(events.map((e) => e.type));
+    expect(types).toContain("guardrail.tripped");
+    expect(types).toContain("trace.appended");
+    expect(events.every((e) => e.runId === runId)).toBe(true);
+    await h.close();
+  });
+
+  it("refuses a second run while one is going, because stopping is global", async () => {
+    // A five-second cadence keeps the first run in flight while the second is refused; the run is
+    // drained at the end rather than waited out.
+    const slow = PopulaceConfigSchema.parse({ ...config(), population: { ...config().population, maxWakes: 3, cadence: { every: "5s", jitter: "0s", initialDelay: "0s" } } });
+    const h = await harness({ config: slow });
+    const started = await json(await post(h.app, routes.runs));
+    const runId = (started as { runId: string }).runId;
+    expect(h.runs.runningIds).toContain(runId);
+
+    const second = await post(h.app, routes.runs);
+    expect(second.status).toBe(409);
+    expect(await second.text()).toContain("already going");
+
+    await h.runs.stop(runId, "drain");
+    await h.jobs.idle();
+    await h.close();
+  });
+
+  it("reads only the recent visits it needs to price the next run", async () => {
+    const h = await harness();
+    await realRun(h.store);
+    const all = await h.store.listWakes({});
+    expect(all.length).toBeGreaterThan(0);
+    // The estimator asks for a bounded window with an order the store promises, rather than
+    // loading every wake this machine has ever recorded and slicing the end off it.
+    const recent = await h.store.listWakes({ limit: 1 });
+    expect(recent).toHaveLength(1);
+    expect(recent[0]?.id).toBe(all[all.length - 1]?.id);
+    await h.close();
   });
 });
 

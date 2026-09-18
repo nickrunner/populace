@@ -95,6 +95,7 @@ export function Sidebar({ runId }: { runId: string | null }) {
           <Item to="/setup/target" label="The target" />
           <Item to="/setup/people" label="The people" count={setup.data?.agentCount} />
           <Item to="/setup/limits" label="Limits and spending" />
+          <Item to="/setup/config" label="The config file" />
         </Group>
 
         <div className="px-3 mb-6">

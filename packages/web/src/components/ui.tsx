@@ -220,3 +220,86 @@ export function Saved({ at }: { at: string | null }) {
 export function Problem({ children }: { children: ReactNode }) {
   return <p className="t-body text-critical mt-2">{children}</p>;
 }
+
+/**
+ * A 1–5 dial with its ends named. The design labels the ends rather than the numbers, because
+ * "leaves at the first snag" is what a person is choosing and "2" is not.
+ */
+export function Slider({ value, onChange, min = 1, max = 5, low, high, reading }: { value: number; onChange: (v: number) => void; min?: number; max?: number; low: string; high: string; reading: string }) {
+  return (
+    <div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={1}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full accent-accent"
+        aria-label={reading}
+      />
+      <div className="flex justify-between gap-3 mt-1.5">
+        <span className="t-meta text-ink-muted">{low}</span>
+        <span className="t-meta text-ink font-medium">{reading}</span>
+        <span className="t-meta text-ink-muted">{high}</span>
+      </div>
+    </div>
+  );
+}
+
+/** A row that says what it holds and opens to hold it. Closed, it reads as a summary line. */
+export function Disclosure({ title, summary, children }: { title: string; summary: string; children: ReactNode }) {
+  return (
+    <details className="bg-card border border-rule rounded-lg [&[open]>summary]:border-b [&[open]>summary]:border-rule">
+      <summary className="flex items-center gap-2.5 px-3.5 py-3 cursor-pointer list-none">
+        <span className="t-meta text-ink-muted transition-transform">▸</span>
+        <span className="t-body text-ink font-medium flex-1">{title}</span>
+        <span className="t-meta text-ink-muted">{summary}</span>
+      </summary>
+      <div className="px-3.5 py-3.5">{children}</div>
+    </details>
+  );
+}
+
+/**
+ * An ordered list of lines a person edits: errands, constraints. Order matters for goals — it is
+ * the order they would try them in — so moving a line is part of editing one.
+ */
+export function Lines({ values, onChange, placeholder, addLabel, ordered = false }: { values: string[]; onChange: (v: string[]) => void; placeholder: string; addLabel: string; ordered?: boolean }) {
+  const replace = (index: number, text: string): void => onChange(values.map((v, i) => (i === index ? text : v)));
+  const move = (index: number, by: number): void => {
+    const next = [...values];
+    const [item] = next.splice(index, 1);
+    if (item === undefined) return;
+    next.splice(Math.max(0, Math.min(next.length, index + by)), 0, item);
+    onChange(next);
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      {values.map((value, index) => (
+        <div key={index} className="flex items-center gap-1.5">
+          {ordered ? <span className="t-meta text-ink-muted tabular-nums w-4 text-right">{index + 1}</span> : null}
+          <div className="flex-1">
+            <Input value={value} onChange={(text) => replace(index, text)} placeholder={placeholder} />
+          </div>
+          {ordered ? (
+            <>
+              <button type="button" className="px-1.5 py-1 t-meta text-ink-muted hover:bg-well rounded disabled:opacity-30" disabled={index === 0} onClick={() => move(index, -1)} aria-label="move up">
+                ↑
+              </button>
+              <button type="button" className="px-1.5 py-1 t-meta text-ink-muted hover:bg-well rounded disabled:opacity-30" disabled={index === values.length - 1} onClick={() => move(index, 1)} aria-label="move down">
+                ↓
+              </button>
+            </>
+          ) : null}
+          <button type="button" className="px-1.5 py-1 t-meta text-ink-muted hover:bg-well rounded" onClick={() => onChange(values.filter((_, i) => i !== index))} aria-label="remove">
+            ×
+          </button>
+        </div>
+      ))}
+      <button type="button" className="self-start t-meta text-accent px-1 py-0.5 hover:underline" onClick={() => onChange([...values, ""])}>
+        {addLabel}
+      </button>
+    </div>
+  );
+}

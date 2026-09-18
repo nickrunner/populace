@@ -20,7 +20,7 @@ export function personaSystemPrompt(persona: Persona, target: Target): string {
   return [
     `You are ${persona.name}, ${persona.role}.`,
     persona.backstory,
-    `Your goals: ${persona.goals.map((g) => `- ${g}`).join("\n")}`,
+    `Your goals:\n${persona.goals.map((g) => `- ${g}`).join("\n")}`,
     persona.constraints.length ? `Your constraints:\n${persona.constraints.map((c) => `- ${c}`).join("\n")}` : "",
     `${patience[persona.patience] ?? ""} ${budget}`.trim(),
     traitsLine(persona),
@@ -45,7 +45,11 @@ export function personaSystemPrompt(persona: Persona, target: Target): string {
     "- Always end the session with done (or give_up). Write a remember note before that if anything is worth keeping.",
   ]
     .filter((line) => line !== undefined)
-    .join("\n");
+    .join("\n")
+    // A section that is not there (no constraints, no traits) contributes an empty string, which
+    // would otherwise stack blank lines. The deliberate breaks between paragraphs survive. This
+    // is in the cached prefix and is stable per persona, so it costs nothing (ADR-0006).
+    .replace(/\n{3,}/g, "\n\n");
 }
 
 export function describeTargetTools(tools: TargetTool[]): string {

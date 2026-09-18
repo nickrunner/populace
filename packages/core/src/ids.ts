@@ -43,6 +43,11 @@ export function newPopulationId(): string {
   return `pop_${Date.now().toString(36)}_${randomSuffix(6)}`;
 }
 
+/** A point in the authored layer's history. The base36 timestamp keeps revisions in order. */
+export function newRevisionId(now: Date = new Date()): string {
+  return `rev_${now.getTime().toString(36)}_${randomSuffix(6)}`;
+}
+
 export const TAG_PREFIX = "populace:";
 
 /** The tag a run stamps on every identity, wake and finding it creates. */

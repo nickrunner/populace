@@ -116,8 +116,15 @@ export const routes = {
   personas: `${API_BASE}/personas`,
   persona: (id: string) => `${API_BASE}/personas/${seg(id)}`,
   personaStarters: `${API_BASE}/personas/starters`,
+  personaPreview: (id: string) => `${API_BASE}/personas/${seg(id)}/preview`,
+  personaDuplicate: (id: string) => `${API_BASE}/personas/${seg(id)}/duplicate`,
   population: `${API_BASE}/population`,
   settings: `${API_BASE}/settings`,
+  configExport: `${API_BASE}/config/export`,
+  configImport: `${API_BASE}/config/import`,
+  configHistory: `${API_BASE}/config/history`,
+  configRevision: (id: string) => `${API_BASE}/config/history/${seg(id)}`,
+  configRestore: (id: string) => `${API_BASE}/config/history/${seg(id)}/restore`,
 
   // ---- M2: control (ADR-0027) ---------------------------------------------
   runsEstimate: `${API_BASE}/runs/estimate`,

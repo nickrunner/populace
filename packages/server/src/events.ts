@@ -9,10 +9,27 @@ import type { Event, EventInput, Finding, Identity, Store, TraceEvent, Wake } fr
  * The daemon writes the run-boundary events itself, because a run starting is not a store write.
  */
 export class RecordingStore implements Store {
+  /**
+   * Which run a wake belongs to. Both ends of the stream filter on the run id — the in-process
+   * fan-out and `listEvents`, where SQL excludes NULL — so an event written without one is an
+   * event no browser can ever see. Trace and guardrail rows only carry a `wakeId`, so the run is
+   * resolved once per wake and remembered; a NULL `runId` then honestly means "not about a run".
+   */
+  private readonly runOfWake = new Map<string, string>();
+
   constructor(
     private readonly inner: Store,
     private readonly onEvent: (event: Event) => void = () => undefined,
   ) {}
+
+  private async runFor(wakeId: string): Promise<string | null> {
+    const known = this.runOfWake.get(wakeId);
+    if (known !== undefined) return known;
+    const wake = await this.inner.getWake(wakeId);
+    if (!wake) return null;
+    this.runOfWake.set(wakeId, wake.runId);
+    return wake.runId;
+  }
 
   private async record(input: EventInput): Promise<void> {
     // A failed event append must never fail the wake that produced it: the log is derived data and
@@ -26,14 +43,18 @@ export class RecordingStore implements Store {
 
   async appendTraceEvent(event: TraceEvent): Promise<void> {
     await this.inner.appendTraceEvent(event);
+    // `wake.start` is the one trace event that names its own run, and it is the first of a wake,
+    // so it seeds the lookup every later event of that wake resolves through.
+    if (event.type === "wake.start") this.runOfWake.set(event.wakeId, event.runId);
+    const runId = await this.runFor(event.wakeId);
     if (event.type === "guardrail") {
-      await this.record({ runId: null, wakeId: event.wakeId, type: "guardrail.tripped", payload: { rule: event.rule, detail: event.detail, tool: event.tool ?? null, seq: event.seq } });
+      await this.record({ runId, wakeId: event.wakeId, type: "guardrail.tripped", payload: { rule: event.rule, detail: event.detail, tool: event.tool ?? null, seq: event.seq } });
       return;
     }
     // The trace pane wants enough to render a row without a second request, and no more: full
     // arguments and results stay in `trace_events`, which is where replay reads them from.
     await this.record({
-      runId: event.type === "wake.start" ? event.runId : null,
+      runId,
       wakeId: event.wakeId,
       type: "trace.appended",
       payload: { seq: event.seq, traceType: event.type, at: event.at, summary: summarise(event) },
@@ -43,6 +64,7 @@ export class RecordingStore implements Store {
   async saveWake(wake: Wake): Promise<void> {
     const before = await this.inner.getWake(wake.id);
     await this.inner.saveWake(wake);
+    this.runOfWake.set(wake.id, wake.runId);
     if (!before) {
       await this.record({ runId: wake.runId, wakeId: wake.id, type: "wake.started", payload: { agentId: wake.agentId, personaId: wake.personaId, wakeNumber: wake.wakeNumber } });
       return;
@@ -131,6 +153,10 @@ export class RecordingStore implements Store {
   deletePopulation: Store["deletePopulation"] = (...args) => this.inner.deletePopulation(...args);
   saveSettings: Store["saveSettings"] = (...args) => this.inner.saveSettings(...args);
   getSettings: Store["getSettings"] = (...args) => this.inner.getSettings(...args);
+  saveConfigRevision: Store["saveConfigRevision"] = (...args) => this.inner.saveConfigRevision(...args);
+  getConfigRevision: Store["getConfigRevision"] = (...args) => this.inner.getConfigRevision(...args);
+  listConfigRevisions: Store["listConfigRevisions"] = (...args) => this.inner.listConfigRevisions(...args);
+  pruneConfigRevisions: Store["pruneConfigRevisions"] = (...args) => this.inner.pruneConfigRevisions(...args);
   listEvents: Store["listEvents"] = (...args) => this.inner.listEvents(...args);
   latestEventSeq: Store["latestEventSeq"] = (...args) => this.inner.latestEventSeq(...args);
   truncateEvents: Store["truncateEvents"] = (...args) => this.inner.truncateEvents(...args);

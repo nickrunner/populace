@@ -7,7 +7,7 @@ import { DEFAULT_PROJECT_ID, type Job, type PopulaceConfig, type Store } from "@
 import type { ModelProvider } from "@populace/runner";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
-import { ensureProject, ensureSettings, resolveProjectConfig, seedProjectFromConfig, type ProcessConfig } from "./config-store.js";
+import { ensureProject, ensureSettings, resolveProjectConfig, seedProjectFromConfig, withLiveCredentials, type ProcessConfig } from "./config-store.js";
 import type { ControlDeps } from "./deps.js";
 import { EventHub, RecordingStore } from "./events.js";
 import { JobRunner } from "./jobs.js";
@@ -112,10 +112,17 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     const orphanJobs = await jobs.reconcileOrphans();
     if (orphanRuns + orphanJobs > 0) log(`populace serve: marked ${orphanRuns} run(s) and ${orphanJobs} job(s) as failed after an earlier process stopped`);
 
+    /**
+     * The config a run executed, ready to open a connection with. The snapshot is the record of
+     * what ran and carries `[redacted]` in place of every secret, so the live credentials are put
+     * back from the authored target row before this reaches the verifier's replay or sweep — both
+     * of which talk to the target, and both of which would silently fail against an authenticated
+     * one otherwise (ADR-0024).
+     */
     const configForRun = async (runId: string): Promise<PopulaceConfig> => {
       const run = await store.getRun(runId);
       const snapshot = run?.configSnapshotId ? await store.getConfigSnapshot(run.configSnapshotId) : undefined;
-      if (snapshot) return snapshot.config;
+      if (snapshot) return withLiveCredentials(store, snapshot.config, projectId);
       return (await resolveProjectConfig(store, processConfig, projectId)).config;
     };
 

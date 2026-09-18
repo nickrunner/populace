@@ -32,3 +32,4 @@ One record per fixed decision from the kickoff brief, plus the routine calls mad
 | [0026](0026-sse-event-log.md) | Live updates over SSE, backed by a persisted event log |
 | [0027](0027-persisted-jobs.md) | Long-running operations are persisted jobs |
 | [0028](0028-triage-keyed-by-cluster-signature.md) | Triage is keyed by cluster signature, not by finding id |
+| [0029](0029-config-history-and-yaml-exchange.md) | Config history is a revision log; YAML is a redacted exchange format |

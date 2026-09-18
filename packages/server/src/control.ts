@@ -1,8 +1,10 @@
 import {
   AddStarterBodySchema,
+  ConfigImportBodySchema,
   EventStreamQuerySchema,
   KillSwitchBodySchema,
   PersonaInputSchema,
+  PersonaPreviewBodySchema,
   PopulationInputSchema,
   SettingsInputSchema,
   StartRunBodySchema,
@@ -11,6 +13,10 @@ import {
   TargetInputSchema,
   routes,
   type AgentLive,
+  type ConfigExport,
+  type ConfigImportResult,
+  type ConfigRevisionDetail,
+  type ConfigRevisionView,
   type PersonaView,
   type PopulationView,
   type RunLive,
@@ -23,6 +29,7 @@ import {
   newPersonaId,
   newTargetId,
   slugify,
+  type ConfigRevision,
   type Event,
   type McpEndpoint,
   type StoredPersona,
@@ -35,7 +42,10 @@ import { streamSSE } from "hono/streaming";
 import { ConfigIncomplete, ensurePopulation, ensureSettings, resolveProjectConfig } from "./config-store.js";
 import { estimateRun } from "./estimate.js";
 import { fail, page, param, parseBody, parseQuery } from "./http.js";
+import { applyAuthored, importConfig, renderRevision, withRevision } from "./history.js";
+import { previewPersona, specForPreview } from "./preview.js";
 import { STARTER_PERSONAS, starterBySlug } from "./starters.js";
+import { ImportRejected, fromYaml, toYaml } from "./yaml.js";
 import { checkPromises, checkTarget } from "./target-check.js";
 import type { ControlDeps } from "./deps.js";
 
@@ -120,7 +130,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       createdAt: at,
       updatedAt: at,
     };
-    await deps.store.saveTarget(target);
+    await withRevision(deps.store, projectId, { summary: `connected ${target.name}`, source: "editor" }, () => deps.store.saveTarget(target));
     return c.json(targetView(target), 201);
   });
 
@@ -143,12 +153,15 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       identity: body.value.identity,
       updatedAt: now(),
     };
-    await deps.store.saveTarget(updated);
+    const renamed = updated.name !== existing.name ? `renamed the target to ${updated.name}` : `changed the ${updated.name} target`;
+    await withRevision(deps.store, projectId, { summary: renamed, source: "editor" }, () => deps.store.saveTarget(updated));
     return c.json(targetView(updated));
   });
 
   app.delete(routes.target_(":id"), async (c) => {
-    await deps.store.deleteTarget(param(c, "id"));
+    const existing = await deps.store.getTarget(param(c, "id"));
+    if (!existing) return c.body(null, 204);
+    await withRevision(deps.store, projectId, { summary: `removed the ${existing.name} target`, source: "editor" }, () => deps.store.deleteTarget(existing.id));
     return c.body(null, 204);
   });
 
@@ -191,8 +204,10 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const at = now();
     const existing = (await deps.store.listPersonas(projectId)).find((p) => p.slug === starter.slug);
     const persona: StoredPersona = existing ?? { id: newPersonaId(), projectId, slug: starter.slug, spec: starter.spec, origin: "starter", createdAt: at, updatedAt: at };
-    if (!existing) await deps.store.savePersona(persona);
-    await setMemberCount(persona.id, body.value.count);
+    await withRevision(deps.store, projectId, { summary: `added ${persona.spec.name}`, source: "editor" }, async () => {
+      if (!existing) await deps.store.savePersona(persona);
+      await setMemberCount(persona.id, body.value.count);
+    });
     return c.json(await personaView(persona), existing ? 200 : 201);
   });
 
@@ -233,8 +248,10 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if ((await deps.store.listPersonas(projectId)).some((p) => p.slug === slug)) return fail(c, "conflict", `there is already someone called ${slug} here`);
     const at = now();
     const persona: StoredPersona = { id: newPersonaId(), projectId, slug, spec: { ...body.value.spec, id: slug }, origin: "authored", createdAt: at, updatedAt: at };
-    await deps.store.savePersona(persona);
-    await setMemberCount(persona.id, 1);
+    await withRevision(deps.store, projectId, { summary: `wrote ${persona.spec.name}`, source: "editor" }, async () => {
+      await deps.store.savePersona(persona);
+      await setMemberCount(persona.id, 1);
+    });
     return c.json(await personaView(persona), 201);
   });
 
@@ -247,13 +264,48 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     // `populationId/personaId#ordinal`, so a slug that moved would silently break continuations —
     // which is the one thing this product cannot afford to get wrong (`DATA-MODEL.md` §5).
     const updated: StoredPersona = { ...existing, spec: { ...body.value.spec, id: existing.slug }, origin: existing.origin === "starter" ? "authored" : existing.origin, updatedAt: now() };
-    await deps.store.savePersona(updated);
+    const summary = updated.spec.name === existing.spec.name ? `edited ${updated.spec.name}` : `renamed ${existing.spec.name} to ${updated.spec.name}`;
+    await withRevision(deps.store, projectId, { summary, source: "editor" }, () => deps.store.savePersona(updated));
     return c.json(await personaView(updated));
   });
 
+  /**
+   * "What she will be told". The body may carry the draft in the editor, so the panel follows what
+   * is being typed rather than what was last saved.
+   */
+  app.post(routes.personaPreview(":id"), async (c) => {
+    const persona = await deps.store.getPersona(param(c, "id"));
+    if (!persona) return fail(c, "not_found", "no such person");
+    const body = await parseBody(c, PersonaPreviewBodySchema);
+    if (!body.ok) return body.response;
+    const [population, settings] = await Promise.all([ensurePopulation(deps.store, projectId), ensureSettings(deps.store, projectId)]);
+    return c.json(previewPersona({ slug: persona.slug, spec: specForPreview(persona, body.value.spec), population, settings, target: await firstTarget() }));
+  });
+
+  /** Copies a person under a new slug, so a variant can be tried without editing the original. */
+  app.post(routes.personaDuplicate(":id"), async (c) => {
+    const persona = await deps.store.getPersona(param(c, "id"));
+    if (!persona) return fail(c, "not_found", "no such person");
+    const taken = new Set((await deps.store.listPersonas(projectId)).map((p) => p.slug));
+    let slug = `${persona.slug}-2`;
+    for (let n = 2; taken.has(slug); n++) slug = `${persona.slug}-${n}`;
+    const at = now();
+    const copy: StoredPersona = { id: newPersonaId(), projectId, slug, spec: { ...persona.spec, id: slug, name: `${persona.spec.name} (copy)` }, origin: "authored", createdAt: at, updatedAt: at };
+    const saved = await withRevision(deps.store, projectId, { summary: `copied ${persona.spec.name}`, source: "editor" }, async () => {
+      await deps.store.savePersona(copy);
+      await setMemberCount(copy.id, 0);
+      return copy;
+    });
+    return c.json(await personaView(saved), 201);
+  });
+
   app.delete(routes.persona(":id"), async (c) => {
-    await setMemberCount(param(c, "id"), 0);
-    await deps.store.deletePersona(param(c, "id"));
+    const existing = await deps.store.getPersona(param(c, "id"));
+    if (!existing) return c.body(null, 204);
+    await withRevision(deps.store, projectId, { summary: `removed ${existing.spec.name}`, source: "editor" }, async () => {
+      await setMemberCount(existing.id, 0);
+      await deps.store.deletePersona(existing.id);
+    });
     return c.body(null, 204);
   });
 
@@ -285,7 +337,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const known = new Set((await deps.store.listPersonas(projectId)).map((p) => p.id));
     const unknown = (body.value.members ?? []).filter((m) => !known.has(m.personaId)).map((m) => m.personaId);
     if (unknown.length) return fail(c, "bad_request", `no such person: ${unknown.join(", ")}`);
-    await deps.store.savePopulation({
+    await withRevision(deps.store, projectId, { summary: body.value.members === undefined ? "changed how the population runs" : "changed who goes on the next run", source: "editor" }, () =>
+      deps.store.savePopulation({
       ...population,
       ...(body.value.scale === undefined ? {} : { scale: body.value.scale }),
       ...(body.value.seed === undefined ? {} : { seed: body.value.seed }),
@@ -295,7 +348,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
         ? {}
         : { members: body.value.members.filter((m) => m.count > 0).map((m) => ({ personaId: m.personaId, count: m.count, ...(m.maxWakes === undefined || m.maxWakes === null ? {} : { maxWakes: m.maxWakes }) })) }),
       updatedAt: now(),
-    });
+      }),
+    );
     return c.json(await populationView());
   });
 
@@ -311,7 +365,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const body = await parseBody(c, SettingsInputSchema);
     if (!body.ok) return body.response;
     const settings = await ensureSettings(deps.store, projectId);
-    await deps.store.saveSettings({
+    await withRevision(deps.store, projectId, { summary: "changed the limits and spending", source: "editor" }, () =>
+      deps.store.saveSettings({
       ...settings,
       // The key is never in the form, so a partial update must not be able to drop the one the
       // process was configured with.
@@ -320,8 +375,128 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       verifier: { ...settings.verifier, ...body.value.verifier },
       daemon: { ...settings.daemon, ...body.value.daemon },
       updatedAt: now(),
-    });
+      }),
+    );
     return c.json(await settingsView());
+  });
+
+  // ---- the config file, and its history ----------------------------------
+
+  /**
+   * The project as YAML, with every credential replaced by the `${VAR}` that supplies it. This is
+   * how a config gets into a repository or onto a colleague's machine now that the database is the
+   * source of truth (ADR-0025).
+   */
+  app.get(routes.configExport, async (c) => {
+    try {
+      const { config, target } = await resolveProjectConfig(deps.store, deps.processConfig, projectId);
+      const exported = toYaml(config);
+      const body: ConfigExport = { yaml: exported.yaml, filename: `${slugify(target.name) || "populace"}.yaml`, placeholders: exported.placeholders };
+      // The download link wants a file, and the screen wants the text to show; one route serves
+      // both so the bytes a person downloads are the bytes they were shown.
+      if (c.req.query("format") === "yaml") return c.body(exported.yaml, 200, { "content-type": "text/yaml; charset=utf-8", "content-disposition": `attachment; filename="${body.filename}"` });
+      return c.json(body);
+    } catch (err) {
+      if (err instanceof ConfigIncomplete) return fail(c, "conflict", `there is nothing to export yet: ${err.missing.join("; ")}`);
+      throw err;
+    }
+  });
+
+  /**
+   * A file replaces what is here, once the person says so. `apply: false` parses and reports
+   * without writing, which is what the box shows before it asks.
+   */
+  app.post(routes.configImport, async (c) => {
+    const body = await parseBody(c, ConfigImportBodySchema);
+    if (!body.ok) return body.response;
+    let parsed;
+    try {
+      parsed = fromYaml(body.value.yaml);
+    } catch (err) {
+      if (err instanceof ImportRejected) return fail(c, "bad_request", err.message);
+      throw err;
+    }
+    if (!body.value.apply) {
+      const people = parsed.config.population.members;
+      const result: ConfigImportResult = {
+        applied: false,
+        lines: [
+          `the target becomes ${parsed.config.target.name}`,
+          `${people.length} ${people.length === 1 ? "person" : "people"} in the population: ${people.map((m) => m.persona.name).join(", ")}`,
+          "limits, model and verifier settings are replaced",
+        ],
+        personas: people.length,
+        targetName: parsed.config.target.name,
+        missingEnv: parsed.missing,
+        revisionId: null,
+      };
+      return c.json(result);
+    }
+    const summary = `imported a config file (${parsed.config.target.name})`;
+    const outcome = await withRevision(deps.store, projectId, { summary, source: "import" }, () => importConfig(deps.store, parsed.config, projectId));
+    const latest = (await deps.store.listConfigRevisions(projectId, 1))[0];
+    const result: ConfigImportResult = {
+      applied: true,
+      lines: outcome.lines,
+      personas: outcome.personas,
+      targetName: parsed.config.target.name,
+      missingEnv: parsed.missing,
+      revisionId: latest?.id ?? null,
+    };
+    return c.json(result);
+  });
+
+  /** What a revision holds, in the terms the history list shows. The document itself stays here. */
+  const revisionView = (revision: ConfigRevision, current: string | null): ConfigRevisionView => ({
+    id: revision.id,
+    at: revision.at,
+    summary: revision.summary,
+    source: revision.source,
+    targetName: revision.document.targets[0]?.name ?? null,
+    personaCount: revision.document.personas.length,
+    agentCount: revision.document.population.members.reduce((sum, m) => sum + Math.ceil(m.count * revision.document.population.scale), 0),
+    current: revision.id === current,
+  });
+
+  app.get(routes.configHistory, async (c) => {
+    const revisions = await deps.store.listConfigRevisions(projectId, 100);
+    // "Current" is the newest revision only when nothing has changed since it was written, which
+    // is the normal case: every authored write records one.
+    const current = revisions[0]?.id ?? null;
+    return c.json({ items: revisions.map((r) => revisionView(r, current)), nextCursor: null });
+  });
+
+  /**
+   * One revision as YAML, so a person can read what a past config actually said before putting it
+   * back. Credentials are placeholders here exactly as they are in an export.
+   */
+  app.get(routes.configRevision(":id"), async (c) => {
+    const revision = await deps.store.getConfigRevision(param(c, "id"));
+    if (!revision) return fail(c, "not_found", "no such revision");
+    const current = (await deps.store.listConfigRevisions(projectId, 1))[0]?.id ?? null;
+    const rendered = renderRevision(revision.document);
+    const counts = new Map(revision.document.population.members.map((m) => [m.personaId, m.count]));
+    const detail: ConfigRevisionDetail = {
+      ...revisionView(revision, current),
+      yaml: rendered ? toYaml(rendered).yaml : "",
+      renderable: rendered !== null,
+      personas: revision.document.personas.map((p) => ({ slug: p.slug, name: p.spec.name, count: counts.get(p.id) ?? 0 })),
+    };
+    return c.json(detail);
+  });
+
+  /** Puts a revision back. The change is itself a revision, so a restore is as undoable as an edit. */
+  app.post(routes.configRestore(":id"), async (c) => {
+    const revision = await deps.store.getConfigRevision(param(c, "id"));
+    if (!revision) return fail(c, "not_found", "no such revision");
+    const going = deps.runs.runningIds[0];
+    // A run holds a frozen snapshot, so restoring behind it changes nothing it is doing — but the
+    // people on screen would stop matching the people in the forms, which is confusing enough to
+    // be worth refusing while something is in flight.
+    if (going !== undefined) return fail(c, "conflict", "a run is going; stop it before putting an earlier config back");
+    await withRevision(deps.store, projectId, { summary: `put back "${revision.summary}"`, source: "restore" }, () => applyAuthored(deps.store, projectId, revision.document));
+    const latest = (await deps.store.listConfigRevisions(projectId, 1))[0] ?? revision;
+    return c.json(revisionView(latest, latest.id));
   });
 
   // ---- estimating and starting -------------------------------------------
@@ -341,6 +516,12 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const body = await parseBody(c, StartRunBodySchema);
     if (!body.ok) return body.response;
     if (!deps.hasApiKey()) return fail(c, "unavailable", "starting a run needs ANTHROPIC_API_KEY; the people are model calls");
+    // One run at a time, this release. The kill switch behind "stop everything now" is a store row
+    // every in-flight wake checks (ADR-0009), so it is global by construction — with two runs going
+    // it would stop both, and the button says what it does only while there is one thing to stop.
+    // `serve` is a single process and a single writer anyway, and M4 is where runs go plural.
+    const going = deps.runs.runningIds[0];
+    if (going !== undefined) return fail(c, "conflict", "a run is already going; stop that one before starting another");
     let resolved;
     try {
       resolved = await resolveProjectConfig(deps.store, deps.processConfig, projectId);

@@ -1,7 +1,12 @@
 import {
   AgentSummarySchema,
+  ConfigExportSchema,
+  ConfigImportResultSchema,
+  ConfigRevisionDetailSchema,
+  ConfigRevisionViewSchema,
   EventSchema,
   JobViewSchema,
+  PersonaPreviewSchema,
   PersonaViewSchema,
   PopulationViewSchema,
   RunEstimateSchema,
@@ -86,6 +91,7 @@ const runs = pageOf(RunSummarySchema);
 const targets = pageOf(StoredTargetViewSchema);
 const personas = pageOf(PersonaViewSchema);
 const starters = pageOf(StarterPersonaViewSchema);
+const revisions = pageOf(ConfigRevisionViewSchema);
 const nothing = z.null();
 const agents = pageOf(AgentSummarySchema);
 const wakes = pageOf(WakeSummarySchema);
@@ -123,11 +129,24 @@ export const api = {
   addStarter: (slug: string, count: number) => send("POST", routes.personaStarters, { slug, count }, PersonaViewSchema),
   savePersona: (id: string | null, body: PersonaInput) => (id === null ? send("POST", routes.personas, body, PersonaViewSchema) : send("PUT", routes.persona(id), body, PersonaViewSchema)),
   removePersona: (id: string) => send("DELETE", routes.persona(id), undefined, nothing),
+  /** The assembled system prompt. The draft goes up so the panel follows what is being typed. */
+  previewPersona: (id: string, spec?: PersonaInput["spec"]) => send("POST", routes.personaPreview(id), spec === undefined ? {} : { spec }, PersonaPreviewSchema),
+  duplicatePersona: (id: string) => send("POST", routes.personaDuplicate(id), {}, PersonaViewSchema),
 
   population: () => get(routes.population, PopulationViewSchema),
   savePopulation: (body: PopulationInput) => send("PUT", routes.population, body, PopulationViewSchema),
   settings: () => get(routes.settings, SettingsViewSchema),
   saveSettings: (body: SettingsInput) => send("PUT", routes.settings, body, SettingsViewSchema),
+
+  // ---- M2: the config file ------------------------------------------------
+  exportConfig: () => get(routes.configExport, ConfigExportSchema),
+  /** The same bytes the screen shows, as a download. */
+  exportConfigUrl: `${routes.configExport}?format=yaml`,
+  /** `apply: false` reports what a file would do and writes nothing. */
+  importConfig: (yaml: string, apply: boolean) => send("POST", routes.configImport, { yaml, apply }, ConfigImportResultSchema),
+  history: () => get(routes.configHistory, revisions),
+  revision: (id: string) => get(routes.configRevision(id), ConfigRevisionDetailSchema),
+  restoreRevision: (id: string) => send("POST", routes.configRestore(id), {}, ConfigRevisionViewSchema),
 
   // ---- M2: driving it ----------------------------------------------------
   /** Arithmetic over history. It spends nothing and never starts a run. */
@@ -179,6 +198,10 @@ export type TargetCheck = z.infer<typeof TargetCheckSchema>;
 export type TargetPromises = z.infer<typeof TargetPromisesSchema>;
 export type Persona = z.infer<typeof PersonaViewSchema>;
 export type Starter = z.infer<typeof StarterPersonaViewSchema>;
+export type PersonaPreview = z.infer<typeof PersonaPreviewSchema>;
+export type ConfigRevision = z.infer<typeof ConfigRevisionViewSchema>;
+export type ConfigRevisionDetail = z.infer<typeof ConfigRevisionDetailSchema>;
+export type ConfigImportResult = z.infer<typeof ConfigImportResultSchema>;
 export type PopulationView = z.infer<typeof PopulationViewSchema>;
 export type Settings = z.infer<typeof SettingsViewSchema>;
 export type RunEstimate = z.infer<typeof RunEstimateSchema>;

@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   AgentSchema,
+  ConfigRevisionSchema,
   ConfigSnapshotSchema,
   EventSchema,
   FindingSchema,
@@ -20,6 +21,7 @@ import {
   type Agent,
   type Finding,
   type FindingQuery,
+  type ConfigRevision,
   type ConfigSnapshot,
   type Event,
   type EventInput,
@@ -253,8 +255,16 @@ export class SqliteStore implements Store {
       where.push("started_at <= ?");
       params.push(query.until.toISOString());
     }
-    const sql = `SELECT json FROM wakes ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at, rowid`;
-    return Promise.resolve(rows(this.db.prepare(sql).all(...params)).map((r) => parseRow(WakeSchema, r)));
+    // A limit takes the newest rows in the database and hands them back oldest-first, so a caller
+    // never loads the whole table to keep the tail of it.
+    const clause = `SELECT json FROM wakes ${where.length ? `WHERE ${where.join(" AND ")}` : ""}`;
+    if (query.limit === undefined) {
+      const sql = `${clause} ORDER BY started_at, rowid`;
+      return Promise.resolve(rows(this.db.prepare(sql).all(...params)).map((r) => parseRow(WakeSchema, r)));
+    }
+    const sql = `${clause} ORDER BY started_at DESC, rowid DESC LIMIT ?`;
+    const newest = rows(this.db.prepare(sql).all(...params, Math.max(0, query.limit))).map((r) => parseRow(WakeSchema, r));
+    return Promise.resolve(newest.reverse());
   }
 
   appendTraceEvent(event: TraceEvent): Promise<void> {
@@ -546,6 +556,41 @@ export class SqliteStore implements Store {
   getSettings(projectId: string): Promise<StoredSettings | undefined> {
     const row = this.db.prepare("SELECT json FROM settings WHERE project_id = ?").get(projectId);
     return Promise.resolve(row ? parseRow(StoredSettingsSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  // ---- config history ----------------------------------------------------
+
+  saveConfigRevision(revision: ConfigRevision): Promise<void> {
+    const parsed = ConfigRevisionSchema.parse(revision);
+    // Revisions are immutable, so an id that exists already is the same content by construction.
+    this.db
+      .prepare("INSERT INTO config_revisions (id, project_id, at, source, summary, json) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING")
+      .run(parsed.id, parsed.projectId, parsed.at, parsed.source, parsed.summary, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  getConfigRevision(id: string): Promise<ConfigRevision | undefined> {
+    const row = this.db.prepare("SELECT json FROM config_revisions WHERE id = ?").get(id);
+    return Promise.resolve(row ? parseRow(ConfigRevisionSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  listConfigRevisions(projectId: string, limit = 100): Promise<ConfigRevision[]> {
+    // Newest first: history is read from the present backwards. Two revisions written in the same
+    // millisecond have the same `at`, so the implicit rowid — insertion order — is what decides,
+    // and an edit never appears above the undo point taken just before it.
+    const result = this.db.prepare("SELECT json FROM config_revisions WHERE project_id = ? ORDER BY at DESC, rowid DESC LIMIT ?").all(projectId, limit);
+    return Promise.resolve(rows(result).map((r) => parseRow(ConfigRevisionSchema, r)));
+  }
+
+  pruneConfigRevisions(projectId: string, keepLast: number): Promise<number> {
+    const result = this.db
+      .prepare(
+        `DELETE FROM config_revisions WHERE project_id = ? AND id NOT IN (
+           SELECT id FROM config_revisions WHERE project_id = ? ORDER BY at DESC, rowid DESC LIMIT ?
+         )`,
+      )
+      .run(projectId, projectId, Math.max(0, keepLast));
+    return Promise.resolve(Number(result.changes));
   }
 
   // ---- event log ---------------------------------------------------------

@@ -25,6 +25,7 @@
     "@populace/runner": "workspace:*",
     "@populace/store-sqlite": "workspace:*",
     "hono": "^4.9.0",
+    "yaml": "^2.8.0",
     "zod": "^4.1.0"
   },
   "devDependencies": {
