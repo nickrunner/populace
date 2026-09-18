@@ -1,0 +1,228 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f9f6f2; color: #1a1510; font-family: "Instrument Sans", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #236292; text-decoration: none; }
+    a:hover { color: #4280b2; text-decoration: underline; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 1120px; display: flex; background: #f9f6f2; overflow: hidden;">
+
+  <div style="width: 228px; flex-shrink: 0; background: #fefdfb; border-right: 1px solid #e1ded7; display: flex; flex-direction: column;">
+    <div style="padding: 18px 20px 16px; border-bottom: 1px solid #e1ded7;">
+      <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;">populace</div>
+      <div style="margin-top: 2px; font-size: 11px; color: #857f79;">running on this machine</div>
+    </div>
+    <div style="padding: 14px 12px; display: flex; flex-direction: column; gap: 14px;">
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>
+          <span style="flex-grow: 1;">Overview</span>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="padding: 0 10px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">What we found</div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; background: #dbeefe; color: #236292; font-size: 13.5px; font-weight: 600;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3.5 14V2.5h8l-1.6 2.6 1.6 2.6h-8"/></svg>
+          <span style="flex-grow: 1;">Findings</span><span style="color: #857f79; font-size: 12px;">12</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke-dasharray="2.4 2"/><path d="M8 5.5v5M5.5 8h5"/></svg>
+          <span style="flex-grow: 1;">Coverage gaps</span><span style="color: #857f79; font-size: 12px;">2</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9.5 2.5h3v11h-3M9.5 8H2.5M5 5l-2.5 3L5 11"/></svg>
+          <span style="flex-grow: 1;">Who walked away</span><span style="color: #857f79; font-size: 12px;">1</span>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <div style="padding: 0 10px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">How it ran</div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="5.5" r="2.3"/><path d="M2 13.5c0-2.2 1.8-3.6 4-3.6s4 1.4 4 3.6"/><path d="M10.6 3.6a2.3 2.3 0 0 1 0 4.4M11.6 10.4c1.5.4 2.4 1.6 2.4 3.1"/></svg>
+          <span style="flex-grow: 1;">Population</span><span style="color: #857f79; font-size: 12px;">3</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"/></svg>
+          <span style="flex-grow: 1;">Wakes</span><span style="color: #857f79; font-size: 12px;">11</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 5px; color: #57514c; font-size: 13.5px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 4.8v6.4M9.8 6.3c-.4-.6-1-.9-1.8-.9-1 0-1.7.5-1.7 1.3 0 1.9 3.6.9 3.6 2.8 0 .8-.8 1.4-1.9 1.4-.9 0-1.5-.3-1.9-1"/></svg>
+          <span style="flex-grow: 1;">Cost</span>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top: auto; padding: 16px 18px; border-top: 1px solid #e1ded7;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline;">
+        <div style="font-size: 11.5px; color: #57514c;">Spent today</div>
+        <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; font-weight: 600;">$4.37</div>
+      </div>
+      <div style="margin-top: 7px; height: 6px; border-radius: 3px; background: #dbeefe; overflow: hidden;">
+        <div style="width: 9%; height: 6px; border-radius: 3px; background: #236292;"></div>
+      </div>
+      <div style="margin-top: 6px; font-size: 11px; color: #857f79;">of the $50.00 daily ceiling</div>
+    </div>
+  </div>
+
+  <div style="flex-grow: 1; display: flex; flex-direction: column; min-width: 0;">
+    <div style="height: 56px; flex-shrink: 0; border-bottom: 1px solid #e1ded7; background: #fefdfb; display: flex; align-items: center; gap: 14px; padding: 0 24px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 7px; height: 7px; border-radius: 4px; background: #0ca30c;"></span>
+        <span style="font-size: 15px; font-weight: 600;">Tasklet</span>
+      </div>
+      <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #857f79;">http://127.0.0.1:4310/mcp</span>
+      <div style="flex-grow: 1;"></div>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 5px 11px; border: 1px solid #e1ded7; border-radius: 5px; background: #fefdfb;">
+        <span style="font-size: 12px; color: #57514c;">Run</span>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; font-weight: 500;">run_m1abc2de_x7k9q2</span>
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#857f79" stroke-width="1.5"><path d="M4 6.5 8 10.5l4-4"/></svg>
+      </div>
+      <div style="padding: 5px 10px; border-radius: 5px; background: #f3f0ea; font-size: 11.5px; color: #57514c;">Read-only</div>
+    </div>
+
+    <div style="flex-grow: 1; overflow-y: auto; padding: 20px 28px 28px;">
+      <div style="display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: #857f79;">
+        <a href="#">Findings</a><span>/</span><a href="#">Bugs</a>
+      </div>
+
+      <div style="margin-top: 12px; display: flex; align-items: flex-start; gap: 14px;">
+        <span style="width: 5px; height: 52px; border-radius: 3px; background: #d03b3b; flex-shrink: 0;"></span>
+        <div style="flex-grow: 1; min-width: 0;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #a32a2a;">Critical bug</span>
+            <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #864e18; background: #fde9d4; padding: 1px 6px; border-radius: 3px;">search_tasks</span>
+          </div>
+          <div style="margin-top: 6px; font-size: 24px; font-weight: 600; letter-spacing: -0.01em;">Search finds nothing unless you type the capital letters</div>
+          <div style="margin-top: 8px; display: flex; align-items: center; gap: 16px; font-size: 12.5px; color: #57514c;">
+            <span>3 of 3 people</span><span>3 reports</span><span>first seen visit 1</span>
+            <span style="display: flex; align-items: center; gap: 5px; color: #0a7a0a; font-weight: 600;"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#0ca30c" stroke-width="2"><path d="M3 8.4 6.4 12 13 4.6"/></svg> all 3 confirmed</span>
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px; flex-shrink: 0;">
+          <span style="padding: 8px 14px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 13px; font-weight: 500;">Copy the steps</span>
+        </div>
+      </div>
+
+      <div style="margin-top: 22px; display: grid; grid-template-columns: minmax(0, 1fr) 470px; gap: 26px; align-items: start;">
+
+        <div>
+          <div style="font-size: 15px; font-weight: 600;">In their own words</div>
+          <div style="margin-top: 4px;">
+            <div style="display: flex; gap: 12px; padding: 13px 0; border-bottom: 1px solid #e1ded7;">
+              <span style="width: 28px; height: 28px; border-radius: 14px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">CM</span>
+              <div style="min-width: 0;">
+                <div style="font-size: 14px; line-height: 1.55; color: #1a1510;">“I added Buy Groceries a minute ago and searching groceries says there is nothing there. I am not going to keep guessing how it wants me to type.”</div>
+                <div style="margin-top: 5px; display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: #857f79;">
+                  <span>Casey Morgan · visit 1</span><a href="#" style="font-size: 11.5px;">watch this visit</a>
+                </div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 12px; padding: 13px 0; border-bottom: 1px solid #e1ded7;">
+              <span style="width: 28px; height: 28px; border-radius: 14px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">PD</span>
+              <div style="min-width: 0;">
+                <div style="font-size: 14px; line-height: 1.55; color: #1a1510;">“Search only works if I remember exactly how I capitalised the task, which defeats the point of searching.”</div>
+                <div style="margin-top: 5px; display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: #857f79;">
+                  <span>Priya Desai · visit 2</span><a href="#" style="font-size: 11.5px;">watch this visit</a>
+                </div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 12px; padding: 13px 0; border-bottom: 1px solid #e1ded7;">
+              <span style="width: 28px; height: 28px; border-radius: 14px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">TR</span>
+              <div style="min-width: 0;">
+                <div style="font-size: 14px; line-height: 1.55; color: #1a1510;">“Case-sensitive search across two hundred tasks is unusable. I paged through the lists instead.”</div>
+                <div style="margin-top: 5px; display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: #857f79;">
+                  <span>Tomás Ruiz · visit 2</span><a href="#" style="font-size: 11.5px;">watch this visit</a>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top: 22px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;">
+            <div style="background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 14px 16px;">
+              <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">They expected</div>
+              <div style="margin-top: 7px; font-size: 14px; line-height: 1.55;">Searching “groceries” finds the task called “Buy Groceries”, the way the tool description says it will.</div>
+            </div>
+            <div style="background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 14px 16px;">
+              <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">What happened</div>
+              <div style="margin-top: 7px; font-size: 14px; line-height: 1.55;">Zero results. The same search with a capital G returns it. The match is case-sensitive; the description promises it is not.</div>
+            </div>
+          </div>
+
+          <div style="margin-top: 14px; padding: 13px 16px; border-radius: 7px; background: #fde9d4; border: 1px solid #f3d6b4;">
+            <div style="font-size: 13px; line-height: 1.55; color: #6b431a;"><strong style="font-weight: 600;">What it cost.</strong> Casey wrote the same task a second time rather than search again. Tomás stopped using search for the rest of his visit and paged through lists instead.</div>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 16px;">
+          <div style="background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; overflow: hidden;">
+            <div style="padding: 12px 14px; border-bottom: 1px solid #e1ded7; display: flex; align-items: center; gap: 8px;">
+              <div style="font-size: 13.5px; font-weight: 600;">The calls behind this</div>
+              <span style="font-size: 11.5px; color: #857f79;">Casey, visit 1</span>
+              <div style="flex-grow: 1;"></div>
+              <a href="#" style="font-size: 11.5px;">open the full visit</a>
+            </div>
+              <div style="display: flex; gap: 10px; padding: 9px 12px; border-bottom: 1px solid #e1ded7; background: transparent;">
+                <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #864e18; background: #fde9d4; padding: 1px 5px; border-radius: 3px; height: 17px; flex-shrink: 0;">c1</span>
+                <div style="min-width: 0; flex-grow: 1;">
+                  <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #1a1510; word-break: break-word;">create_task({"projectId":"prj_2a9","title":"Buy Groceries"})</div>
+                  <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #857f79; word-break: break-word;">→ {"task":{"id":"tsk_77c","title":"Buy Groceries"}}</div>
+                </div>
+              </div>
+              <div style="display: flex; gap: 10px; padding: 9px 12px; border-bottom: 1px solid #e1ded7; background: #fbe4e4;">
+                <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #864e18; background: #fde9d4; padding: 1px 5px; border-radius: 3px; height: 17px; flex-shrink: 0;">c2</span>
+                <div style="min-width: 0; flex-grow: 1;">
+                  <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #1a1510; word-break: break-word;">search_tasks({"q":"groceries"})</div>
+                  <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #a32a2a; word-break: break-word;">→ {"tasks":[],"total":0}</div>
+                </div>
+              </div>
+              <div style="display: flex; gap: 10px; padding: 9px 12px; border-bottom: 1px solid #e1ded7; background: #fbe4e4;">
+                <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #864e18; background: #fde9d4; padding: 1px 5px; border-radius: 3px; height: 17px; flex-shrink: 0;">c3</span>
+                <div style="min-width: 0; flex-grow: 1;">
+                  <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #1a1510; word-break: break-word;">search_tasks({"q":"grocery"})</div>
+                  <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #a32a2a; word-break: break-word;">→ {"tasks":[],"total":0}</div>
+                </div>
+              </div>
+              <div style="display: flex; gap: 10px; padding: 9px 12px; border-bottom: 1px solid #e1ded7; background: transparent;">
+                <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #864e18; background: #fde9d4; padding: 1px 5px; border-radius: 3px; height: 17px; flex-shrink: 0;">c4</span>
+                <div style="min-width: 0; flex-grow: 1;">
+                  <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #1a1510; word-break: break-word;">search_tasks({"q":"Groceries"})</div>
+                  <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #857f79; word-break: break-word;">→ {"tasks":[{"id":"tsk_77c",…}],"total":1}</div>
+                </div>
+              </div>
+          </div>
+
+          <div style="background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 14px 16px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <div style="font-size: 13.5px; font-weight: 600;">We ran those calls again ourselves</div>
+              <span style="display: flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 4px; background: #e2f6e2; color: #0a7a0a; font-size: 11.5px; font-weight: 600;"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#0ca30c" stroke-width="2"><path d="M3 8.4 6.4 12 13 4.6"/></svg> confirmed</span>
+            </div>
+            <div style="margin-top: 9px; font-size: 13px; line-height: 1.6; color: #57514c;">The replay reproduced it exactly: <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px;">search_tasks({"q":"groceries"})</span> returned 0 results against a task that exists. The judge ruled the tool description wrong, not the person.</div>
+            <div style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 14px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79;">
+              <span>claude-opus-5 · high</span><span>14:12:40</span><span>$0.03</span>
+            </div>
+          </div>
+
+          <div style="background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 14px 16px;">
+            <div style="font-size: 13.5px; font-weight: 600;">Also reported by</div>
+            <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 9px;">
+              <div style="display: flex; align-items: center; gap: 9px; font-size: 13px;"><span style="width: 22px; height: 22px; border-radius: 11px; background: #f3f0ea; color: #57514c; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center;">PD</span><span style="flex-grow: 1;">Priya Desai · visit 2</span><a href="#" style="font-size: 12px;">her calls</a></div>
+              <div style="display: flex; align-items: center; gap: 9px; font-size: 13px;"><span style="width: 22px; height: 22px; border-radius: 11px; background: #f3f0ea; color: #57514c; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center;">TR</span><span style="flex-grow: 1;">Tomás Ruiz · visit 2</span><a href="#" style="font-size: 12px;">his calls</a></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

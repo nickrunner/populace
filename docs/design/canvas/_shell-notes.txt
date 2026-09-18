@@ -1,0 +1,9 @@
+Design tokens (literal values, used inline in every artboard):
+ink #1a1510 | ink-2 #57514c | ink-3 #857f79
+paper #f9f6f2 | surface #fefdfb | sunken #f3f0ea
+rule #e1ded7 | rule-strong #cecac2
+accent #236292 | accent-hi #4280b2 | accent-wash #dbeefe
+ochre #864e18 | ochre-wash #fde9d4 (the instrument/evidence-ref accent)
+severity: critical #d03b3b | high #ec835a | medium #fab219 | low #857f79
+good #0ca30c
+Type: Instrument Sans (prose = evidence) / IBM Plex Mono (machine truth = instrument)

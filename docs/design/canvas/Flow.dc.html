@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f9f6f2; color: #1a1510; font-family: "Instrument Sans", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #236292; text-decoration: none; }
+    a:hover { color: #4280b2; text-decoration: underline; }
+  </style>
+</helmet>
+
+<div style="position: relative; width: 1440px; height: 880px; background: #f9f6f2; overflow: hidden;">
+  <div style="position: absolute; left: 40px; top: 28px; font-size: 22px; font-weight: 600; letter-spacing: -0.01em;">How the screens connect</div>
+  <div style="position: absolute; left: 40px; top: 60px; width: 900px; font-size: 13.5px; line-height: 1.55; color: #57514c;">One navigation, no role switch. The top band is what we found; the bottom band is how we know. The two ochre arrows are the seam — the only thing a product owner has to cross to see a tool call, and the only thing a developer has to cross to see who it hurt.</div>
+  <div style="position: absolute; left: 40px; top: 132px; width: 1360px; height: 100px; border: 1px dashed #cecac2; border-radius: 12px;"></div>
+  <div style="position: absolute; left: 58px; top: 122px; padding: 3px 10px; background: #f9f6f2; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">M2 adds — set it up and drive it from the browser</div>
+  <div style="position: absolute; left: 56px; top: 152px; width: 250px; height: 60px; background: #fefdfb; border: 1px solid #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">Connect a target</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #857f79;">paste an MCP URL, see its tools</div>
+  </div>
+  <div style="position: absolute; left: 336px; top: 152px; width: 250px; height: 60px; background: #fefdfb; border: 1px solid #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">Describe the people</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #857f79;">persona editor and starter library</div>
+  </div>
+  <div style="position: absolute; left: 616px; top: 152px; width: 250px; height: 60px; background: #fefdfb; border: 1px solid #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">Set the limits</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #857f79;">budget, turns, cadence, cost estimate</div>
+  </div>
+  <div style="position: absolute; left: 896px; top: 152px; width: 250px; height: 60px; background: #fefdfb; border: 1px solid #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">Start it, and stop it</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #857f79;">live spend meter, kill switch</div>
+  </div>
+  <div style="position: absolute; left: 1178px; top: 160px; width: 210px; font-size: 11.5px; line-height: 1.45; color: #857f79;">Everything below fills in while the run is still going.</div>
+  <div style="position: absolute; left: 40px; top: 292px; width: 1360px; height: 200px; border: 1px dashed #cecac2; border-radius: 12px;"></div>
+  <div style="position: absolute; left: 58px; top: 282px; padding: 3px 10px; background: #f9f6f2; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">What we found — for whoever owns the product</div>
+  <div style="position: absolute; left: 56px; top: 316px; width: 200px; height: 64px; background: #fefdfb; border: 1px solid #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">Overview</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #857f79;">one sentence on how it went</div>
+  </div>
+  <div style="position: absolute; left: 316px; top: 316px; width: 200px; height: 64px; background: #fefdfb; border: 1px solid #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">Findings</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #857f79;">clustered, worst first</div>
+  </div>
+  <div style="position: absolute; left: 576px; top: 316px; width: 230px; height: 64px; background: #fefdfb; border: 2px solid #236292; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">A finding in full</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #57514c;">in their words, and what it cost</div>
+  </div>
+  <div style="position: absolute; left: 846px; top: 316px; width: 300px; height: 64px; background: transparent; border: 1px dashed #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #857f79;">Re-run the people who complained</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #a09a92;">M3 — the fix-validation loop</div>
+  </div>
+  <div style="position: absolute; left: 316px; top: 400px; width: 200px; height: 64px; background: #fefdfb; border: 1px solid #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">Coverage gaps</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #857f79;">what they wanted and could not find</div>
+  </div>
+  <div style="position: absolute; left: 576px; top: 400px; width: 230px; height: 64px; background: #fefdfb; border: 1px solid #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">Who walked away</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #857f79;">and whether they said they would return</div>
+  </div>
+  <div style="position: absolute; left: 40px; top: 602px; width: 1360px; height: 130px; border: 1px dashed #cecac2; border-radius: 12px;"></div>
+  <div style="position: absolute; left: 58px; top: 592px; padding: 3px 10px; background: #f9f6f2; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">How it ran — for whoever owns the MCP server</div>
+  <div style="position: absolute; left: 56px; top: 626px; width: 200px; height: 64px; background: #fefdfb; border: 1px solid #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">Population</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #857f79;">who we sent, and what they remember</div>
+  </div>
+  <div style="position: absolute; left: 316px; top: 626px; width: 200px; height: 64px; background: #fefdfb; border: 1px solid #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">Wakes</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #857f79;">every visit, how each one ended</div>
+  </div>
+  <div style="position: absolute; left: 576px; top: 626px; width: 230px; height: 64px; background: #fefdfb; border: 2px solid #236292; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">Watch a visit</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #57514c;">turn by turn, call by call</div>
+  </div>
+  <div style="position: absolute; left: 846px; top: 626px; width: 200px; height: 64px; background: #fefdfb; border: 1px solid #cecac2; border-radius: 7px; padding: 11px 14px; display: flex; flex-direction: column; justify-content: center;">
+    <div style="font-size: 14px; font-weight: 600; color: #1a1510;">One call in full</div>
+    <div style="margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: #857f79;">arguments, result, timing</div>
+  </div>
+  <div style="position: absolute; left: 790px; top: 500px; width: 470px;">
+    <div style="display: flex; gap: 9px; align-items: flex-start;"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#864e18" stroke-width="1.6" style="margin-top: 1px; flex-shrink: 0;"><path d="M8 2.5v11M4.5 10 8 13.5 11.5 10"/></svg><div style="font-size: 13px; line-height: 1.45; color: #6b431a;">Every finding carries the calls that produced it.</div></div>
+    <div style="margin-top: 10px; display: flex; gap: 9px; align-items: flex-start;"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#864e18" stroke-width="1.6" style="margin-top: 1px; flex-shrink: 0;"><path d="M8 13.5v-11M4.5 6 8 2.5 11.5 6"/></svg><div style="font-size: 13px; line-height: 1.45; color: #6b431a;">Every call says which finding cited it, and who was making it.</div></div>
+  </div>
+  <svg width="1440" height="880" style="position: absolute; left: 0; top: 0; pointer-events: none;">
+    <defs>
+      <marker id="ah-cecac2" viewBox="0 0 8 8" refX="6.5" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M1 1 L6.5 4 L1 7" fill="none" stroke="#cecac2" stroke-width="1.4"/></marker>
+      <marker id="ah-864e18" viewBox="0 0 8 8" refX="6.5" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M1 1 L6.5 4 L1 7" fill="none" stroke="#864e18" stroke-width="1.4"/></marker>
+    </defs>
+    <path d="M 256 348 H 308" fill="none" stroke="#cecac2" stroke-width="1.6" marker-end="url(#ah-cecac2)"/>
+    <path d="M 516 348 H 568" fill="none" stroke="#cecac2" stroke-width="1.6" marker-end="url(#ah-cecac2)"/>
+    <path d="M 156 380 V 432 H 308" fill="none" stroke="#cecac2" stroke-width="1.6" marker-end="url(#ah-cecac2)"/>
+    <path d="M 516 432 H 568" fill="none" stroke="#cecac2" stroke-width="1.6" marker-end="url(#ah-cecac2)"/>
+    <path d="M 806 348 H 838" fill="none" stroke="#cecac2" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#ah-cecac2)"/>
+    <path d="M 650 380 V 618" fill="none" stroke="#864e18" stroke-width="1.6" marker-end="url(#ah-864e18)"/>
+    <path d="M 732 626 V 388" fill="none" stroke="#864e18" stroke-width="1.6" marker-end="url(#ah-864e18)"/>
+    <path d="M 256 658 H 308" fill="none" stroke="#cecac2" stroke-width="1.6" marker-end="url(#ah-cecac2)"/>
+    <path d="M 516 658 H 568" fill="none" stroke="#cecac2" stroke-width="1.6" marker-end="url(#ah-cecac2)"/>
+    <path d="M 806 658 H 838" fill="none" stroke="#cecac2" stroke-width="1.6" marker-end="url(#ah-cecac2)"/>
+    <path d="M 720 232 V 284" fill="none" stroke="#cecac2" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#ah-cecac2)"/>
+  </svg>
+  <div style="position: absolute; left: 40px; top: 780px; display: flex; align-items: center; gap: 26px;">
+    <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 26px; height: 16px; border-radius: 4px; border: 2px solid #236292; background: #fefdfb;"></span><span style="font-size: 12px; color: #57514c;">The two screens worth the most care</span></div>
+    <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 26px; height: 16px; border-radius: 4px; border: 1px dashed #cecac2;"></span><span style="font-size: 12px; color: #57514c;">Later milestone, drawn so the layout leaves room for it</span></div>
+    <div style="display: flex; align-items: center; gap: 8px;"><svg width="26" height="10" viewBox="0 0 26 10"><path d="M0 5 H20" stroke="#864e18" stroke-width="1.6" fill="none"/><path d="M19 2 L24 5 L19 8" stroke="#864e18" stroke-width="1.4" fill="none"/></svg><span style="font-size: 12px; color: #57514c;">The seam between the two surfaces</span></div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

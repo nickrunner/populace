@@ -1,0 +1,133 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f9f6f2; color: #1a1510; font-family: "Instrument Sans", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #236292; text-decoration: none; }
+    a:hover { color: #4280b2; text-decoration: underline; }
+  </style>
+</helmet>
+
+<div style="width: 1040px; height: 1280px; background: #f9f6f2; padding: 34px 38px; overflow: hidden;">
+
+  <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #857f79;">Foundations</div>
+  <div style="margin-top: 8px; font-size: 25px; font-weight: 600; letter-spacing: -0.01em; max-width: 760px; line-height: 1.3; text-wrap: pretty;">One product, two ways of reading it. Prose is what we found; monospace is how we know.</div>
+  <div style="margin-top: 10px; font-size: 14px; line-height: 1.6; color: #57514c; max-width: 820px;">There is no expert mode and no role switch. Everyone sees the same screens. Findings are written in sentences a product owner can act on; the calls, refs and payloads underneath are set in monospace and are always one click away, never in the way. The ochre call ref is the seam — wherever you see <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; color: #864e18; background: #fde9d4; padding: 1px 5px; border-radius: 3px;">c4</span>, the instrument is right there.</div>
+
+  <div style="margin-top: 30px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px;">
+
+    <div>
+      <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">Typeface — evidence</div>
+      <div style="margin-top: 10px; background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 16px 18px;">
+        <div style="font-size: 11.5px; color: #857f79;">Instrument Sans &middot; fallback system-ui</div>
+        <div style="margin-top: 12px; font-size: 27px; font-weight: 600; letter-spacing: -0.01em;">Display 27/600</div>
+        <div style="margin-top: 10px; font-size: 22px; font-weight: 600; letter-spacing: -0.01em;">Page title 22/600</div>
+        <div style="margin-top: 10px; font-size: 16px; font-weight: 600;">Section 16/600</div>
+        <div style="margin-top: 10px; font-size: 15px; font-weight: 600;">Finding title 15/600</div>
+        <div style="margin-top: 10px; font-size: 13.5px; color: #57514c;">Body 13.5/400 — what happened, in their words</div>
+        <div style="margin-top: 10px; font-size: 12px; color: #857f79;">Meta 12/400 — counts, timings, provenance</div>
+        <div style="margin-top: 10px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">Label 11/600 tracked</div>
+      </div>
+    </div>
+
+    <div>
+      <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">Typeface — instrument</div>
+      <div style="margin-top: 10px; background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 16px 18px; font-family: 'IBM Plex Mono', ui-monospace, monospace;">
+        <div style="font-size: 11.5px; color: #857f79; font-family: 'Instrument Sans', system-ui, sans-serif;">IBM Plex Mono &middot; fallback ui-monospace</div>
+        <div style="margin-top: 12px; font-size: 15px; font-weight: 600;">update_task</div>
+        <div style="margin-top: 10px; font-size: 13px;">wake_m1b7x2_q4k8vd</div>
+        <div style="margin-top: 10px; font-size: 12px; color: #57514c;">{ "dueDate": "2026-12-24" }</div>
+        <div style="margin-top: 10px; font-size: 11.5px; color: #857f79;">27ms &middot; $1.12 &middot; 41,206 tokens</div>
+        <div style="margin-top: 14px; font-size: 11.5px; line-height: 1.6; color: #57514c; font-family: 'Instrument Sans', system-ui, sans-serif;">Monospace is reserved for things the machine said or the machine is named by: tool names, ids, arguments, results, timings and money. Never for prose.</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top: 28px;">
+    <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">Surface and ink</div>
+    <div style="margin-top: 10px; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px;">
+      <div><div style="height: 54px; border-radius: 6px; background: #f9f6f2; border: 1px solid #e1ded7;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Paper</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#f9f6f2</div></div>
+      <div><div style="height: 54px; border-radius: 6px; background: #fefdfb; border: 1px solid #e1ded7;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Card</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#fefdfb</div></div>
+      <div><div style="height: 54px; border-radius: 6px; background: #f3f0ea; border: 1px solid #e1ded7;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Well</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#f3f0ea</div></div>
+      <div><div style="height: 54px; border-radius: 6px; background: #1a1510;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Ink</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#1a1510</div></div>
+      <div><div style="height: 54px; border-radius: 6px; background: #57514c;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Ink soft</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#57514c</div></div>
+      <div><div style="height: 54px; border-radius: 6px; background: #857f79;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Ink muted</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#857f79</div></div>
+    </div>
+
+    <div style="margin-top: 14px; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px;">
+      <div><div style="height: 54px; border-radius: 6px; background: #236292;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Accent</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#236292</div></div>
+      <div><div style="height: 54px; border-radius: 6px; background: #dbeefe; border: 1px solid #e1ded7;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Accent wash</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#dbeefe</div></div>
+      <div><div style="height: 54px; border-radius: 6px; background: #864e18;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Evidence</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#864e18</div></div>
+      <div><div style="height: 54px; border-radius: 6px; background: #fde9d4; border: 1px solid #e1ded7;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Evidence wash</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#fde9d4</div></div>
+      <div><div style="height: 54px; border-radius: 6px; background: #e1ded7;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Rule</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#e1ded7</div></div>
+      <div><div style="height: 54px; border-radius: 6px; background: #cecac2;"></div><div style="margin-top: 6px; font-size: 11.5px; font-weight: 600;">Rule strong</div><div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #857f79;">#cecac2</div></div>
+    </div>
+  </div>
+
+  <div style="margin-top: 28px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px;">
+    <div>
+      <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">How bad is it</div>
+      <div style="margin-top: 10px; background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 14px 16px; display: flex; flex-direction: column; gap: 11px;">
+        <div style="display: flex; align-items: center; gap: 11px;"><span style="width: 4px; height: 20px; border-radius: 2px; background: #d03b3b;"></span><span style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #a32a2a; width: 90px;">Critical</span><span style="font-size: 12.5px; color: #57514c;">someone could not finish, or left</span></div>
+        <div style="display: flex; align-items: center; gap: 11px;"><span style="width: 4px; height: 20px; border-radius: 2px; background: #ec835a;"></span><span style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #a34a20; width: 90px;">High</span><span style="font-size: 12.5px; color: #57514c;">the errand took damage</span></div>
+        <div style="display: flex; align-items: center; gap: 11px;"><span style="width: 4px; height: 20px; border-radius: 2px; background: #fab219;"></span><span style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8a6206; width: 90px;">Medium</span><span style="font-size: 12.5px; color: #57514c;">they worked around it</span></div>
+        <div style="display: flex; align-items: center; gap: 11px;"><span style="width: 4px; height: 20px; border-radius: 2px; background: #857f79;"></span><span style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #6b655e; width: 90px;">Low</span><span style="font-size: 12.5px; color: #57514c;">noted in passing</span></div>
+        <div style="font-size: 11.5px; color: #857f79; line-height: 1.5;">Severity always carries its word. The colour never carries it alone.</div>
+      </div>
+    </div>
+
+    <div>
+      <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">Did we believe them</div>
+      <div style="margin-top: 10px; background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 14px 16px; display: flex; flex-direction: column; gap: 11px;">
+        <div style="display: flex; align-items: center; gap: 11px;"><span style="display: flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 4px; background: #e2f6e2; color: #0a7a0a; font-size: 11.5px; font-weight: 600; width: 118px;"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#0ca30c" stroke-width="2"><path d="M3 8.4 6.4 12 13 4.6"/></svg>confirmed</span><span style="font-size: 12.5px; color: #57514c;">we replayed the calls and it happened again</span></div>
+        <div style="display: flex; align-items: center; gap: 11px;"><span style="display: flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 4px; background: #f6efd9; color: #8a6206; font-size: 11.5px; font-weight: 600; width: 118px;"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#8a6206" stroke-width="1.6"><circle cx="8" cy="8" r="5.6"/><path d="M6.4 6.4a1.7 1.7 0 0 1 3.2.6c0 1.1-1.6 1.3-1.6 2.3"/></svg>unsure</span><span style="font-size: 12.5px; color: #57514c;">the replay was not conclusive</span></div>
+        <div style="display: flex; align-items: center; gap: 11px;"><span style="display: flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 4px; background: #f3f0ea; color: #6b655e; font-size: 11.5px; font-weight: 600; width: 118px;"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#6b655e" stroke-width="1.8"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>did not recur</span><span style="font-size: 12.5px; color: #57514c;">hidden by default, counted in a footnote</span></div>
+        <div style="display: flex; align-items: center; gap: 11px;"><span style="display: flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 4px; border: 1px dashed #cecac2; color: #857f79; font-size: 11.5px; font-weight: 600; width: 118px;">not checked yet</span><span style="font-size: 12.5px; color: #57514c;">filed, waiting on the verifier</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top: 28px;">
+    <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">Parts</div>
+    <div style="margin-top: 10px; background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 16px 18px;">
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px;">
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #864e18; background: #fde9d4; padding: 1px 6px; border-radius: 3px;">search_tasks</span>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #864e18; background: #fde9d4; padding: 1px 5px; border-radius: 3px;">c4</span>
+        <span style="font-size: 11px; font-weight: 600; color: #d03b3b; background: #fbe4e4; padding: 1px 7px; border-radius: 3px;">cost us a user</span>
+        <span style="font-size: 11px; font-weight: 600; color: #864e18; background: #fde9d4; padding: 1px 7px; border-radius: 3px;">promised on the site</span>
+        <span style="width: 26px; height: 26px; border-radius: 13px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center;">PD</span>
+        <span style="padding: 5px 12px; border-radius: 14px; background: #1a1510; color: #f9f6f2; font-size: 12.5px; font-weight: 500;">Everything 7</span>
+        <span style="padding: 5px 12px; border-radius: 14px; border: 1px solid #e1ded7; background: #fefdfb; font-size: 12.5px; color: #57514c;">Bugs 3</span>
+        <span style="padding: 7px 14px; border-radius: 5px; background: #236292; color: #fefdfb; font-size: 13px; font-weight: 500;">Start a run</span>
+        <span style="padding: 7px 14px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 13px; font-weight: 500;">Copy the steps</span>
+        <span style="padding: 7px 14px; border-radius: 5px; background: #fbe4e4; color: #a32a2a; border: 1px solid #f0c9c9; font-size: 13px; font-weight: 600;">Stop everything</span>
+      </div>
+      <div style="margin-top: 16px; display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; align-items: start;">
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: baseline;">
+            <div style="font-size: 11.5px; color: #57514c;">Spent today</div>
+            <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; font-weight: 600;">$4.37</div>
+          </div>
+          <div style="margin-top: 7px; height: 6px; border-radius: 3px; background: #dbeefe; overflow: hidden;"><div style="width: 9%; height: 6px; border-radius: 3px; background: #236292;"></div></div>
+          <div style="margin-top: 6px; font-size: 11px; color: #857f79;">of the $50.00 daily ceiling</div>
+        </div>
+        <pre style="margin: 0; padding: 11px 13px; background: #f3f0ea; border: 1px solid #e1ded7; border-radius: 6px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; line-height: 1.6; color: #1a1510; white-space: pre-wrap;">{
+  "taskId": "tsk_91b7",
+  "dueDate": "2026-12-24"
+}</pre>
+      </div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

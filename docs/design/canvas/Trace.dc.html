@@ -1,0 +1,235 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f9f6f2; color: #1a1510; font-family: "Instrument Sans", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #236292; text-decoration: none; }
+    a:hover { color: #4280b2; text-decoration: underline; }
+    .tl::-webkit-scrollbar { width: 8px; }
+    .tl::-webkit-scrollbar-thumb { background: #cecac2; border-radius: 4px; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 980px; display: flex; flex-direction: column; background: #f9f6f2; overflow: hidden;">
+
+  <div style="height: 56px; flex-shrink: 0; border-bottom: 1px solid #e1ded7; background: #fefdfb; display: flex; align-items: center; gap: 14px; padding: 0 24px;">
+    <a href="#" style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #57514c;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 3.5 5 8l4.5 4.5"/></svg>Wakes
+    </a>
+    <span style="width: 1px; height: 20px; background: #e1ded7;"></span>
+    <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; font-weight: 500;">wake_m1b7x2_q4k8vd</span>
+    <div style="flex-grow: 1;"></div>
+    <a href="#" style="font-size: 12.5px;">Previous visit</a>
+    <a href="#" style="font-size: 12.5px;">Next visit</a>
+  </div>
+
+  <div style="flex-shrink: 0; padding: 16px 24px 14px; background: #fefdfb; border-bottom: 1px solid #e1ded7;">
+    <div style="display: flex; align-items: flex-start; gap: 14px;">
+      <span style="width: 34px; height: 34px; border-radius: 17px; background: #f3f0ea; color: #57514c; font-size: 12.5px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">PD</span>
+      <div style="flex-grow: 1; min-width: 0;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 17px; font-weight: 600;">Priya Desai</span>
+          <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #857f79;">project-planner#0</span>
+          <span style="font-size: 12.5px; color: #57514c;">visit 3 of 4</span>
+          <span style="display: flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 4px; background: #fbe4e4; color: #a32a2a; font-size: 11.5px; font-weight: 600;">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9.5 2.5h3v11h-3M9.5 8H2.5M5 5l-2.5 3L5 11"/></svg>gave up
+          </span>
+        </div>
+        <div style="margin-top: 7px; display: flex; align-items: center; gap: 18px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: #57514c;">
+          <span>14 turns</span><span>23 tool calls</span><span>41,206 tokens</span><span>92% cached</span><span>$1.12</span><span>3m 12s</span><span>claude-sonnet-5 &middot; medium</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top: 13px; display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 6px; background: #fde9d4; border: 1px solid #f3d6b4;">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#864e18" stroke-width="1.5" style="flex-shrink: 0;"><path d="M8 4.2v4.3l2.6 1.6"/><circle cx="8" cy="8" r="5.8"/></svg>
+      <span style="font-size: 12px; font-weight: 600; color: #864e18;">Came back remembering</span>
+      <span style="font-size: 12.5px; color: #6b431a;">&ldquo;update_task said it saved my new due date, but the task still showed the old one&rdquo; &mdash; visit 2</span>
+    </div>
+  </div>
+
+  <div style="flex-grow: 1; display: flex; min-height: 0;">
+
+    <div style="width: 776px; flex-shrink: 0; border-right: 1px solid #e1ded7; display: flex; flex-direction: column; min-height: 0;">
+      <div style="flex-shrink: 0; padding: 12px 20px; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid #e1ded7;">
+        <span style="padding: 4px 11px; border-radius: 13px; background: #1a1510; color: #f9f6f2; font-size: 12px; font-weight: 500;">Everything</span>
+        <span style="padding: 4px 11px; border-radius: 13px; border: 1px solid #e1ded7; background: #fefdfb; font-size: 12px; color: #57514c;">Tool calls 23</span>
+        <span style="padding: 4px 11px; border-radius: 13px; border: 1px solid #e1ded7; background: #fefdfb; font-size: 12px; color: #57514c;">Findings 1</span>
+        <span style="padding: 4px 11px; border-radius: 13px; border: 1px solid #e1ded7; background: #fefdfb; font-size: 12px; color: #57514c;">Guardrails 1</span>
+        <span style="padding: 4px 11px; border-radius: 13px; border: 1px solid #e1ded7; background: #fefdfb; font-size: 12px; color: #57514c;">Memory 2</span>
+        <div style="flex-grow: 1;"></div>
+        <span style="font-size: 11.5px; color: #857f79;">Click a step to inspect it</span>
+      </div>
+
+      <div class="tl" style="flex-grow: 1; overflow-y: auto; padding: 8px 0 20px;">
+        <sc-for list="{{events}}" as="e" hint-placeholder-count="6">
+          <div onClick="{{e.pick}}" style="display: flex; gap: 0; cursor: pointer; background: {{e.bg}}; border-left: 3px solid {{e.bar}};">
+            <div style="width: 58px; flex-shrink: 0; padding: 9px 0 9px 13px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #a09a92;">{{e.seq}}</div>
+            <div style="width: 20px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; padding-top: 12px;">
+              <span style="width: 7px; height: 7px; border-radius: 4px; background: {{e.dot}}; flex-shrink: 0;"></span>
+              <span style="width: 1px; flex-grow: 1; background: #e1ded7;"></span>
+            </div>
+            <div style="flex-grow: 1; min-width: 0; padding: 8px 16px 9px 10px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <sc-if value="{{e.hasRef}}" hint-placeholder-val="{{true}}">
+                  <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #864e18; background: #fde9d4; padding: 1px 5px; border-radius: 3px;">{{e.ref}}</span>
+                </sc-if>
+                <span style="font-family: {{e.titleFont}}; font-size: {{e.titleSize}}; font-weight: {{e.titleWeight}}; color: {{e.titleColor}};">{{e.title}}</span>
+                <div style="flex-grow: 1;"></div>
+                <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; color: #a09a92;">{{e.meta}}</span>
+              </div>
+              <sc-if value="{{e.hasSub}}" hint-placeholder-val="{{true}}">
+                <div style="margin-top: 3px; font-family: {{e.subFont}}; font-size: 11.5px; color: {{e.subColor}}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{e.sub}}</div>
+              </sc-if>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; background: #fefdfb;">
+      <div style="flex-shrink: 0; padding: 14px 20px 12px; border-bottom: 1px solid #e1ded7;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #864e18; background: #fde9d4; padding: 2px 6px; border-radius: 3px;">{{detail.ref}}</span>
+          <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 15px; font-weight: 600;">{{detail.title}}</span>
+        </div>
+        <div style="margin-top: 7px; display: flex; flex-wrap: wrap; gap: 14px; font-size: 11.5px; color: #57514c;">
+          <span>{{detail.endpoint}}</span><span>{{detail.latency}}</span><span>{{detail.at}}</span>
+        </div>
+      </div>
+
+      <div style="flex-grow: 1; overflow-y: auto; padding: 16px 20px;">
+        <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">What she sent</div>
+        <pre style="margin: 8px 0 0; padding: 12px 13px; background: #f3f0ea; border: 1px solid #e1ded7; border-radius: 6px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; line-height: 1.65; color: #1a1510; white-space: pre-wrap; word-break: break-word;">{{detail.args}}</pre>
+
+        <div style="margin-top: 18px; display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">What came back</span>
+          <span style="padding: 1px 7px; border-radius: 3px; background: #fbe4e4; color: #a32a2a; font-size: 10.5px; font-weight: 600;">{{detail.flag}}</span>
+        </div>
+        <pre style="margin: 8px 0 0; padding: 12px 13px; background: #f3f0ea; border: 1px solid #e1ded7; border-radius: 6px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; line-height: 1.65; color: #1a1510; white-space: pre-wrap; word-break: break-word;">{{detail.result}}</pre>
+
+        <div style="margin-top: 18px; padding: 12px 13px; border: 1px solid #e1ded7; border-radius: 6px; background: #fefdfb;">
+          <div style="font-size: 12px; font-weight: 600;">Why this one matters</div>
+          <div style="margin-top: 5px; font-size: 12.5px; line-height: 1.55; color: #57514c;">She asked for 24 December, the call reported success, and the task it handed back still says 1 October.</div>
+        </div>
+
+        <div style="margin-top: 16px;">
+          <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #857f79;">Cited as evidence</div>
+          <a href="#" style="margin-top: 8px; display: flex; align-items: center; gap: 10px; padding: 11px 13px; border: 1px solid #e1ded7; border-radius: 6px; background: #fefdfb; text-decoration: none;">
+            <span style="width: 3px; align-self: stretch; border-radius: 2px; background: #ec835a;"></span>
+            <div style="flex-grow: 1; min-width: 0;">
+              <div style="font-size: 13px; font-weight: 600; color: #1a1510;">Moving a deadline appears to work and does not stick</div>
+              <div style="margin-top: 3px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: #857f79;">step 2 of 4 &middot; c3 c4 c5 c6</div>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#857f79" stroke-width="1.5"><path d="M6.5 3.5 11 8l-4.5 4.5"/></svg>
+          </a>
+        </div>
+
+        <div style="margin-top: 16px; display: flex; gap: 8px;">
+          <span style="padding: 7px 13px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500; color: #1a1510;">Copy these steps</span>
+          <span style="padding: 7px 13px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500; color: #1a1510;">Open raw event</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { sel: 9 };
+  }
+
+  rows() {
+    return [
+      { seq: '0001', kind: 'start', title: 'Visit 3 begins', sub: 'project-planner#0 · run_m1abc2de_x7k9q2', meta: '14:31:02' },
+      { seq: '0002', kind: 'memory', title: 'Reads her own notes', sub: 'waiting on: a due date that saves · annoyed by: update_task, visit 2', meta: '' },
+      { seq: '0003', kind: 'model', title: 'Turn 1', sub: 'Decides to check whether last visit’s deadline finally stuck', meta: '2.1s · $0.06' },
+      { seq: '0004', kind: 'tool', ref: 'c1', title: 'list_projects', sub: '{} → 2 projects', meta: '18ms' },
+      { seq: '0005', kind: 'tool', ref: 'c2', title: 'list_tasks', sub: '{ projectId: "prj_4k2v" } → 6 tasks', meta: '22ms' },
+      { seq: '0006', kind: 'model', title: 'Turn 2', sub: 'Finds the launch task she moved last time', meta: '1.7s · $0.05' },
+      { seq: '0007', kind: 'tool', ref: 'c3', title: 'get_task', sub: '{ taskId: "tsk_91b7" } → dueDate 2026-10-01', meta: '14ms' },
+      { seq: '0008', kind: 'model', title: 'Turn 3', sub: 'Moves the deadline to 24 December', meta: '2.4s · $0.07' },
+      { seq: '0009', kind: 'tool', ref: 'c4', title: 'update_task', sub: '{ taskId: "tsk_91b7", dueDate: "2026-12-24" } → ok, dueDate 2026-10-01', meta: '27ms', suspect: true },
+      { seq: '0010', kind: 'model', title: 'Turn 4', sub: 'Notices the date came back unchanged and reads the task again', meta: '2.0s · $0.06' },
+      { seq: '0011', kind: 'tool', ref: 'c5', title: 'get_task', sub: '{ taskId: "tsk_91b7" } → dueDate 2026-10-01', meta: '12ms', suspect: true },
+      { seq: '0012', kind: 'memory', title: 'Writes it down', sub: 'annoyance: “the deadline did not save again”', meta: '' },
+      { seq: '0013', kind: 'model', title: 'Turn 5', sub: 'Tries once more with a different date format', meta: '1.9s · $0.06' },
+      { seq: '0014', kind: 'tool', ref: 'c6', title: 'update_task', sub: '{ taskId: "tsk_91b7", dueDate: "2026-12-24T00:00:00Z" } → ok, dueDate 2026-10-01', meta: '25ms', suspect: true },
+      { seq: '0015', kind: 'finding', title: 'Files a bug', sub: 'Moving a deadline appears to work and does not stick · high · evidence c3 c4 c5 c6', meta: '' },
+      { seq: '0016', kind: 'model', title: 'Turn 6', sub: 'Considers deleting the project and starting over', meta: '2.2s · $0.07' },
+      { seq: '0017', kind: 'guard', title: 'Held back: delete_project', sub: 'destructive-confirm — this persona must confirm before destructive tools run', meta: '' },
+      { seq: '0018', kind: 'give', title: 'Gives up', sub: '“I cannot plan around a date the app forgets. I would come back if update_task kept my dates.”', meta: '' },
+      { seq: '0019', kind: 'end', title: 'Visit ends — gave up', sub: '14 turns · 23 tool calls · $1.12 · would return: yes', meta: '14:34:14' },
+    ];
+  }
+
+  style(kind) {
+    const map = {
+      start: { dot: '#857f79', color: '#57514c', font: '"Instrument Sans", system-ui, sans-serif', weight: '500', size: '13px' },
+      memory: { dot: '#4280b2', color: '#57514c', font: '"Instrument Sans", system-ui, sans-serif', weight: '500', size: '13px' },
+      model:  { dot: '#cecac2', color: '#57514c', font: '"Instrument Sans", system-ui, sans-serif', weight: '500', size: '13px' },
+      tool:   { dot: '#864e18', color: '#1a1510', font: '"IBM Plex Mono", ui-monospace, monospace', weight: '600', size: '13px' },
+      finding:{ dot: '#ec835a', color: '#1a1510', font: '"Instrument Sans", system-ui, sans-serif', weight: '600', size: '13px' },
+      guard:  { dot: '#fab219', color: '#8a6206', font: '"Instrument Sans", system-ui, sans-serif', weight: '600', size: '13px' },
+      give:   { dot: '#d03b3b', color: '#a32a2a', font: '"Instrument Sans", system-ui, sans-serif', weight: '600', size: '13px' },
+      end:    { dot: '#857f79', color: '#57514c', font: '"Instrument Sans", system-ui, sans-serif', weight: '500', size: '13px' },
+    };
+    return map[kind] || map.model;
+  }
+
+  renderVals() {
+    const sel = this.state.sel;
+    const events = this.rows().map((r, i) => {
+      const n = i + 1;
+      const s = this.style(r.kind);
+      const on = n === sel;
+      return {
+        seq: r.seq,
+        title: r.title,
+        sub: r.sub || '',
+        hasSub: Boolean(r.sub),
+        meta: r.meta || '',
+        ref: r.ref || '',
+        hasRef: Boolean(r.ref),
+        dot: s.dot,
+        titleFont: s.font,
+        titleWeight: s.weight,
+        titleSize: s.size,
+        titleColor: s.color,
+        subFont: r.kind === 'tool' ? '"IBM Plex Mono", ui-monospace, monospace' : '"Instrument Sans", system-ui, sans-serif',
+        subColor: r.suspect ? '#a34a20' : '#857f79',
+        bg: on ? '#dbeefe' : 'transparent',
+        bar: on ? '#236292' : 'transparent',
+        pick: () => this.setState({ sel: n }),
+      };
+    });
+
+    return {
+      events,
+      detail: {
+        ref: 'c4',
+        title: 'update_task',
+        endpoint: 'default · http://127.0.0.1:4310/mcp',
+        latency: '27 ms',
+        at: '14:31:47',
+        flag: 'reported success',
+        args: '{\n  "taskId": "tsk_91b7",\n  "dueDate": "2026-12-24",\n  "title": "Launch review with client"\n}',
+        result: '{\n  "task": {\n    "id": "tsk_91b7",\n    "title": "Launch review with client",\n    "dueDate": "2026-10-01",\n    "priority": "high",\n    "status": "open"\n  }\n}',
+      },
+    };
+  }
+}
+</script>
+</body>
+</html>
