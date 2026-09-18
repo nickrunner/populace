@@ -16,7 +16,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
+      # Build first: type-aware lint rules and `tsc -p` both read the workspace
+      # packages' emitted declarations, which do not exist in a fresh checkout.
       - run: pnpm build
+      - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test

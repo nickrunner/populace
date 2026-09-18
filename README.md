@@ -99,7 +99,7 @@ Then `populace validate` and `populace wake <persona>`.
 ## Development
 
 ```bash
-pnpm check          # lint + build + typecheck + test, what CI runs
+pnpm check          # build + lint + typecheck + test, what CI runs
 pnpm test:watch
 ```
 

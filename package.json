@@ -15,7 +15,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "pnpm lint && pnpm build && pnpm typecheck && pnpm test",
+    "check": "pnpm build && pnpm lint && pnpm typecheck && pnpm test",
     "populace": "node packages/cli/dist/cli.js",
     "mock-target": "node packages/mock-target/dist/bin.js",
     "dev": "pnpm --filter @populace/web dev"
