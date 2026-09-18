@@ -5,10 +5,12 @@ import {
   ErrorBodySchema,
   FindingSchema,
   HealthViewSchema,
+  MemorySchema,
   RunDetailSchema,
   RunSummarySchema,
   SpendViewSchema,
   TargetViewSchema,
+  ToolUsageViewSchema,
   TraceEventSchema,
   WakeDetailSchema,
   WakeSummarySchema,
@@ -157,6 +159,8 @@ describe("the read-only M1 API over a real run", () => {
     expect(run.totals.activeAgents).toBe(1);
     expect(run.parentRunId).toBeNull();
     expect(run.startedAt).not.toBeNull();
+    // Its last visit has finished, but the organiser is due to wake again, so the run has not ended.
+    expect(run.endedAt).toBeNull();
 
     const detail = RunDetailSchema.parse(await json(await api.request(routes.run(runId))));
     expect(detail.findingsByKind.bug).toBe(1);
@@ -165,6 +169,9 @@ describe("the read-only M1 API over a real run", () => {
     // Every key is present even at zero, so a client never has to guess what a gap means.
     expect(detail.findingsByKind.praise).toBe(0);
     expect(detail.childRunIds).toEqual([]);
+    expect(detail.wakesByStatus.done).toBe(1); // the organiser finished her errand
+    expect(detail.wakesByStatus["gave-up"]).toBe(1); // the searcher walked away
+    expect(detail.verified.checked).toBe(0); // nothing has been judged yet
 
     const agents = pageOf(AgentSummarySchema).parse(await json(await api.request(routes.runAgents(runId))));
     expect(agents.items).toHaveLength(2);
@@ -175,6 +182,8 @@ describe("the read-only M1 API over a real run", () => {
     expect(searcher?.wouldReturn).toBe(true); // she said she would come back, so a continuation may ask her
     expect(searcher?.findingCount).toBe(2); // the search bug and the abandonment
     expect(searcher?.identityId).not.toBeNull(); // she signed up through the target's own tools
+    expect(searcher?.account?.email).toContain("@"); // the handle, never the bearer token
+    expect(searcher?.patience).toBe(3);
 
     const wakes = pageOf(WakeSummarySchema).parse(await json(await api.request(routes.runWakes(runId))));
     expect(wakes.items).toHaveLength(2);
@@ -183,6 +192,8 @@ describe("the read-only M1 API over a real run", () => {
     expect(gaveUp?.wouldReturn).toBe(true); // what the fix-validation screen reads
 
     const spend = SpendViewSchema.parse(await json(await api.request(routes.runSpend(runId))));
+    expect(spend.dailyCeilingUsd).toBe(cfg.guardrails.dailyUsd);
+    expect(spend.spentTodayUsd).toBeGreaterThanOrEqual(spend.totalUsd - 0.0001);
     expect(spend.byPersona).toHaveLength(2);
     expect(spend.byDay).toHaveLength(1);
     expect(spend.totalUsd).toBeGreaterThanOrEqual(0);
@@ -193,6 +204,7 @@ describe("the read-only M1 API over a real run", () => {
     await store.upsertAgent({ ...stored!, status: "retired", retiredReason: "max-wakes", nextWakeAt: null });
     const after = RunDetailSchema.parse(await json(await api.request(routes.run(runId))));
     expect(after.status).toBe("completed");
+    expect(after.endedAt).not.toBeNull(); // now that nobody is coming back, it has
 
     await store.close();
   });
@@ -325,6 +337,43 @@ describe("the read-only M1 API over a real run", () => {
   });
 });
 
+describe("what the coverage-gaps and population screens read", () => {
+  it("counts every tool the run used and names the ones nobody reached for", async () => {
+    const { store, cfg, runId } = await seed();
+    const api = app(store, cfg);
+
+    const usage = ToolUsageViewSchema.parse(await json(await api.request(routes.runTools(runId))));
+    const search = usage.items.find((t) => t.name === "search_tasks");
+    expect(search?.calls).toBe(2); // the searcher tried lower case and then capitalised
+    expect(search?.exposed).toBe(true);
+    expect(search?.firstUsedAt).not.toBeNull();
+
+    // The point of the view: tools Tasklet exposes that nobody in this run called.
+    expect(usage.neverCalledCount).toBeGreaterThan(0);
+    const untouched = usage.items.filter((t) => t.exposed && t.calls === 0).map((t) => t.name);
+    expect(untouched).toContain("add_comment");
+    expect(untouched).not.toContain("sign_up"); // both personas signed up
+    expect(usage.toolsError).toBeNull();
+  });
+
+  it("serves an agent's memory, and an empty document for one that has written none", async () => {
+    const { store, cfg, runId } = await seed();
+    const api = app(store, cfg);
+    const agents = pageOf(AgentSummarySchema).parse(await json(await api.request(routes.runAgents(runId))));
+    const searcher = agents.items.find((a) => a.personaId === "searcher")!;
+
+    const memory = MemorySchema.parse(await json(await api.request(routes.agentMemory(runId, searcher.id))));
+    expect(memory.agentId).toBe(searcher.id);
+    // What she is carrying: this is what makes visit three different from visit one.
+    expect(memory.annoyances.map((a) => a.text).join(" ")).toContain("capitalisation");
+
+    const empty = MemorySchema.parse(await json(await api.request(routes.agentMemory(runId, "tasklet/nobody#0"))));
+    expect(empty.notes).toEqual([]);
+
+    await store.close();
+  });
+});
+
 describe("populace serve", () => {
   it("binds loopback and answers over HTTP", async () => {
     const { store, cfg } = await seed();
@@ -333,10 +382,25 @@ describe("populace serve", () => {
       expect(server.url).toContain("127.0.0.1");
       const health = HealthViewSchema.parse(await json(await fetch(`${server.url}${routes.health}`)));
       expect(health.version).toBe("test");
-      // No dashboard is built into the package in this checkout, so the root explains itself.
+      // `pnpm build` puts the dashboard in the package's public/, and serve hosts it from there.
+      const root = await fetch(server.url);
+      expect(root.status).toBe(200);
+      expect(await root.text()).toContain('<div id="root">');
+    } finally {
+      await server.close();
+      await store.close();
+    }
+  });
+
+  it("explains itself when no dashboard has been built into the install", async () => {
+    const { store, cfg } = await seed();
+    const server = await startServer({ store, config: cfg, storePath: ":memory:", version: "test", port: 0, webRoot: "/nonexistent/public" });
+    try {
       const root = await fetch(server.url);
       expect(root.status).toBe(200);
       expect(await root.text()).toContain("The API is running");
+      // The API still works without it, which is what an M4 CI consumer uses.
+      expect((await fetch(`${server.url}${routes.health}`)).status).toBe(200);
     } finally {
       await server.close();
       await store.close();

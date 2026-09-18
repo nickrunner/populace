@@ -4,11 +4,13 @@ import {
   DigestSchema,
   FindingKindSchema,
   FindingSchema,
+  MemorySchema,
   RetiredReasonSchema,
   SeveritySchema,
   TraceEventSchema,
   VerdictSchema,
   WakeSchema,
+  WakeStatusSchema,
 } from "@populace/core/isomorphic";
 import { z } from "zod";
 
@@ -55,6 +57,10 @@ export const RunDetailSchema = RunSummarySchema.extend({
   returningAfterGiveUp: z.number().int().nonnegative(),
   findingsByKind: z.record(FindingKindSchema, z.number().int().nonnegative()),
   findingsBySeverity: z.record(SeveritySchema, z.number().int().nonnegative()),
+  /** How the run's visits ended. `done` is the overview's "errands finished". */
+  wakesByStatus: z.record(WakeStatusSchema, z.number().int().nonnegative()),
+  /** Verification progress, which the overview reads as "4 of 6 checked". */
+  verified: z.object({ checked: z.number().int().nonnegative(), confirmed: z.number().int().nonnegative(), notReproduced: z.number().int().nonnegative(), inconclusive: z.number().int().nonnegative() }),
 });
 export type RunDetail = z.infer<typeof RunDetailSchema>;
 
@@ -76,8 +82,46 @@ export const AgentSummarySchema = z.object({
   costUsd: z.number().nonnegative(),
   /** What the agent said on its last `done` or `give_up` about coming back. */
   wouldReturn: z.boolean().nullable(),
+  backstory: z.string(),
+  patience: z.number().int(),
+  budgetUsd: z.number().nonnegative(),
+  model: z.string(),
+  effort: z.string(),
+  /**
+   * The account this agent holds on the target, by its readable handle only. The bearer token
+   * the credential also carries is never on the wire (`DATA-MODEL.md` §4).
+   */
+  account: z.object({ email: z.string().nullable(), userId: z.string().nullable() }).nullable(),
 });
 export type AgentSummary = z.infer<typeof AgentSummarySchema>;
+
+export { MemorySchema };
+
+/**
+ * What a target tool was actually used for during a run. A tool with no calls is the point of
+ * this view: the coverage-gaps screen reads it as "tools you expose that nobody reached for".
+ */
+export const ToolUsageSchema = z.object({
+  name: z.string(),
+  calls: z.number().int().nonnegative(),
+  errors: z.number().int().nonnegative(),
+  agents: z.array(z.string()),
+  firstUsedAt: z.iso.datetime().nullable(),
+  lastUsedAt: z.iso.datetime().nullable(),
+  /** False when the tool is called in the trace but the target no longer lists it. */
+  exposed: z.boolean(),
+  destructive: z.boolean(),
+});
+export type ToolUsage = z.infer<typeof ToolUsageSchema>;
+
+export const ToolUsageViewSchema = z.object({
+  items: z.array(ToolUsageSchema),
+  exposedCount: z.number().int().nonnegative(),
+  neverCalledCount: z.number().int().nonnegative(),
+  /** Null when the target could not be reached, in which case only called tools are listed. */
+  toolsError: z.string().nullable(),
+});
+export type ToolUsageView = z.infer<typeof ToolUsageViewSchema>;
 
 /** A wake row plus the persona name, so a list does not need a second request to be readable. */
 export const WakeSummarySchema = WakeSchema.extend({ personaName: z.string() });
@@ -105,6 +149,9 @@ export type SpendBucket = z.infer<typeof SpendBucketSchema>;
 
 export const SpendViewSchema = z.object({
   totalUsd: z.number().nonnegative(),
+  /** The guardrail the sidebar shows this run's spend against (ADR-0009). */
+  dailyCeilingUsd: z.number().nonnegative(),
+  spentTodayUsd: z.number().nonnegative(),
   byAgent: z.array(SpendBucketSchema),
   byPersona: z.array(SpendBucketSchema),
   byDay: z.array(SpendBucketSchema),

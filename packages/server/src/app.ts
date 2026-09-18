@@ -75,7 +75,7 @@ function page<T>(items: T[], cursor: string | undefined, limit: number): { items
  */
 export function createApp(deps: ServerDeps): Hono {
   const app = new Hono();
-  const read = new ReadModel(deps.store);
+  const read = new ReadModel(deps.store, deps.config.guardrails);
 
   app.get(`${API_BASE}/health`, async (c) => {
     const killSwitch = await deps.store.getKillSwitch();
@@ -117,6 +117,15 @@ export function createApp(deps: ServerDeps): Hono {
   });
 
   app.get(`${API_BASE}/runs/:id/spend`, async (c) => c.json(await read.spend(c.req.param("id"))));
+
+  app.get(`${API_BASE}/runs/:id/tools`, async (c) => c.json(await read.toolUsage(c.req.param("id"), await targetView(deps.config))));
+
+  app.get(`${API_BASE}/runs/:id/agents/:agentId/memory`, async (c) => {
+    const memory = await read.memory(c.req.param("id"), c.req.param("agentId"));
+    // An agent that has not written anything yet has no memory row, which is a normal state on a
+    // first visit rather than a missing resource, so it answers with an empty document.
+    return c.json(memory ?? { runId: c.req.param("id"), agentId: c.req.param("agentId"), notes: [], waitingOn: [], annoyances: [], done: [], updatedAt: new Date(0).toISOString() });
+  });
 
   app.get(`${API_BASE}/runs/:id/digest`, async (c) => {
     const q = parseQuery(c, DigestQuerySchema);
