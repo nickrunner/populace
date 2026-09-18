@@ -166,9 +166,9 @@
       "id": "m2-config",
       "x": 0,
       "y": -250,
-      "w": 760,
+      "w": 700,
       "page": "page-2",
-      "text": "These three setup screens are drawn for config living in the database, which is what the architecture thread recommends and Nick has not answered yet.\n\nIf YAML stays the source of truth instead, three things change: 'saved 4 minutes ago' becomes 'written to populace.yaml', the persona list loses 'in 1 population' (a YAML file has no cross-reference), and every screen needs a visible file path plus a reload-from-disk affordance for edits made in an editor. The layouts survive either answer."
+      "text": "Settled: authored config — targets, personas, populations, guardrails — lives in the database from M2, because this is where people will be setting it up anyway. YAML becomes import and export.\n\nThat is what these three screens are drawn for: a saved record with a saved-at time, a persona that knows which populations use it, and a rename that cannot break an agent id."
     },
     {
       "id": "m2-live",
