@@ -231,6 +231,14 @@ finding rows (ADR-0028), run comparison, "re-run the people who complained" as a
 **M4 — many targets.** Projects become real, targets get a library, runs get schedules, and a
 non-interactive CI mode consumes the same API.
 
+M2 left one thing for this rung to undo. `POST /runs` refuses a second run while one is going
+(ADR-0022 amendment), which is right while a local install drives one target and stops everything
+with one button. M4 is done when one install drives three targets on schedules, and a scheduled
+start that arrives during another run would be refused with a 409 that nobody is watching. So M4
+either queues starts instead of rejecting them, or makes the stop run-scoped and leaves the kill
+switch as the global control. Whichever it is, the CI mode needs the same answer, because a build
+that skipped its run and said nothing is worse than one that waited.
+
 **M5 — cloud.** `@populace/store-postgres` behind the existing `Store` interface, an external
 scheduler behind `Scheduler`, hosted runners pulling jobs, accounts and tenancy in `server`,
 secrets out of the config rows. The runner is untouched.
@@ -244,8 +252,8 @@ gathered here so nobody has to find them by reading every ADR.
   replayed on the visit's last five tool calls, writes included, and each replay changes what the
   next one sees. Fix validation is built on verdicts, so this has to be settled before M3 rather
   than during it. Options and reasoning: ADR-0014, amendment of 2026-09-18.
-- **"Stop everything now" is global while runs are not.** The kill switch is a store row every
-  in-flight wake checks (ADR-0009), so stopping one run stops every run and then latches. Either
-  concurrent runs are refused outright — defensible for a single-writer local process — or the stop
-  becomes run-scoped and the kill switch stays the global control it is. To settle in M2's second
-  slice.
+- ~~**"Stop everything now" is global while runs are not.**~~ Settled in M2's second slice:
+  `POST /runs` refuses a second run while one is going. The kill switch is a store row every
+  in-flight wake checks (ADR-0009), so it is global by construction, and the button is only honest
+  while there is one thing to stop. See the ADR-0022 amendment, and the M4 row above: M4 is where
+  this has to be revisited.
