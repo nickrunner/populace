@@ -3,7 +3,16 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   AgentSchema,
+  ConfigSnapshotSchema,
+  EventSchema,
   FindingSchema,
+  JobSchema,
+  ProjectSchema,
+  RunSchema,
+  StoredPersonaSchema,
+  StoredPopulationSchema,
+  StoredSettingsSchema,
+  StoredTargetSchema,
   IdentitySchema,
   MemorySchema,
   TraceEventSchema,
@@ -11,15 +20,27 @@ import {
   type Agent,
   type Finding,
   type FindingQuery,
+  type ConfigSnapshot,
+  type Event,
+  type EventInput,
+  type EventQuery,
   type Identity,
+  type Job,
   type Memory,
+  type Project,
+  type Run,
   type Store,
+  type StoredPersona,
+  type StoredPopulation,
+  type StoredSettings,
+  type StoredTarget,
   type TraceEvent,
   type Verification,
   type Wake,
   type WakeQuery,
 } from "@populace/core";
 import type { z } from "zod";
+import { applyMigrations } from "./migrations.js";
 
 /**
  * `memories` was keyed by agent alone, so memory leaked across runs and `--new-run` was not
@@ -87,6 +108,9 @@ export class SqliteStore implements Store {
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
     dropPreRunScopedMemories(this.db);
     this.db.exec(SCHEMA);
+    // `SCHEMA` creates the M1 shape; everything after it is a versioned forward step, so an
+    // existing database and a fresh one converge here (`DATA-MODEL.md` §11).
+    applyMigrations(this.db, (line) => console.warn(`populace store: ${line}`));
   }
 
   static open(path: string): SqliteStore {
@@ -229,7 +253,7 @@ export class SqliteStore implements Store {
       where.push("started_at <= ?");
       params.push(query.until.toISOString());
     }
-    const sql = `SELECT json FROM wakes ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at`;
+    const sql = `SELECT json FROM wakes ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at, rowid`;
     return Promise.resolve(rows(this.db.prepare(sql).all(...params)).map((r) => parseRow(WakeSchema, r)));
   }
 
@@ -287,7 +311,12 @@ export class SqliteStore implements Store {
       params.push(query.until.toISOString());
     }
     if (query.unverifiedOnly) where.push("verified = 0");
-    const sql = `SELECT json FROM findings ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at`;
+    // `created_at` alone is not a total order: several findings of one wake are filed in the same
+    // millisecond, and SQLite is free to return tied rows in any order. That matters because the
+    // verifier replays findings in this order against the live target, and a replay can write —
+    // so a tie decided differently between two runs changes what the next replay sees. `rowid` is
+    // insertion order, which makes "the order they were filed" the order they come back in.
+    const sql = `SELECT json FROM findings ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, rowid`;
     return Promise.resolve(rows(this.db.prepare(sql).all(...params)).map((r) => parseRow(FindingSchema, r)));
   }
 
@@ -326,11 +355,274 @@ export class SqliteStore implements Store {
     return Promise.resolve({ engaged: parsed.engaged, reason: parsed.reason || null, at: parsed.at });
   }
 
+  getControl(key: string): Promise<string | undefined> {
+    const row = this.db.prepare("SELECT value AS json FROM control WHERE key = ?").get(key);
+    return Promise.resolve(row ? (rows([row])[0] as JsonRow).json : undefined);
+  }
+
+  setControl(key: string, value: string): Promise<void> {
+    this.db.prepare("INSERT INTO control (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+    return Promise.resolve();
+  }
+
+  deleteControl(key: string): Promise<void> {
+    this.db.prepare("DELETE FROM control WHERE key = ?").run(key);
+    return Promise.resolve();
+  }
+
   // ---- runs --------------------------------------------------------------
 
   listRunIds(): Promise<string[]> {
-    const result = this.db.prepare("SELECT DISTINCT run_id AS json FROM agents UNION SELECT DISTINCT run_id FROM wakes UNION SELECT DISTINCT run_id FROM findings").all();
+    const result = this.db
+      .prepare("SELECT DISTINCT run_id AS json FROM agents UNION SELECT DISTINCT run_id FROM wakes UNION SELECT DISTINCT run_id FROM findings UNION SELECT DISTINCT id FROM runs")
+      .all();
     return Promise.resolve(rows(result).map((r) => r.json));
+  }
+
+  saveRun(run: Run): Promise<void> {
+    const parsed = RunSchema.parse(run);
+    this.db
+      .prepare(
+        `INSERT INTO runs (id, project_id, population_id, status, parent_run_id, started_at, json) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id, population_id = excluded.population_id, status = excluded.status,
+           parent_run_id = excluded.parent_run_id, started_at = excluded.started_at, json = excluded.json`,
+      )
+      .run(parsed.id, parsed.projectId, parsed.populationId, parsed.status, parsed.parentRunId, parsed.startedAt, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  getRun(id: string): Promise<Run | undefined> {
+    const row = this.db.prepare("SELECT json FROM runs WHERE id = ?").get(id);
+    return Promise.resolve(row ? parseRow(RunSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  listRuns(filter: { projectId?: string; status?: Run["status"] } = {}): Promise<Run[]> {
+    const where: string[] = [];
+    const params: string[] = [];
+    if (filter.projectId) {
+      where.push("project_id = ?");
+      params.push(filter.projectId);
+    }
+    if (filter.status) {
+      where.push("status = ?");
+      params.push(filter.status);
+    }
+    const sql = `SELECT json FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC`;
+    return Promise.resolve(rows(this.db.prepare(sql).all(...params)).map((r) => parseRow(RunSchema, r)));
+  }
+
+  deleteRun(id: string): Promise<void> {
+    this.db.prepare("DELETE FROM runs WHERE id = ?").run(id);
+    this.db.prepare("DELETE FROM events WHERE run_id = ?").run(id);
+    return Promise.resolve();
+  }
+
+  // ---- config snapshots --------------------------------------------------
+
+  saveConfigSnapshot(snapshot: ConfigSnapshot): Promise<void> {
+    const parsed = ConfigSnapshotSchema.parse(snapshot);
+    // Snapshots are immutable: an id that already exists is the same content by construction, so
+    // a re-insert is a no-op rather than an update.
+    this.db
+      .prepare("INSERT INTO config_snapshots (id, hash, created_at, json) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING")
+      .run(parsed.id, parsed.hash, parsed.createdAt, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  getConfigSnapshot(id: string): Promise<ConfigSnapshot | undefined> {
+    const row = this.db.prepare("SELECT json FROM config_snapshots WHERE id = ?").get(id);
+    return Promise.resolve(row ? parseRow(ConfigSnapshotSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  findConfigSnapshotByHash(hash: string): Promise<ConfigSnapshot | undefined> {
+    const row = this.db.prepare("SELECT json FROM config_snapshots WHERE hash = ? ORDER BY created_at LIMIT 1").get(hash);
+    return Promise.resolve(row ? parseRow(ConfigSnapshotSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  // ---- authored config ---------------------------------------------------
+
+  saveProject(project: Project): Promise<void> {
+    const parsed = ProjectSchema.parse(project);
+    this.db.prepare("INSERT INTO projects (id, json) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json").run(parsed.id, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  getProject(id: string): Promise<Project | undefined> {
+    const row = this.db.prepare("SELECT json FROM projects WHERE id = ?").get(id);
+    return Promise.resolve(row ? parseRow(ProjectSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  listProjects(): Promise<Project[]> {
+    return Promise.resolve(rows(this.db.prepare("SELECT json FROM projects ORDER BY id").all()).map((r) => parseRow(ProjectSchema, r)));
+  }
+
+  saveTarget(target: StoredTarget): Promise<void> {
+    const parsed = StoredTargetSchema.parse(target);
+    this.db
+      .prepare(
+        `INSERT INTO targets (id, project_id, name, updated_at, json) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, updated_at = excluded.updated_at, json = excluded.json`,
+      )
+      .run(parsed.id, parsed.projectId, parsed.name, parsed.updatedAt, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  getTarget(id: string): Promise<StoredTarget | undefined> {
+    const row = this.db.prepare("SELECT json FROM targets WHERE id = ?").get(id);
+    return Promise.resolve(row ? parseRow(StoredTargetSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  listTargets(projectId?: string): Promise<StoredTarget[]> {
+    const sql = `SELECT json FROM targets ${projectId ? "WHERE project_id = ?" : ""} ORDER BY updated_at DESC`;
+    const result = projectId ? this.db.prepare(sql).all(projectId) : this.db.prepare(sql).all();
+    return Promise.resolve(rows(result).map((r) => parseRow(StoredTargetSchema, r)));
+  }
+
+  deleteTarget(id: string): Promise<void> {
+    this.db.prepare("DELETE FROM targets WHERE id = ?").run(id);
+    return Promise.resolve();
+  }
+
+  savePersona(persona: StoredPersona): Promise<void> {
+    const parsed = StoredPersonaSchema.parse(persona);
+    this.db
+      .prepare(
+        `INSERT INTO personas (id, project_id, slug, origin, updated_at, json) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET slug = excluded.slug, origin = excluded.origin, updated_at = excluded.updated_at, json = excluded.json`,
+      )
+      .run(parsed.id, parsed.projectId, parsed.slug, parsed.origin, parsed.updatedAt, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  getPersona(id: string): Promise<StoredPersona | undefined> {
+    const row = this.db.prepare("SELECT json FROM personas WHERE id = ?").get(id);
+    return Promise.resolve(row ? parseRow(StoredPersonaSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  listPersonas(projectId?: string): Promise<StoredPersona[]> {
+    const sql = `SELECT json FROM personas ${projectId ? "WHERE project_id = ?" : ""} ORDER BY slug`;
+    const result = projectId ? this.db.prepare(sql).all(projectId) : this.db.prepare(sql).all();
+    return Promise.resolve(rows(result).map((r) => parseRow(StoredPersonaSchema, r)));
+  }
+
+  deletePersona(id: string): Promise<void> {
+    this.db.prepare("DELETE FROM personas WHERE id = ?").run(id);
+    return Promise.resolve();
+  }
+
+  savePopulation(population: StoredPopulation): Promise<void> {
+    const parsed = StoredPopulationSchema.parse(population);
+    this.db
+      .prepare(
+        `INSERT INTO populations (id, project_id, slug, updated_at, json) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET slug = excluded.slug, updated_at = excluded.updated_at, json = excluded.json`,
+      )
+      .run(parsed.id, parsed.projectId, parsed.slug, parsed.updatedAt, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  getPopulation(id: string): Promise<StoredPopulation | undefined> {
+    const row = this.db.prepare("SELECT json FROM populations WHERE id = ?").get(id);
+    return Promise.resolve(row ? parseRow(StoredPopulationSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  listPopulations(projectId?: string): Promise<StoredPopulation[]> {
+    const sql = `SELECT json FROM populations ${projectId ? "WHERE project_id = ?" : ""} ORDER BY slug`;
+    const result = projectId ? this.db.prepare(sql).all(projectId) : this.db.prepare(sql).all();
+    return Promise.resolve(rows(result).map((r) => parseRow(StoredPopulationSchema, r)));
+  }
+
+  deletePopulation(id: string): Promise<void> {
+    this.db.prepare("DELETE FROM populations WHERE id = ?").run(id);
+    return Promise.resolve();
+  }
+
+  saveSettings(settings: StoredSettings): Promise<void> {
+    const parsed = StoredSettingsSchema.parse(settings);
+    this.db.prepare("INSERT INTO settings (project_id, json) VALUES (?, ?) ON CONFLICT(project_id) DO UPDATE SET json = excluded.json").run(parsed.projectId, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  getSettings(projectId: string): Promise<StoredSettings | undefined> {
+    const row = this.db.prepare("SELECT json FROM settings WHERE project_id = ?").get(projectId);
+    return Promise.resolve(row ? parseRow(StoredSettingsSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  // ---- event log ---------------------------------------------------------
+
+  appendEvent(event: EventInput): Promise<Event> {
+    const at = event.at ?? new Date().toISOString();
+    const result = this.db
+      .prepare("INSERT INTO events (at, run_id, wake_id, type, payload) VALUES (?, ?, ?, ?, ?)")
+      .run(at, event.runId, event.wakeId, event.type, JSON.stringify(event.payload));
+    return Promise.resolve(EventSchema.parse({ ...event, at, seq: Number(result.lastInsertRowid) }));
+  }
+
+  listEvents(query: EventQuery = {}): Promise<Event[]> {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (query.afterSeq !== undefined) {
+      where.push("seq > ?");
+      params.push(query.afterSeq);
+    }
+    if (query.runId !== undefined) {
+      where.push("run_id = ?");
+      params.push(query.runId);
+    }
+    if (query.types?.length) {
+      where.push(`type IN (${query.types.map(() => "?").join(",")})`);
+      params.push(...query.types);
+    }
+    const sql = `SELECT seq, at, run_id, wake_id, type, payload FROM events ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY seq LIMIT ?`;
+    const result = this.db.prepare(sql).all(...params, query.limit ?? 500);
+    // eslint-disable-next-line no-restricted-syntax -- SQLite boundary: every row is zod-parsed on the next line.
+    const raw = result as unknown as { seq: number; at: string; run_id: string | null; wake_id: string | null; type: string; payload: string }[];
+    // eslint-disable-next-line no-restricted-syntax -- the payload column is JSON text written by appendEvent.
+    return Promise.resolve(raw.map((r) => EventSchema.parse({ seq: r.seq, at: r.at, runId: r.run_id, wakeId: r.wake_id, type: r.type, payload: JSON.parse(r.payload) as unknown })));
+  }
+
+  latestEventSeq(): Promise<number> {
+    const row = this.db.prepare("SELECT COALESCE(MAX(seq), 0) AS total FROM events").get();
+    // eslint-disable-next-line no-restricted-syntax -- aggregate row from node:sqlite.
+    return Promise.resolve((row as unknown as { total: number } | undefined)?.total ?? 0);
+  }
+
+  truncateEvents(keepLast: number): Promise<number> {
+    const result = this.db.prepare("DELETE FROM events WHERE seq <= (SELECT COALESCE(MAX(seq), 0) - ? FROM events)").run(keepLast);
+    return Promise.resolve(Number(result.changes));
+  }
+
+  // ---- jobs --------------------------------------------------------------
+
+  saveJob(job: Job): Promise<void> {
+    const parsed = JobSchema.parse(job);
+    this.db
+      .prepare(
+        `INSERT INTO jobs (id, kind, status, run_id, created_at, json) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET status = excluded.status, run_id = excluded.run_id, json = excluded.json`,
+      )
+      .run(parsed.id, parsed.kind, parsed.status, parsed.runId, parsed.createdAt, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  getJob(id: string): Promise<Job | undefined> {
+    const row = this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id);
+    return Promise.resolve(row ? parseRow(JobSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  listJobs(filter: { status?: Job["status"]; runId?: string; limit?: number } = {}): Promise<Job[]> {
+    const where: string[] = [];
+    const params: string[] = [];
+    if (filter.status) {
+      where.push("status = ?");
+      params.push(filter.status);
+    }
+    if (filter.runId) {
+      where.push("run_id = ?");
+      params.push(filter.runId);
+    }
+    const sql = `SELECT json FROM jobs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT ?`;
+    return Promise.resolve(rows(this.db.prepare(sql).all(...params, filter.limit ?? 100)).map((r) => parseRow(JobSchema, r)));
   }
 
   close(): Promise<void> {

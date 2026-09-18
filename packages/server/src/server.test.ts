@@ -22,15 +22,22 @@ import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
 import { runWake } from "@populace/runner";
 import { ScriptedProvider, byWake, call, field, sequence, type ScriptContext, type ScriptPolicy } from "@populace/runner/testing";
 import { SqliteStore } from "@populace/store-sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { startServer } from "./serve.js";
 
+/**
+ * A fresh target per test. The verifier replays a finding's tool calls against the live target
+ * (ADR-0014), and a replay both reads and writes: sharing one target between tests let an earlier
+ * test's accounts and projects decide whether a later test's replay reproduced. Starting the
+ * reference app is in-process and costs milliseconds, so isolation is the cheaper side of that
+ * trade.
+ */
 let target: RunningMockTarget;
-beforeAll(async () => {
+beforeEach(async () => {
   target = await startMockTarget({ quiet: true });
 });
-afterAll(async () => {
+afterEach(async () => {
   await target.close();
 });
 
@@ -131,7 +138,7 @@ async function seed(): Promise<{ store: SqliteStore; cfg: PopulaceConfig; runId:
 }
 
 function app(store: SqliteStore, cfg: PopulaceConfig) {
-  return createApp({ store, config: cfg, storePath: ":memory:", version: "test" });
+  return createApp({ store, config: () => Promise.resolve(cfg), storePath: ":memory:", version: "test" });
 }
 
 async function json(res: Response): Promise<JsonValue> {
@@ -377,7 +384,7 @@ describe("what the coverage-gaps and population screens read", () => {
 describe("populace serve", () => {
   it("binds loopback and answers over HTTP", async () => {
     const { store, cfg } = await seed();
-    const server = await startServer({ store, config: cfg, storePath: ":memory:", version: "test", port: 0 });
+    const server = await startServer({ store, storePath: ":memory:", version: "test", seedConfig: cfg, port: 0 });
     try {
       expect(server.url).toContain("127.0.0.1");
       const health = HealthViewSchema.parse(await json(await fetch(`${server.url}${routes.health}`)));
@@ -394,7 +401,7 @@ describe("populace serve", () => {
 
   it("explains itself when no dashboard has been built into the install", async () => {
     const { store, cfg } = await seed();
-    const server = await startServer({ store, config: cfg, storePath: ":memory:", version: "test", port: 0, webRoot: "/nonexistent/public" });
+    const server = await startServer({ store, storePath: ":memory:", version: "test", seedConfig: cfg, port: 0, webRoot: "/nonexistent/public" });
     try {
       const root = await fetch(server.url);
       expect(root.status).toBe(200);

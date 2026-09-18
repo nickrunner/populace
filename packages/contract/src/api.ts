@@ -63,6 +63,13 @@ export const FindingListQuerySchema = cursor.extend({
 });
 export type FindingListQuery = z.infer<typeof FindingListQuerySchema>;
 
+/** `after` is the event-log cursor; a reconnect resumes from it instead of losing the gap. */
+export const EventStreamQuerySchema = z.object({
+  after: z.coerce.number().int().nonnegative().optional(),
+  run: z.string().optional(),
+});
+export type EventStreamQuery = z.infer<typeof EventStreamQuerySchema>;
+
 export const DigestQuerySchema = z.object({
   /** Verify findings that have no verdict yet before building. Off by default: it costs money. */
   verify: z
@@ -73,6 +80,13 @@ export const DigestQuerySchema = z.object({
 export type DigestQuery = z.infer<typeof DigestQuerySchema>;
 
 /**
+ * Path segments are encoded, except a `:name` pattern, which is passed through untouched. That is
+ * what lets one route table serve both sides: the client calls `routes.run(id)` with a real id and
+ * the server registers `routes.run(":id")` as a pattern, so a path can never be spelled two ways.
+ */
+const seg = (value: string): string => (value.startsWith(":") ? value : encodeURIComponent(value));
+
+/**
  * The route table lives here rather than in the server so that a client, a CI consumer and the
  * server all name the same paths. M1 is read-only; the control and authoring routes arrive with
  * M2 and M3 (`WEB-ARCHITECTURE.md` §5).
@@ -81,15 +95,41 @@ export const routes = {
   health: `${API_BASE}/health`,
   target: `${API_BASE}/target`,
   runs: `${API_BASE}/runs`,
-  run: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}`,
-  runAgents: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/agents`,
-  runWakes: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/wakes`,
-  runFindings: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/findings`,
-  runDigest: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/digest`,
-  runSpend: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/spend`,
-  runTools: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/tools`,
-  agentMemory: (runId: string, agentId: string) => `${API_BASE}/runs/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}/memory`,
-  wake: (id: string) => `${API_BASE}/wakes/${encodeURIComponent(id)}`,
-  wakeTrace: (id: string) => `${API_BASE}/wakes/${encodeURIComponent(id)}/trace`,
-  finding: (id: string) => `${API_BASE}/findings/${encodeURIComponent(id)}`,
+  run: (id: string) => `${API_BASE}/runs/${seg(id)}`,
+  runAgents: (id: string) => `${API_BASE}/runs/${seg(id)}/agents`,
+  runWakes: (id: string) => `${API_BASE}/runs/${seg(id)}/wakes`,
+  runFindings: (id: string) => `${API_BASE}/runs/${seg(id)}/findings`,
+  runDigest: (id: string) => `${API_BASE}/runs/${seg(id)}/digest`,
+  runSpend: (id: string) => `${API_BASE}/runs/${seg(id)}/spend`,
+  runTools: (id: string) => `${API_BASE}/runs/${seg(id)}/tools`,
+  agentMemory: (runId: string, agentId: string) => `${API_BASE}/runs/${seg(runId)}/agents/${seg(agentId)}/memory`,
+  wake: (id: string) => `${API_BASE}/wakes/${seg(id)}`,
+  wakeTrace: (id: string) => `${API_BASE}/wakes/${seg(id)}/trace`,
+  finding: (id: string) => `${API_BASE}/findings/${seg(id)}`,
+
+  // ---- M2: authoring (ADR-0025) -------------------------------------------
+  setup: `${API_BASE}/setup`,
+  targets: `${API_BASE}/targets`,
+  target_: (id: string) => `${API_BASE}/targets/${seg(id)}`,
+  targetCheck: (id: string) => `${API_BASE}/targets/${seg(id)}/check`,
+  targetPromises: (id: string) => `${API_BASE}/targets/${seg(id)}/promises`,
+  personas: `${API_BASE}/personas`,
+  persona: (id: string) => `${API_BASE}/personas/${seg(id)}`,
+  personaStarters: `${API_BASE}/personas/starters`,
+  population: `${API_BASE}/population`,
+  settings: `${API_BASE}/settings`,
+
+  // ---- M2: control (ADR-0027) ---------------------------------------------
+  runsEstimate: `${API_BASE}/runs/estimate`,
+  runStop: (id: string) => `${API_BASE}/runs/${seg(id)}/stop`,
+  runRound: (id: string) => `${API_BASE}/runs/${seg(id)}/round`,
+  runContinue: (id: string) => `${API_BASE}/runs/${seg(id)}/continue`,
+  runSweep: (id: string) => `${API_BASE}/runs/${seg(id)}/sweep`,
+  runLive: (id: string) => `${API_BASE}/runs/${seg(id)}/live`,
+  runDigestJob: (id: string) => `${API_BASE}/runs/${seg(id)}/digest/job`,
+  killSwitch: `${API_BASE}/kill-switch`,
+  job: (id: string) => `${API_BASE}/jobs/${seg(id)}`,
+
+  // ---- M2: live (ADR-0026) ------------------------------------------------
+  events: `${API_BASE}/events`,
 } as const;
