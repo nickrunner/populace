@@ -63,6 +63,13 @@ export const FindingListQuerySchema = cursor.extend({
 });
 export type FindingListQuery = z.infer<typeof FindingListQuerySchema>;
 
+/** `after` is the event-log cursor; a reconnect resumes from it instead of losing the gap. */
+export const EventStreamQuerySchema = z.object({
+  after: z.coerce.number().int().nonnegative().optional(),
+  run: z.string().optional(),
+});
+export type EventStreamQuery = z.infer<typeof EventStreamQuerySchema>;
+
 export const DigestQuerySchema = z.object({
   /** Verify findings that have no verdict yet before building. Off by default: it costs money. */
   verify: z
@@ -92,4 +99,30 @@ export const routes = {
   wake: (id: string) => `${API_BASE}/wakes/${encodeURIComponent(id)}`,
   wakeTrace: (id: string) => `${API_BASE}/wakes/${encodeURIComponent(id)}/trace`,
   finding: (id: string) => `${API_BASE}/findings/${encodeURIComponent(id)}`,
+
+  // ---- M2: authoring (ADR-0025) -------------------------------------------
+  setup: `${API_BASE}/setup`,
+  targets: `${API_BASE}/targets`,
+  target_: (id: string) => `${API_BASE}/targets/${encodeURIComponent(id)}`,
+  targetCheck: (id: string) => `${API_BASE}/targets/${encodeURIComponent(id)}/check`,
+  targetPromises: (id: string) => `${API_BASE}/targets/${encodeURIComponent(id)}/promises`,
+  personas: `${API_BASE}/personas`,
+  persona: (id: string) => `${API_BASE}/personas/${encodeURIComponent(id)}`,
+  personaStarters: `${API_BASE}/personas/starters`,
+  population: `${API_BASE}/population`,
+  settings: `${API_BASE}/settings`,
+
+  // ---- M2: control (ADR-0027) ---------------------------------------------
+  runsEstimate: `${API_BASE}/runs/estimate`,
+  runStop: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/stop`,
+  runRound: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/round`,
+  runContinue: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/continue`,
+  runSweep: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/sweep`,
+  runLive: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/live`,
+  runDigestJob: (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/digest/job`,
+  killSwitch: `${API_BASE}/kill-switch`,
+  job: (id: string) => `${API_BASE}/jobs/${encodeURIComponent(id)}`,
+
+  // ---- M2: live (ADR-0026) ------------------------------------------------
+  events: `${API_BASE}/events`,
 } as const;

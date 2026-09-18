@@ -1,94 +1,50 @@
-import {
-  API_BASE,
-  DigestQuerySchema,
-  ErrorBodySchema,
-  FindingListQuerySchema,
-  RunListQuerySchema,
-  TraceQuerySchema,
-  WakeListQuerySchema,
-  type ErrorBody,
-} from "@populace/contract";
-import type { Finding, PopulaceConfig, Store, TraceEvent } from "@populace/core";
+import { API_BASE, DigestQuerySchema, FindingListQuerySchema, RunListQuerySchema, TraceQuerySchema, WakeListQuerySchema } from "@populace/contract";
+import type { Finding, TraceEvent } from "@populace/core";
 import { buildDigest, verifyPending } from "@populace/reports";
-import type { ModelProvider } from "@populace/runner";
 import { Hono } from "hono";
-import type { Context } from "hono";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { z } from "zod";
+import { mountControl } from "./control.js";
+import type { ServerDeps } from "./deps.js";
+import { fail, page, parseQuery } from "./http.js";
 import { ReadModel } from "./read-model.js";
 import { targetView } from "./target.js";
 
-export interface ServerDeps {
-  store: Store;
-  config: PopulaceConfig;
-  storePath: string;
-  version: string;
-  /** Model provider for the verifier. Absent means a `model` judge cannot run; a heuristic one still can. */
-  verifier?: ModelProvider;
-}
-
-const NOT_FOUND = { not_found: 404, bad_request: 400, conflict: 409, unavailable: 503, internal: 500 } as const;
-
-function fail(c: Context, code: ErrorBody["error"]["code"], message: string): Response {
-  const body = ErrorBodySchema.parse({ error: { code, message } });
-  return c.json(body, NOT_FOUND[code] satisfies ContentfulStatusCode);
-}
+export type { ServerDeps, ControlDeps } from "./deps.js";
 
 /**
- * Query parameters arrive as repeated keys or single ones; collapsing a single-element array to
- * its value lets one schema accept both without every route knowing which it got.
- */
-function query(c: Context): Record<string, string | string[]> {
-  const out: Record<string, string | string[]> = {};
-  for (const [key, values] of Object.entries(c.req.queries())) {
-    const first = values[0];
-    if (first === undefined) continue;
-    out[key] = values.length === 1 ? first : values;
-  }
-  return out;
-}
-
-function parseQuery<T>(c: Context, schema: z.ZodType<T>): { ok: true; value: T } | { ok: false; response: Response } {
-  const result = schema.safeParse(query(c));
-  if (result.success) return { ok: true, value: result.data };
-  return { ok: false, response: fail(c, "bad_request", z.prettifyError(result.error)) };
-}
-
-/**
- * The cursor is an opaque offset into the result list. It is opaque on purpose: M2 replaces it
- * with the event-log sequence (ADR-0026) and no client should have encoded an assumption about
- * what it means.
- */
-function page<T>(items: T[], cursor: string | undefined, limit: number): { items: T[]; nextCursor: string | null } {
-  const start = cursor === undefined ? 0 : Number.parseInt(cursor, 10);
-  const from = Number.isFinite(start) && start > 0 ? start : 0;
-  const slice = items.slice(from, from + limit);
-  const next = from + slice.length;
-  return { items: slice, nextCursor: next < items.length ? String(next) : null };
-}
-
-/**
- * The read-only M1 API (`WEB-ARCHITECTURE.md` §5). Every route reads; nothing here starts a run,
- * spends money or writes a row, with one deliberate exception: `GET /runs/:id/digest?verify=true`
- * runs the verifier, which is a model call. It is off by default and named in the query string
- * so it can never happen by accident.
+ * The read API (`WEB-ARCHITECTURE.md` §5). Every route here reads, with one deliberate exception:
+ * `GET /runs/:id/digest?verify=true` runs the verifier, which is a model call. It is off by
+ * default and named in the query string so it can never happen by accident.
+ *
+ * M2's control and authoring routes are mounted alongside when `deps.control` is present. Without
+ * it the API is exactly the read-only one M1 shipped, which is what `populace serve` against a
+ * store it cannot drive still offers.
  */
 export function createApp(deps: ServerDeps): Hono {
   const app = new Hono();
-  const read = new ReadModel(deps.store, deps.config.guardrails);
+  const read = new ReadModel(deps.store);
 
   app.get(`${API_BASE}/health`, async (c) => {
     const killSwitch = await deps.store.getKillSwitch();
-    return c.json({ version: deps.version, storePath: deps.storePath, readOnly: true, killSwitch });
+    return c.json({ version: deps.version, storePath: deps.storePath, readOnly: deps.control === undefined, killSwitch });
   });
 
-  app.get(`${API_BASE}/target`, async (c) => c.json(await targetView(deps.config)));
+  app.get(`${API_BASE}/target`, async (c) => {
+    try {
+      return c.json(await targetView(await deps.config()));
+    } catch (err) {
+      // No target set up yet is a normal state in M2, and the screens that ask for one say so.
+      return fail(c, "not_found", err instanceof Error ? err.message : "no target is set up yet");
+    }
+  });
 
   app.get(`${API_BASE}/runs`, async (c) => {
     const q = parseQuery(c, RunListQuerySchema);
     if (!q.ok) return q.response;
     return c.json(page(await read.listRuns(), q.value.cursor, q.value.limit));
   });
+
+  // Declared before `/runs/:id` so the literal path is not captured as a run id.
+  if (deps.control) mountControl(app, deps.control);
 
   app.get(`${API_BASE}/runs/:id`, async (c) => {
     const run = await read.getRun(c.req.param("id"));
@@ -116,9 +72,18 @@ export function createApp(deps: ServerDeps): Hono {
     return c.json(page(sortFindings(findings), cursor, limit));
   });
 
-  app.get(`${API_BASE}/runs/:id/spend`, async (c) => c.json(await read.spend(c.req.param("id"))));
+  app.get(`${API_BASE}/runs/:id/spend`, async (c) => {
+    const guardrails = await deps.config().then(
+      (config) => config.guardrails,
+      () => undefined,
+    );
+    return c.json(await new ReadModel(deps.store, guardrails).spend(c.req.param("id")));
+  });
 
-  app.get(`${API_BASE}/runs/:id/tools`, async (c) => c.json(await read.toolUsage(c.req.param("id"), await targetView(deps.config))));
+  app.get(`${API_BASE}/runs/:id/tools`, async (c) => {
+    const config = await configForRun(c.req.param("id"));
+    return c.json(await read.toolUsage(c.req.param("id"), config ? await targetView(config) : { name: "", endpoints: [], webBaseUrl: null, description: null, identityStrategy: "", tools: null, toolsError: "no target is set up" }));
+  });
 
   app.get(`${API_BASE}/runs/:id/agents/:agentId/memory`, async (c) => {
     const memory = await read.memory(c.req.param("id"), c.req.param("agentId"));
@@ -127,22 +92,41 @@ export function createApp(deps: ServerDeps): Hono {
     return c.json(memory ?? { runId: c.req.param("id"), agentId: c.req.param("agentId"), notes: [], waitingOn: [], annoyances: [], done: [], updatedAt: new Date(0).toISOString() });
   });
 
+  /**
+   * The config a run actually executed, from its snapshot. A digest or a tool list rebuilt today
+   * has to describe what ran, not what the forms happen to say now — which is the whole reason a
+   * snapshot exists (ADR-0024). Falls back to the live config for runs written before M2.
+   */
+  async function configForRun(runId: string) {
+    const stored = await deps.store.getRun(runId);
+    if (stored?.configSnapshotId) {
+      const snapshot = await deps.store.getConfigSnapshot(stored.configSnapshotId);
+      if (snapshot) return snapshot.config;
+    }
+    return deps.config().then(
+      (config) => config,
+      () => undefined,
+    );
+  }
+
   app.get(`${API_BASE}/runs/:id/digest`, async (c) => {
     const q = parseQuery(c, DigestQuerySchema);
     if (!q.ok) return q.response;
     const runId = c.req.param("id");
     const run = await read.getRun(runId);
     if (!run) return fail(c, "not_found", `no run ${runId}`);
+    const config = await configForRun(runId);
+    if (!config) return fail(c, "conflict", "this run has no config to read it by; connect a target first");
     if (q.value.verify) {
-      if (deps.config.verifier.judge === "model" && !deps.verifier) {
+      if (config.verifier.judge === "model" && !deps.verifier) {
         return fail(c, "unavailable", "the model judge needs an API key; set ANTHROPIC_API_KEY or configure verifier.judge: heuristic");
       }
-      await verifyPending({ store: deps.store, config: deps.config, ...(deps.verifier ? { provider: deps.verifier } : {}) }, { runIds: [runId] });
+      await verifyPending({ store: deps.store, config, ...(deps.verifier ? { provider: deps.verifier } : {}) }, { runIds: [runId] });
     }
     // The digest window is the run, not a clock window: a run is the unit the dashboard shows.
     const since = run.startedAt ? new Date(run.startedAt) : new Date(0);
     const until = run.endedAt ? new Date(new Date(run.endedAt).getTime() + 1000) : new Date();
-    return c.json(await buildDigest({ store: deps.store, config: deps.config, since, until, runIds: [runId] }));
+    return c.json(await buildDigest({ store: deps.store, config, since, until, runIds: [runId] }));
   });
 
   app.get(`${API_BASE}/wakes/:id`, async (c) => {

@@ -148,10 +148,12 @@ program
 
 program
   .command("serve")
-  .description("start the local HTTP API and dashboard (read-only)")
+  .description("start the local HTTP API and dashboard: set up targets and people, start runs and watch them")
   .option("--port <n>", "port to listen on", (v: string) => Number.parseInt(v, 10))
   .option("--host <host>", "host to bind; defaults to 127.0.0.1 and should stay there")
-  .action(async (opts: { port?: number; host?: string }) => {
+  .option("--read-only", "serve the dashboard without the controls that start runs or change config")
+  .option("--force", "take over the store lock from a populace process that is no longer running")
+  .action(async (opts: { port?: number; host?: string; readOnly?: boolean; force?: boolean }) => {
     try {
       const server = await serve({ ...globals(), ...opts });
       const stop = (): void => void server.close().then(() => process.exit(0));

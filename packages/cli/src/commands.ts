@@ -1,10 +1,10 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { EffortSchema, expandPopulation, parseDuration, tagForRun, type Agent, type Identity, type JsonValue, type TeardownDeps } from "@populace/core";
+import { EffortSchema, expandPopulation, parseDuration, tagForRun, type Agent } from "@populace/core";
 import { LocalDaemon, McpSession, runWake, type WakeResult } from "@populace/runner";
 import { buildDigest, exporterNamed, renderDigestMarkdown, verifyPending } from "@populace/reports";
 import { parseDocument } from "yaml";
-import { loadConfig } from "./config.js";
+import { loadConfig, storePath } from "./config.js";
 import { openContext, type CliContext } from "./context.js";
 import { configTemplate } from "./template.js";
 
@@ -219,51 +219,16 @@ export async function digest(options: DigestOptions): Promise<{ markdown: string
 
 export async function sweep(options: GlobalOptions & { dryRun?: boolean; keepData?: boolean; allRuns?: boolean }): Promise<{ identities: number; failures: number }> {
   const ctx = openContext(options);
+  const { sweepRun } = await import("@populace/server");
   try {
     const runIds = options.allRuns ? await ctx.store.listRunIds() : [ctx.runId];
-    const endpoint = ctx.loaded.config.target.mcp[0];
-    const teardownDeps: TeardownDeps = {
-      callTool: async (bearerToken: string | undefined, tool: string, args: JsonValue) => {
-        if (!endpoint) return { isError: true, text: "no endpoint" };
-        const session = new McpSession(endpoint, bearerToken);
-        try {
-          await session.connect();
-          const outcome = await session.call(tool, typeof args === "object" && args !== null && !Array.isArray(args) ? args : {});
-          return { isError: outcome.result.isError, text: outcome.result.text };
-        } finally {
-          await session.close();
-        }
-      },
-      listStoredIdentities: (tag: string) => ctx.store.listIdentitiesByTag(tag),
-    };
     let identities = 0;
     let failures = 0;
     for (const runId of runIds) {
-      const tag = tagForRun(runId);
-      const found: Identity[] = await ctx.identityProvider.listByTag(tag, teardownDeps);
-      ctx.log(`run ${runId}: ${found.length} identit${found.length === 1 ? "y" : "ies"} tagged ${tag}`);
-      for (const identity of found) {
-        identities++;
-        if (options.dryRun) {
-          ctx.log(`  would tear down ${identity.id} (${identity.credential.email ?? identity.credential.userId ?? "?"})`);
-          continue;
-        }
-        try {
-          await ctx.identityProvider.teardown(identity, teardownDeps);
-          await ctx.store.markIdentityTornDown(identity.id, new Date());
-          ctx.log(`  tore down ${identity.id} (${identity.credential.email ?? identity.credential.userId ?? "?"})`);
-        } catch (err) {
-          failures++;
-          ctx.log(`  FAILED ${identity.id}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      if (!options.dryRun && !options.keepData && failures === 0) {
-        const f = await ctx.store.deleteFindingsByRun(runId);
-        const w = await ctx.store.deleteWakesByRun(runId);
-        const a = await ctx.store.deleteAgentsByRun(runId);
-        const i = await ctx.store.deleteIdentitiesByRun(runId);
-        ctx.log(`  removed ${a} agent(s), ${w} wake(s), ${f} finding(s), ${i} identity record(s)`);
-      }
+      const result = await sweepRun(ctx.store, ctx.loaded.config, runId, { dryRun: options.dryRun === true, keepData: options.keepData === true });
+      for (const line of result.lines) ctx.log(line);
+      identities += result.identities;
+      failures += result.failures;
     }
     return { identities, failures };
   } finally {
@@ -316,21 +281,28 @@ export async function status(options: GlobalOptions): Promise<string[]> {
  * already writes (ADR-0024). From M2 this process also hosts the daemon and takes the store
  * lock (ADR-0022), at which point `serve` and `run` stop being safe to use at the same time.
  */
-export async function serve(options: GlobalOptions & { port?: number; host?: string }): Promise<{ url: string; close: () => Promise<void> }> {
+export async function serve(options: GlobalOptions & { port?: number; host?: string; readOnly?: boolean; force?: boolean }): Promise<{ url: string; close: () => Promise<void> }> {
   const ctx = openContext(options);
   const { startServer } = await import("@populace/server");
   const hasKey = Boolean(process.env.ANTHROPIC_API_KEY ?? ctx.loaded.config.model.apiKey);
   try {
     const server = await startServer({
       store: ctx.store,
-      config: ctx.loaded.config,
-      storePath: ctx.loaded.config.store.path,
+      storePath: storePath(ctx.loaded),
       version: VERSION,
-      ...(hasKey ? { verifier: ctx.provider() } : {}),
+      processConfig: { store: ctx.loaded.config.store, digestDir: ctx.loaded.config.digestDir },
+      // From M2 the database is the source of truth (ADR-0025). The file is imported the first
+      // time a store is opened and is an export target thereafter, so nothing is authoritative in
+      // two places.
+      seedConfig: ctx.loaded.config,
+      ...(hasKey ? { provider: () => ctx.provider() } : {}),
+      ...(options.readOnly ? { readOnly: true } : {}),
+      ...(options.force ? { force: true } : {}),
       ...(options.port !== undefined ? { port: options.port } : {}),
       ...(options.host !== undefined ? { host: options.host } : {}),
       log: (line) => ctx.log(line),
     });
+    if (!hasKey) ctx.log("no ANTHROPIC_API_KEY: the dashboard will open, but nothing that calls the model can run.");
     ctx.log("Ctrl-C to stop.");
     return {
       url: server.url,

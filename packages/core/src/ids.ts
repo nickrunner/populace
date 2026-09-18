@@ -26,6 +26,23 @@ export function newIdentityId(): string {
   return `idn_${Date.now().toString(36)}_${randomSuffix(6)}`;
 }
 
+export function newJobId(): string {
+  return `job_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
+/** Authored rows get surrogate ids so a slug can be renamed without the row moving. */
+export function newTargetId(): string {
+  return `tgt_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
+export function newPersonaId(): string {
+  return `psn_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
+export function newPopulationId(): string {
+  return `pop_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
 export const TAG_PREFIX = "populace:";
 
 /** The tag a run stamps on every identity, wake and finding it creates. */

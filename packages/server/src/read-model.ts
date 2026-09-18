@@ -8,6 +8,7 @@ import {
   type Guardrails,
   type Identity,
   type Memory,
+  type Run,
   type Severity,
   type Store,
   type Wake,
@@ -19,9 +20,14 @@ import type { TargetView } from "@populace/contract";
 /**
  * Derives the run-shaped read models the dashboard needs from the rows the store already holds.
  *
- * M1 adds no tables (ADR-0024), so a run is reconstructed here: its window from wake timestamps,
- * its totals by aggregation, its lineage from `agents.continuedFrom`. M2 replaces the body of
- * these functions with reads of a `runs` table without changing their shapes.
+ * M1 added no tables (ADR-0024), so a run was reconstructed here: its window from wake timestamps,
+ * its totals by aggregation, its lineage from `agents.continuedFrom`. M2 put a `runs` table
+ * underneath without changing a single shape, and the derivation stays as the fallback — a
+ * database written before M2 has runs with no row, and those still have to render.
+ *
+ * The stored row wins for the things derivation cannot know: a run that was killed, one that was
+ * drained to a pause, the label a user typed. Totals are still recomputed, because the counters on
+ * the row are a cache and a run whose daemon died would otherwise report stale ones forever.
  */
 export class ReadModel {
   constructor(
@@ -77,17 +83,20 @@ export class ReadModel {
     return { agents, wakes, findings };
   }
 
-  private static summary(runId: string, agents: Agent[], wakes: Wake[], findings: Finding[]): RunSummary {
-    const status = ReadModel.status(agents, wakes);
-    const { startedAt, endedAt } = ReadModel.window(wakes, agents, status);
+  private static summary(runId: string, agents: Agent[], wakes: Wake[], findings: Finding[], stored?: Run): RunSummary {
+    const derivedStatus = ReadModel.status(agents, wakes);
+    // A stored run that this process is no longer driving may still say `running` — `serve` fails
+    // those on open, so trusting the row here is not trusting a stale one.
+    const status = stored?.status ?? derivedStatus;
+    const derived = ReadModel.window(wakes, agents, status);
     return {
       id: runId,
-      label: labelFor(runId, agents, startedAt),
-      populationId: agents[0]?.populationId ?? wakes[0]?.populationId ?? "",
+      label: stored?.label || labelFor(runId, agents, stored?.startedAt ?? derived.startedAt),
+      populationId: stored?.populationId || agents[0]?.populationId || wakes[0]?.populationId || "",
       status,
-      startedAt,
-      endedAt,
-      parentRunId: ReadModel.parentOf(agents),
+      startedAt: stored?.startedAt ?? derived.startedAt,
+      endedAt: stored?.endedAt ?? derived.endedAt,
+      parentRunId: stored?.parentRunId ?? ReadModel.parentOf(agents),
       totals: ReadModel.totals(agents, wakes, findings),
     };
   }
@@ -95,36 +104,40 @@ export class ReadModel {
   /** Newest run first. Run ids embed a base36 timestamp, so a reverse sort is chronological. */
   async listRuns(): Promise<RunSummary[]> {
     const ids = (await this.store.listRunIds()).sort().reverse();
+    const stored = new Map((await this.store.listRuns()).map((r) => [r.id, r]));
     const out: RunSummary[] = [];
     for (const id of ids) {
       const { agents, wakes, findings } = await this.load(id);
-      out.push(ReadModel.summary(id, agents, wakes, findings));
+      out.push(ReadModel.summary(id, agents, wakes, findings, stored.get(id)));
     }
     return out;
   }
 
   async getRun(runId: string): Promise<RunDetail | undefined> {
     const { agents, wakes, findings } = await this.load(runId);
-    if (agents.length === 0 && wakes.length === 0 && findings.length === 0) return undefined;
+    const stored = await this.store.getRun(runId);
+    // A run created a moment ago has a row and nothing else yet, and the browser is already
+    // looking at it, so the row alone is enough to exist.
+    if (!stored && agents.length === 0 && wakes.length === 0 && findings.length === 0) return undefined;
     const carried = agents.filter((a) => a.continuedFrom !== null);
     // A child run is one whose agents point back here; there is no index for that yet, so the
     // lineage is resolved by scanning the other runs' agents. Cheap at local scale, and gone
     // the moment runs have a parent column of their own.
-    const childRunIds: string[] = [];
+    const childRunIds = new Set((await this.store.listRuns()).filter((r) => r.parentRunId === runId).map((r) => r.id));
     for (const id of await this.store.listRunIds()) {
-      if (id === runId) continue;
+      if (id === runId || childRunIds.has(id)) continue;
       const others = await this.store.listAgents({ runId: id });
-      if (others.some((a) => a.continuedFrom?.runId === runId)) childRunIds.push(id);
+      if (others.some((a) => a.continuedFrom?.runId === runId)) childRunIds.add(id);
     }
     const findingsByKind = countBy(FindingKindSchema.options, findings, (f) => f.kind);
     const findingsBySeverity = countBy(SeveritySchema.options, findings, (f) => f.severity);
     const wakesByStatus = countBy<WakeStatus, Wake>(WakeStatusSchema.options, wakes, (w) => w.status);
     const judged = findings.filter((f) => f.verification !== null);
     return {
-      ...ReadModel.summary(runId, agents, wakes, findings),
-      childRunIds: childRunIds.sort(),
-      carriedAgents: carried.length,
-      returningAfterGiveUp: carried.filter((a) => a.continuedFrom?.gaveUp === true).length,
+      ...ReadModel.summary(runId, agents, wakes, findings, stored),
+      childRunIds: [...childRunIds].sort(),
+      carriedAgents: stored?.continuation?.carriedAgents ?? carried.length,
+      returningAfterGiveUp: stored?.continuation?.returningAfterGiveUp ?? carried.filter((a) => a.continuedFrom?.gaveUp === true).length,
       findingsByKind,
       findingsBySeverity,
       wakesByStatus,
