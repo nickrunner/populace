@@ -31,14 +31,16 @@ START = '''      <div style="padding: 14px 12px 0;">
       </div>'''
 
 
-def nav2(active):
+def nav2(active, counts=None):
     out = ['    <div style="padding: 12px 12px; display: flex; flex-direction: column; gap: 14px;">',
            '      <div style="display: flex; flex-direction: column; gap: 2px;">']
     for kind, key, text, count in NAV2:
+        if counts is not None and key in counts:
+            count = counts[key]
         if kind == 'label':
             out.append('      </div>')
             out.append('      <div style="display: flex; flex-direction: column; gap: 2px;">')
-            out.append('        <div style="padding: 0 10px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">%s</div>' % text)
+            out.append('        <div style="padding: 0 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">%s</div>' % text)
             continue
         on = key == active
         style = ('padding: 8px 10px; border-radius: 5px; background: #dbeefe; color: #236292; font-size: 13.5px; font-weight: 600;'
@@ -53,7 +55,7 @@ def nav2(active):
     return '\n'.join(out)
 
 
-def shell2(active, topbar_right, content, height=980, spend_block=None):
+def shell2(active, topbar_right, content, height=980, spend_block=None, counts=None):
     spend = spend_block or '''      <div style="display: flex; justify-content: space-between; align-items: baseline;">
         <div style="font-size: 11.5px; color: #57514c;">Spent today</div>
         <div style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; font-weight: 600;">$4.37</div>
@@ -85,7 +87,7 @@ def shell2(active, topbar_right, content, height=980, spend_block=None):
 %(content)s
   </div>
 </div>
-''' % {'h': height, 'start': START, 'nav': nav2(active), 'right': topbar_right, 'content': content, 'spend': spend} + TAIL
+''' % {'h': height, 'start': START, 'nav': nav2(active, counts), 'right': topbar_right, 'content': content, 'spend': spend} + TAIL
 
 
 def field(label, value, hint='', mono=False, w=''):
@@ -105,17 +107,18 @@ def tool_row(name, desc, flag=''):
           </div>''' % (MONO, name, desc, flag)
 
 
-DESTRUCTIVE = '<span style="font-size: 10.5px; font-weight: 600; color: #a34a20; background: #fde9d4; padding: 1px 6px; border-radius: 3px; flex-shrink: 0;">destructive</span>'
-FOUND = '<span style="font-size: 10.5px; font-weight: 600; color: #0a7a0a; background: #e2f6e2; padding: 1px 6px; border-radius: 3px; flex-shrink: 0;">we think this is the sign-up</span>'
+DESTRUCTIVE = '<span style="font-size: 11px; font-weight: 600; color: #a34a20; background: #fde9d4; padding: 1px 6px; border-radius: 3px; flex-shrink: 0;">destructive</span>'
+FOUND = '<span style="font-size: 11px; font-weight: 600; color: #0a7a0a; background: #e2f6e2; padding: 1px 6px; border-radius: 3px; flex-shrink: 0;">we think this is the sign-up</span>'
 
 TOP_SETUP = '''      <div style="display: flex; align-items: center; gap: 8px;">
         <span style="width: 7px; height: 7px; border-radius: 4px; background: #0ca30c;"></span>
         <span style="font-size: 15px; font-weight: 600;">Tasklet</span>
+        <span style="font-size: 11.5px; color: #0a7a0a;">connected</span>
       </div>
       <span style="font-size: 12px; color: #857f79;">saved 4 minutes ago</span>
       <div style="flex-grow: 1;"></div>
-      <span style="padding: 6px 12px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Export as YAML</span>
-      <span style="padding: 6px 12px; border-radius: 5px; background: #236292; color: #fefdfb; font-size: 12.5px; font-weight: 600;">Save</span>'''
+      <span style="padding: 8px 13px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Export as YAML</span>
+      <span style="padding: 8px 13px; border-radius: 5px; background: #236292; color: #fefdfb; font-size: 12.5px; font-weight: 600;">Save</span>'''
 
 connect_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding: 22px 28px 28px;">
       <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.01em;">The target</div>
@@ -176,9 +179,10 @@ connect_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding: 22
           </div>
 
           <div style="background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 13px 15px;">
-            <div style="font-size: 13px; font-weight: 600;">What the landing page says</div>
-            <div style="margin-top: 6px; font-size: 12.5px; line-height: 1.55; color: #57514c;">Fetched from the web address above. People read this before they try anything, and a promise here that no tool keeps is exactly what comes back as a coverage gap.</div>
-            <div style="margin-top: 9px; padding: 10px 12px; border-radius: 6px; background: #f3f0ea; font-size: 12.5px; line-height: 1.55; color: #1a1510;">“Tasklet keeps your projects and tasks in one place. Create projects, add tasks with due dates and priorities, search everything instantly, comment on tasks, and tick them off. Delete tasks you no longer need. Free for up to 3 projects; Pro is $6/month.”</div>
+            <div style="font-size: 13px; font-weight: 600;">What your website promises</div>
+            <div style="margin-top: 6px; font-size: 12.5px; line-height: 1.55; color: #57514c;">Fetched from the web address above, and it says one thing your own description does not. A promise here that no tool keeps is exactly what comes back as a coverage gap.</div>
+            <div style="margin-top: 9px; padding: 10px 12px; border-radius: 6px; background: #f3f0ea; font-size: 12.5px; line-height: 1.55; color: #1a1510;">“Tasklet keeps your projects and tasks in one place. Create projects, add tasks with due dates and priorities, search everything instantly, comment on tasks, and tick them off. <span style="background: #fde9d4; color: #6b431a; font-weight: 600; padding: 0 3px; border-radius: 2px;">Delete tasks you no longer need.</span> Free for up to 3 projects; Pro is $6/month.”</div>
+            <div style="margin-top: 8px; font-size: 11.5px; color: #6b431a;">Nothing in the tool list deletes a task.</div>
           </div>
         </div>
       </div>
@@ -198,13 +202,13 @@ connect_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding: 22
         '''        <div>
           <div style="font-size: 12px; font-weight: 600; color: #57514c;">What it says it does</div>
           <div style="margin-top: 6px; padding: 10px 12px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-size: 13px; line-height: 1.55; color: #1a1510; height: 78px;">Tasklet keeps your projects and tasks in one place. Create projects, add tasks with due dates and priorities, search everything instantly, comment on tasks, and tick them off. Free for up to 3 projects; Pro is $6/month.</div>
-          <div style="margin-top: 5px; font-size: 11.5px; color: #857f79;">This is the pitch people arrive with. If it promises something no tool delivers, they will say so.</div>
+          <div style="margin-top: 5px; font-size: 11.5px; color: #857f79;">Your own words, handed to every person before their first visit.</div>
         </div>''',
     ]),
     identity='\n'.join([
         field('The sign-up tool', 'sign_up', 'Found by matching the tool list.', mono=True),
-        field('Where the token is in the reply', 'token', mono=True),
-        field('Where the account id is', 'user.id', mono=True),
+        field('Where the token is in the reply', 'token', 'From the sign-up tool’s own result.', mono=True),
+        field('Where the account id is', 'user.id', 'So a visit traces back to an account.', mono=True),
         field('The tool that deletes an account', 'delete_account', 'Used by sweep, so nothing we create is left behind.', mono=True),
     ]),
     tools='\n'.join([
@@ -224,7 +228,7 @@ write('Connect.dc.html', shell2('target', TOP_SETUP, connect_content, height=112
 # ----------------------------------------------------------- Persona editor --
 def lib_card(initials, name, role, on=False):
     return '''          <div style="display: flex; gap: 10px; padding: 10px 11px; border-radius: 6px; %s">
-            <span style="width: 26px; height: 26px; border-radius: 13px; background: #f3f0ea; color: #57514c; font-size: 10.5px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">%s</span>
+            <span style="width: 26px; height: 26px; border-radius: 13px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">%s</span>
             <div style="min-width: 0;">
               <div style="font-size: 13px; font-weight: 600;">%s</div>
               <div style="margin-top: 2px; font-size: 11.5px; color: #857f79; line-height: 1.35;">%s</div>
@@ -236,7 +240,7 @@ def listfield(label, items, hint=''):
     rows = '\n'.join(['''            <div style="display: flex; align-items: center; gap: 9px; padding: 8px 11px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb;">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#cecac2" stroke-width="1.6" style="flex-shrink: 0;"><path d="M3 5h10M3 8h10M3 11h10"/></svg>
               <span style="font-size: 13px; flex-grow: 1;">%s</span>
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#cecac2" stroke-width="1.6" style="flex-shrink: 0;"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#857f79" stroke-width="1.6" style="flex-shrink: 0;"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>
             </div>''' % i for i in items])
     return '''        <div>
           <div style="font-size: 12px; font-weight: 600; color: #57514c;">%s</div>
@@ -248,43 +252,49 @@ def listfield(label, items, hint=''):
         </div>''' % (label, rows, ('<div style="margin-top: 5px; font-size: 11.5px; color: #857f79;">%s</div>' % hint) if hint else '')
 
 
-TOP_PEOPLE = '''      <div style="display: flex; align-items: center; gap: 10px;">
+TOP_PEOPLE = '''      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 7px; height: 7px; border-radius: 4px; background: #0ca30c;"></span>
+        <span style="font-size: 15px; font-weight: 600;">Tasklet</span>
+        <span style="font-size: 11.5px; color: #0a7a0a;">connected</span>
+      </div>
+      <span style="width: 1px; height: 20px; background: #e1ded7;"></span>
+      <div style="display: flex; align-items: center; gap: 10px;">
         <span style="font-size: 15px; font-weight: 600;">Priya Desai</span>
         <span style="font-family: %s; font-size: 11.5px; color: #857f79; display: flex; align-items: center; gap: 5px;">
           <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="#857f79" stroke-width="1.6"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.6 7V5.2a2.4 2.4 0 0 1 4.8 0V7"/></svg>project-planner</span>
       </div>
-      <span style="font-size: 12px; color: #857f79;">in 1 population · edited 2 minutes ago</span>
+      <span style="font-size: 12px; color: #857f79;">in 1 population · saved 2 minutes ago</span>
       <div style="flex-grow: 1;"></div>
-      <span style="padding: 6px 12px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Duplicate</span>
-      <span style="padding: 6px 12px; border-radius: 5px; background: #236292; color: #fefdfb; font-size: 12.5px; font-weight: 600;">Save</span>''' % MONO
+      <span style="padding: 8px 13px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Duplicate</span>
+      <span style="padding: 8px 13px; border-radius: 5px; background: #236292; color: #fefdfb; font-size: 12.5px; font-weight: 600;">Save</span>''' % MONO
 
 personas_content = '''    <div style="flex-grow: 1; display: flex; min-height: 0;">
 
       <div style="width: 282px; flex-shrink: 0; border-right: 1px solid #e1ded7; background: #fefdfb; overflow-y: auto; padding: 16px 12px;">
-        <div style="padding: 0 6px 8px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">In this project</div>
+        <div style="padding: 0 6px 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">In this project</div>
         <div style="display: flex; flex-direction: column; gap: 3px;">
 %(mine)s
         </div>
-        <div style="margin-top: 20px; padding: 0 6px 8px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">Start from someone</div>
+        <div style="margin-top: 20px; padding: 0 6px 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">Start from someone</div>
         <div style="display: flex; flex-direction: column; gap: 3px;">
 %(starters)s
         </div>
       </div>
 
       <div style="flex-grow: 1; min-width: 0; overflow-y: auto; padding: 22px 26px 28px;">
-        <div style="font-size: 20px; font-weight: 600; letter-spacing: -0.01em;">Who she is</div>
+        <div style="font-size: 20px; font-weight: 600; letter-spacing: -0.01em;">Who they are</div>
         <div style="margin-top: 14px; display: flex; flex-direction: column; gap: 16px;">
 %(who)s
         </div>
 
-        <div style="margin-top: 26px; font-size: 20px; font-weight: 600; letter-spacing: -0.01em;">What she came to do</div>
+        <div style="margin-top: 26px; font-size: 20px; font-weight: 600; letter-spacing: -0.01em;">What they came to do</div>
         <div style="margin-top: 14px; display: flex; flex-direction: column; gap: 16px;">
 %(goals)s
         </div>
 
-        <div style="margin-top: 26px; font-size: 20px; font-weight: 600; letter-spacing: -0.01em;">How she behaves</div>
+        <div style="margin-top: 26px; font-size: 20px; font-weight: 600; letter-spacing: -0.01em;">How they behave</div>
         <div style="margin-top: 14px;">
-          <div style="font-size: 12px; font-weight: 600; color: #57514c;">How much she will put up with</div>
+          <div style="font-size: 12px; font-weight: 600; color: #57514c;">How much they will put up with</div>
           <div style="margin-top: 10px; position: relative; height: 22px;">
             <div style="position: absolute; left: 0; top: 9px; width: 100%%; height: 4px; border-radius: 2px; background: #e1ded7;"></div>
             <div style="position: absolute; left: 0; top: 9px; width: 75%%; height: 4px; border-radius: 2px; background: #236292;"></div>
@@ -309,7 +319,7 @@ personas_content = '''    <div style="flex-grow: 1; display: flex; min-height: 0
         <div style="margin-top: 12px; padding: 13px 14px; border-radius: 6px; background: #f3f0ea; font-size: 12.5px; line-height: 1.65; color: #1a1510;">
           You are Priya Desai, a freelance designer who plans client projects with deadlines. You run four or five client projects at once and live by due dates. You are methodical, read the docs, and expect fields you set to stick.<br><br>
           You are here to track a client launch with dated tasks, move deadlines when clients slip, and see what is overdue at a glance.<br><br>
-          You would pay about $12 a month for something that did this well. You give a product a fair try before walking away.
+          You would pay about $12 a month for something that did this well, and you will not hand over a card without a trial. You are on a laptop. You give a product a fair try before walking away.
         </div>
         <div style="margin-top: 16px; padding: 12px 14px; border-radius: 6px; border: 1px solid #e1ded7;">
           <div style="font-size: 12px; font-weight: 600;">Renaming her is safe</div>
@@ -332,25 +342,25 @@ personas_content = '''    <div style="flex-grow: 1; display: flex; min-height: 0
         lib_card('+', 'The one who already left', 'Comes back only if you fixed it'),
     ]),
     who='\n'.join([
-        field('Her name', 'Priya Desai'),
-        field('What she does', 'A freelance designer who plans client projects with deadlines'),
+        field('Their name', 'Priya Desai'),
+        field('What they do', 'A freelance designer who plans client projects with deadlines'),
         '''        <div>
-          <div style="font-size: 12px; font-weight: 600; color: #57514c;">Where she is coming from</div>
+          <div style="font-size: 12px; font-weight: 600; color: #57514c;">Where they are coming from</div>
           <div style="margin-top: 6px; padding: 10px 12px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-size: 13px; line-height: 1.55; height: 72px;">Priya runs four or five client projects at once and lives by due dates. She is methodical, reads docs, and expects fields she sets to stick.</div>
           <div style="margin-top: 5px; font-size: 11.5px; color: #857f79;">The more specific this is, the less she behaves like everyone else you send.</div>
         </div>''',
     ]),
     goals='\n'.join([
-        listfield('Her errands, in the order she would try them', [
+        listfield('Their errands, in the order they would try them', [
             'Track a client launch with dated tasks',
             'Move deadlines when clients slip',
             'See what is overdue at a glance',
-        ], 'She will report on whether she finished each of these, not on whether your tools returned 200.'),
-        listfield('What she will not do', ['Will not hand over a card without a trial']),
+        ], 'They report on whether they finished each of these, not on whether your tools returned 200.'),
+        listfield('What they will not do', ['Will not hand over a card without a trial']),
     ]),
     behave='\n'.join([
-        field('What she would pay a month', '$12', 'Sampled between $5 and $15 for each person grown from her.'),
-        field('Anything else true of her', 'device: laptop', 'Free-form. Reaches her word for word.', mono=True),
+        field('What they would pay a month', '$12', 'Sampled between $5 and $15 for each person grown from her.'),
+        field('Anything else true of them', 'device: laptop', 'Free-form. Reaches her word for word.', mono=True),
     ]),
     advanced='\n'.join(['''          <div style="display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #e1ded7; border-radius: 6px; background: #fefdfb;">
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#857f79" stroke-width="1.6"><path d="M6 4l4 4-4 4"/></svg>
@@ -358,8 +368,8 @@ personas_content = '''    <div style="flex-grow: 1; display: flex; min-height: 0
             <span style="font-size: 12.5px; color: #857f79;">%s</span>
           </div>''' % (t, v) for t, v in [
         ('Which of your tools she may touch', 'all 19'),
-        ('What happens when she reaches for a destructive one', 'ask her to confirm first'),
-        ('Which model she runs on', 'the run’s default — claude-sonnet-5, medium'),
+        ('What happens with destructive tools', 'ask her to confirm first'),
+        ('Which model she runs on', 'the run’s default'),
     ]]))
 
 write('Personas.dc.html', shell2('people', TOP_PEOPLE, personas_content, height=1120))
@@ -368,27 +378,28 @@ write('Personas.dc.html', shell2('people', TOP_PEOPLE, personas_content, height=
 # --------------------------------------------------------------- New run ----
 def stepper(value):
     return '''<div style="display: flex; align-items: center; gap: 0; border: 1px solid #cecac2; border-radius: 5px; overflow: hidden; background: #fefdfb;">
-              <span style="padding: 5px 10px; font-size: 14px; color: #57514c; border-right: 1px solid #e1ded7;">&minus;</span>
-              <span style="padding: 5px 14px; font-family: %s; font-size: 13px; font-weight: 600;">%s</span>
-              <span style="padding: 5px 10px; font-size: 14px; color: #57514c; border-left: 1px solid #e1ded7;">+</span>
+              <span style="padding: 8px 11px; font-size: 14px; color: #57514c; border-right: 1px solid #e1ded7;">&minus;</span>
+              <span style="padding: 8px 14px; font-family: %s; font-size: 13px; font-weight: 600;">%s</span>
+              <span style="padding: 8px 11px; font-size: 14px; color: #57514c; border-left: 1px solid #e1ded7;">+</span>
             </div>''' % (MONO, value)
 
 
 def limit_row(label, value, note):
     return '''          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 15px; border-bottom: 1px solid #e1ded7;">
             <span style="font-size: 13.5px; flex-grow: 1;">%s</span>
-            <span style="padding: 6px 11px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-family: %s; font-size: 13px; font-weight: 500; width: 118px; text-align: right;">%s</span>
-            <span style="font-size: 12px; color: #857f79; width: 250px;">%s</span>
+            <span style="padding: 8px 12px; border: 1px solid #cecac2; border-radius: 5px; background: #fefdfb; font-family: %s; font-size: 13px; font-weight: 500; width: 196px; text-align: right;">%s</span>
+            <span style="font-size: 12px; color: #857f79; width: 214px;">%s</span>
           </div>''' % (label, MONO, value, note)
 
 
 TOP_RUN = '''      <div style="display: flex; align-items: center; gap: 8px;">
         <span style="width: 7px; height: 7px; border-radius: 4px; background: #0ca30c;"></span>
         <span style="font-size: 15px; font-weight: 600;">Tasklet</span>
+        <span style="font-size: 11.5px; color: #0a7a0a;">connected</span>
       </div>
       <span style="font-size: 12px; color: #857f79;">nothing is running</span>
       <div style="flex-grow: 1;"></div>
-      <span style="padding: 6px 12px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Carry on from an earlier run</span>'''
+      <span style="padding: 8px 13px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Carry on from an earlier run</span>'''
 
 newrun_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding: 22px 28px 28px;">
       <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.01em;">Start a run</div>
@@ -436,8 +447,8 @@ newrun_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding: 22p
           <div style="background: #fefdfb; border: 2px solid #236292; border-radius: 7px; padding: 17px 19px;">
             <div style="font-size: 15px; font-weight: 600;">Before you press go</div>
             <div style="margin-top: 14px; display: flex; align-items: baseline; gap: 8px;">
-              <span style="font-size: 32px; font-weight: 600; letter-spacing: -0.02em;">$4.20</span>
-              <span style="font-size: 16px; color: #57514c;">to $6.10</span>
+              <span style="font-size: 32px; font-weight: 600; letter-spacing: -0.02em;">$4.80</span>
+              <span style="font-size: 16px; color: #57514c;">give or take a dollar</span>
             </div>
             <div style="margin-top: 5px; font-size: 12.5px; line-height: 1.5; color: #57514c;">12 visits in all, three people coming back four times each. Worked out from what a visit actually cost on your last run, which was 40&cent; on average.</div>
             <div style="margin-top: 15px; height: 1px; background: #e1ded7;"></div>
@@ -476,10 +487,11 @@ newrun_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding: 22p
         limit_row('Stop each person after', '4 visits', 'Leave empty and they keep coming back.'),
     ]),
     limits='\n'.join([
-        limit_row('At most, per visit', '$3.00', 'The visit ends and says why.'),
-        limit_row('At most, per visit', '40 turns', 'Long enough to finish an errand, short enough to catch a loop.'),
-        limit_row('At most, today, everyone', '$50.00', 'Across every run on this machine.'),
-        limit_row('When they reach for a destructive tool', 'ask them to confirm', 'Driven by the tool’s own destructive flag.'),
+        limit_row('Spend, per visit', '$3.00', 'The visit ends and says why.'),
+        limit_row('Turns, per visit', '40', 'Long enough to finish an errand, short enough to catch a loop.'),
+        limit_row('Spend, this whole run', '$8.00', 'Roughly twice the estimate, so a surprise stops it.'),
+        limit_row('Spend, today, everyone', '$50.00', 'Across every run on this machine.'),
+        limit_row('Destructive tools', 'ask them first', 'Driven by the tool’s own destructive flag.'),
     ]),
     models='\n'.join([
         limit_row('The people', 'claude-sonnet-5 · medium', 'What each of them thinks with.'),
@@ -490,11 +502,12 @@ newrun_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding: 22p
                 <span style="font-size: 12.5px; line-height: 1.5; color: #57514c;">%s</span>
               </div>''' % t for t in [
         'All three have been back four times',
+        'This run has spent its $8.00',
         'The day’s $50.00 is gone',
         'You stop it',
     ]]))
 
-write('NewRun.dc.html', shell2('limits', TOP_RUN, newrun_content, height=1120))
+write('NewRun.dc.html', shell2('', TOP_RUN, newrun_content, height=1200))
 
 
 # --------------------------------------------------------------- Live run ---
@@ -510,22 +523,23 @@ LIVE_SPEND = '''      <div style="display: flex; justify-content: space-between;
 TOP_LIVE = '''      <div style="display: flex; align-items: center; gap: 8px;">
         <span style="width: 7px; height: 7px; border-radius: 4px; background: #0ca30c;"></span>
         <span style="font-size: 15px; font-weight: 600;">Tasklet</span>
+        <span style="font-size: 11.5px; color: #0a7a0a;">connected</span>
       </div>
       <span style="display: flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 13px; background: #e2f6e2; color: #0a7a0a; font-size: 12px; font-weight: 600;">
         <span style="width: 6px; height: 6px; border-radius: 3px; background: #0ca30c;"></span>Running
       </span>
       <span style="font-size: 12px; color: #857f79;">6 minutes in · 7 of 12 visits done</span>
       <div style="flex-grow: 1;"></div>
-      <span style="padding: 6px 12px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Send one more round</span>
-      <span style="padding: 6px 12px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Let them finish, then stop</span>
-      <span style="padding: 6px 12px; border-radius: 5px; background: #fbe4e4; border: 1px solid #f0c9c9; color: #a32a2a; font-size: 12.5px; font-weight: 600;">Stop everything now</span>'''
+      <span style="padding: 8px 13px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Send one more round</span>
+      <span style="padding: 8px 13px; border-radius: 5px; border: 1px solid #cecac2; background: #fefdfb; font-size: 12.5px; font-weight: 500;">Let them finish, then stop</span>
+      <span style="padding: 8px 13px; border-radius: 5px; background: #fbe4e4; border: 1px solid #f0c9c9; color: #a32a2a; font-size: 12.5px; font-weight: 600;">Stop everything now</span>'''
 
 
 def person_now(initials, name, line, call, done, total, state):
     bar = int(round(100.0 * done / total))
     return '''          <div style="background: #fefdfb; border: 1px solid %(bd)s; border-radius: 7px; padding: 12px 13px;">
             <div style="display: flex; align-items: center; gap: 9px;">
-              <span style="width: 26px; height: 26px; border-radius: 13px; background: #f3f0ea; color: #57514c; font-size: 10.5px; font-weight: 600; display: flex; align-items: center; justify-content: center;">%(i)s</span>
+              <span style="width: 26px; height: 26px; border-radius: 13px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center;">%(i)s</span>
               <div style="flex-grow: 1; min-width: 0;">
                 <div style="font-size: 13px; font-weight: 600;">%(name)s</div>
                 <div style="font-size: 11.5px; color: #857f79;">%(line)s</div>
@@ -551,7 +565,7 @@ def live_event(when, dot, text, sub=''):
                 <div style="font-size: 12.5px; line-height: 1.45; color: #1a1510;">%(text)s</div>
                 %(sub)s
               </div>
-              <span style="font-family: %(mono)s; font-size: 10.5px; color: #a09a92; flex-shrink: 0;">%(when)s</span>
+              <span style="font-family: %(mono)s; font-size: 11px; color: #a09a92; flex-shrink: 0;">%(when)s</span>
             </div>''' % dict(dot=dot, text=text, when=when, mono=MONO,
                              sub=('<div style="margin-top: 3px; font-family: %s; font-size: 11px; color: #857f79;">%s</div>' % (MONO, sub)) if sub else '')
 
@@ -569,7 +583,7 @@ def tl_row(ref, title, sub, tone='tool', now=False):
             </div>''' % dict(dot=dot, ref=refchip, font=font, title=title, sub=sub, mono=MONO,
                              w='600' if tone == 'tool' else '500',
                              bg='background: #dbeefe;' if now else '',
-                             nowchip='<span style="padding: 1px 7px; border-radius: 3px; background: #236292; color: #fefdfb; font-size: 10px; font-weight: 600;">happening now</span>' if now else '')
+                             nowchip='<span style="padding: 1px 7px; border-radius: 3px; background: #236292; color: #fefdfb; font-size: 11px; font-weight: 600;">happening now</span>' if now else '')
 
 
 liverun_content = '''    <div style="flex-grow: 1; display: flex; min-height: 0;">
@@ -582,16 +596,16 @@ liverun_content = '''    <div style="flex-grow: 1; display: flex; min-height: 0;
         <div style="margin-top: 18px; padding: 12px 13px; border-radius: 7px; background: #f3f0ea;">
           <div style="font-size: 12px; font-weight: 600;">Next visit in</div>
           <div style="margin-top: 4px; font-family: %(mono)s; font-size: 20px; font-weight: 600;">1m 12s</div>
-          <div style="margin-top: 4px; font-size: 11.5px; color: #857f79;">Casey, visit 4. Two run at a time.</div>
+          <div style="margin-top: 4px; font-size: 11.5px; color: #857f79;">Casey, visit 4.</div>
         </div>
       </div>
 
       <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid #e1ded7;">
         <div style="flex-shrink: 0; padding: 14px 18px 12px; border-bottom: 1px solid #e1ded7; display: flex; align-items: center; gap: 10px;">
-          <span style="width: 26px; height: 26px; border-radius: 13px; background: #f3f0ea; color: #57514c; font-size: 10.5px; font-weight: 600; display: flex; align-items: center; justify-content: center;">PD</span>
+          <span style="width: 26px; height: 26px; border-radius: 13px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center;">PD</span>
           <div style="flex-grow: 1;">
             <div style="font-size: 13.5px; font-weight: 600;">Priya Desai, visit 3</div>
-            <div style="font-family: %(mono)s; font-size: 11px; color: #857f79;">turn 6 · 11 calls · $0.41 so far</div>
+            <div style="font-family: %(mono)s; font-size: 11px; color: #857f79;">turn 6 · 6 calls · $0.31 so far</div>
           </div>
           <span style="font-size: 12px; color: #236292;">Follow whoever is active</span>
         </div>
@@ -609,9 +623,9 @@ liverun_content = '''    <div style="flex-grow: 1; display: flex; min-height: 0;
     </div>''' % dict(
     mono=MONO,
     people='\n'.join([
-        person_now('PD', 'Priya Desai', 'visit 3, turn 6', 'update_task({ dueDate: "2026-12-24" })', 2, 4, 'here now'),
-        person_now('TR', 'Tomás Ruiz', 'visit 3, turn 2', 'list_tasks({ projectId: "prj_8x1", page: 1 })', 2, 4, 'here now'),
-        person_now('CM', 'Casey Morgan', 'finished visit 3', 'waiting for the next one', 3, 4, 'away'),
+        person_now('PD', 'Priya Desai', 'visit 3, turn 6, thinking', 'last call c6 update_task → ok, date unchanged', 2, 4, 'here now'),
+        person_now('TR', 'Tomás Ruiz', 'visit 3, turn 2', 'c3 list_tasks({ projectId: "prj_8x1", page: 1 })', 2, 4, 'here now'),
+        person_now('CM', 'Casey Morgan', 'finished visit 3', 'away until the next visit', 3, 4, 'away'),
     ]),
     timeline='\n'.join([
         tl_row('', 'Turn 4', 'notices the date came back unchanged', tone='model'),
@@ -619,16 +633,17 @@ liverun_content = '''    <div style="flex-grow: 1; display: flex; min-height: 0;
         tl_row('', 'Writes it down', 'annoyance: the deadline did not save again', tone='memory'),
         tl_row('', 'Turn 5', 'tries once more with a different date format', tone='model'),
         tl_row('c6', 'update_task', '{ dueDate: "2026-12-24T00:00:00Z" } → ok, dueDate 2026-10-01'),
-        tl_row('', 'Files a bug', 'Moving a deadline appears to work and does not stick', tone='finding'),
+        tl_row('', 'Files a bug', 'Moving a deadline appears to work and does not stick · c4 c5 c6', tone='finding'),
         tl_row('', 'Turn 6', 'deciding what to do next', tone='model', now=True),
     ]),
     events='\n'.join([
-        live_event('just now', '#ec835a', 'Priya filed a bug about <strong style="font-weight: 600;">update_task</strong>', 'high · evidence c3 c4 c5 c6'),
-        live_event('40s', '#fab219', 'Tomás was held back from <strong style="font-weight: 600;">delete_project</strong>', 'he has to confirm destructive tools'),
-        live_event('1m', '#864e18', 'Casey finished visit 3 and said she would be back', '7 turns · 9 calls · $0.22'),
-        live_event('2m', '#ec835a', 'Casey filed friction about the free plan cap', 'medium · evidence c4'),
-        live_event('3m', '#4280b2', 'Tomás signed up', 'tomas.ruiz+m1abc2de@populace.test'),
-        live_event('4m', '#0ca30c', 'The run started', '3 people · 12 visits planned · $8.00 ceiling'),
+        live_event('just now', '#ec835a', 'Priya filed a bug about <strong style="font-weight: 600;">update_task</strong>', 'high · evidence c4 c5 c6'),
+        live_event('40s', '#fab219', 'Tomás was held back from <strong style="font-weight: 600;">delete_project</strong>', 'guardrail · he has to confirm destructive tools'),
+        live_event('1m', '#0ca30c', 'Casey finished visit 3 and said they would be back', 'finished · 7 turns · 9 calls · $0.22'),
+        live_event('3m', '#fab219', 'Tomás filed friction about the free plan cap', 'medium · evidence c4'),
+        live_event('4m', '#4280b2', 'Tomás signed up', 'account created · tomas.ruiz+m1abc2de@populace.test'),
+        live_event('6m', '#857f79', 'The run started', '3 people · 12 visits planned · $8.00 ceiling'),
     ]))
 
-write('LiveRun.dc.html', shell2('overview', TOP_LIVE, liverun_content, height=980, spend_block=LIVE_SPEND))
+write('LiveRun.dc.html', shell2('overview', TOP_LIVE, liverun_content, height=980, spend_block=LIVE_SPEND,
+                                     counts={'findings': '4', 'gaps': '1', 'left': '', 'population': '3', 'wakes': '7'}))

@@ -71,8 +71,8 @@ parts.append(node(56, 316, 200, 64, 'Overview', 'one sentence on how it went'))
 parts.append(node(316, 316, 200, 64, 'Findings', 'clustered, worst first'))
 parts.append(node(576, 316, 230, 64, 'A finding in full', 'in their words, and what it cost', tone='key'))
 parts.append(node(846, 316, 300, 64, 'Re-run the people who complained', 'M3 — the fix-validation loop', tone='future'))
-parts.append(node(316, 400, 200, 64, 'Coverage gaps', 'what they wanted and could not find'))
-parts.append(node(576, 400, 230, 64, 'Who walked away', 'and whether they said they would return'))
+parts.append(node(56, 400, 200, 64, 'Coverage gaps', 'what they wanted and could not find'))
+parts.append(node(286, 400, 230, 64, 'Who walked away', 'and whether they said they would return'))
 
 # Instrument band
 parts.append(group(40, 602, 1360, 130, 'How it ran — for whoever owns the MCP server'))
@@ -95,8 +95,8 @@ parts.append('  <div style="position: absolute; left: 790px; top: 500px; width: 
 ARROWS = [
     ('M 256 348 H 308', '#cecac2', ''),
     ('M 516 348 H 568', '#cecac2', ''),
-    ('M 156 380 V 432 H 308', '#cecac2', ''),
-    ('M 516 432 H 568', '#cecac2', ''),
+    ('M 156 380 V 392', '#cecac2', ''),
+    ('M 256 432 H 278', '#cecac2', ''),
     ('M 806 348 H 838', '#cecac2', '4 4'),
     ('M 650 380 V 618', '#864e18', ''),
     ('M 732 626 V 388', '#864e18', ''),

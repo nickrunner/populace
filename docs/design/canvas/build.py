@@ -68,7 +68,7 @@ def nav(active):
                 out.append('      </div>')
             out.append('      <div style="display: flex; flex-direction: column; gap: 2px;">')
             open_group = True
-            out.append('        <div style="padding: 0 10px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">%s</div>' % text)
+            out.append('        <div style="padding: 0 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #857f79;">%s</div>' % text)
             continue
         on = key == active
         style = ('padding: 8px 10px; border-radius: 5px; background: #dbeefe; color: #236292; font-size: 13.5px; font-weight: 600;'

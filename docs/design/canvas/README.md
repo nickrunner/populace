@@ -23,7 +23,7 @@ Each `.dc.html` is one artboard; `canvas.json` is the layout, the pages and the 
 
 | Hand-authored | Generated |
 | --- | --- |
-| `Main.dc.html`, `Trace.dc.html`, `Foundations.dc.html` | everything else |
+| `Main.dc.html`, `Foundations.dc.html` | everything else |
 
 `Trace.dc.html` is the only interactive artboard: clicking a step in the timeline moves the
 detail pane. Its `<script data-dc-script>` block is plain JS — HTML entities are **not** decoded
@@ -35,6 +35,7 @@ Generators, each writing the files named at the bottom of it:
 python3 screens.py    # Evidence, Cluster, Gaps, Population, Wakes
 python3 flowgen.py    # Flow
 python3 m2.py         # Connect, Personas, NewRun, LiveRun
+python3 tracegen.py   # Trace
 ```
 
 `build.py` holds the shared M1 app shell (228px sidebar, 56px top bar) and the token values;

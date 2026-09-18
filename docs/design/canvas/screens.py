@@ -35,8 +35,8 @@ def confirmed(n):
     return '<span style="display: flex; align-items: center; gap: 5px;">%s%d confirmed</span>' % (TICK, n)
 
 
-def inconclusive(n):
-    return '<span style="display: flex; align-items: center; gap: 5px;">%s%d inconclusive</span>' % (QUERY, n)
+def unsure(n):
+    return '<span style="display: flex; align-items: center; gap: 5px;">%s%d unsure</span>' % (QUERY, n)
 
 
 COSTLY = '<span style="font-size: 11px; font-weight: 600; color: #d03b3b; background: #fbe4e4; padding: 1px 7px; border-radius: 3px;">cost us a user</span>'
@@ -65,10 +65,11 @@ def chip(text, on=False):
 findings_content = '''    <div style="flex-grow: 1; display: flex; flex-direction: column; min-height: 0; padding: 22px 28px 0;">
       <div style="flex-shrink: 0;">
         <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.01em;">Findings</div>
-        <div style="margin-top: 5px; font-size: 13.5px; color: #57514c;">12 reports from 11 visits, gathered into 7 things that are actually wrong. The same complaint from three people is one row here.</div>
+        <div style="margin-top: 5px; font-size: 13.5px; color: #57514c;">12 reports from 11 visits. One did not recur when we replayed it; the other 11 gather into 7 things that are actually wrong, because the same complaint from three people is one row here.</div>
         <div style="margin-top: 14px; display: flex; align-items: center; gap: 7px;">
           %(chips)s
           <div style="flex-grow: 1;"></div>
+          <span style="font-size: 12px; color: #857f79;">Hiding 1 that did not recur</span>
           <span style="font-size: 12px; color: #857f79;">Worst first</span>
         </div>
       </div>
@@ -76,7 +77,7 @@ findings_content = '''    <div style="flex-grow: 1; display: flex; flex-directio
 %(sections)s
       </div>
     </div>''' % dict(
-    chips=' '.join([chip('Everything 7', True), chip('Bugs 3'), chip('Coverage gaps 2'), chip('Walked away 1'), chip('Friction 1'), chip('Praise 1'), chip('Not reproduced 1')]),
+    chips=' '.join([chip('Everything 7', True), chip('Bugs 3'), chip('Coverage gaps 2'), chip('Walked away 1'), chip('Friction 1')]),
     sections='\n'.join([
         section('Bugs', 'something is broken', [
             cluster_row('critical', 'Critical bug', 'search_tasks',
@@ -90,7 +91,7 @@ findings_content = '''    <div style="flex-grow: 1; display: flex; flex-directio
             cluster_row('medium', 'Medium bug', 'list_tasks',
                         'Page two of a task list comes back empty',
                         'Tomás read the empty page as “my tasks are gone” and started the project again from scratch.',
-                        confirmed(1) + inconclusive(1), '1 of 3 people · 2 reports'),
+                        confirmed(1) + unsure(1), '1 of 3 people · 2 reports'),
         ]),
         section('Things people wanted and could not find', 'the surface is missing something', [
             cluster_row('high', 'High gap', 'delete_task — missing',
@@ -106,7 +107,7 @@ findings_content = '''    <div style="flex-grow: 1; display: flex; flex-directio
             cluster_row('critical', 'Walked away', '',
                         'Priya stopped trusting Tasklet with deadlines',
                         '“I cannot plan around a date the app forgets.” She said she would come back if the due date saved.',
-                        confirmed(1), 'visit 3 of 4 · would return: yes'),
+                        confirmed(1), 'visit 3 · she said she would come back'),
         ]),
         section('Friction', 'nothing broke, but it cost them', [
             cluster_row('medium', 'Medium friction', 'create_project',
@@ -116,7 +117,7 @@ findings_content = '''    <div style="flex-grow: 1; display: flex; flex-directio
         ]),
     ]))
 
-write('Evidence.dc.html', shell('findings', RUN_PICKER, findings_content, height=980))
+write('Evidence.dc.html', shell('findings', RUN_PICKER, findings_content, height=1300))
 
 
 # ------------------------------------------------------------ Cluster view --
@@ -215,8 +216,8 @@ cluster_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding: 20
           <div style="background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; padding: 14px 16px;">
             <div style="font-size: 13.5px; font-weight: 600;">Also reported by</div>
             <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 9px;">
-              <div style="display: flex; align-items: center; gap: 9px; font-size: 13px;"><span style="width: 22px; height: 22px; border-radius: 11px; background: #f3f0ea; color: #57514c; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center;">PD</span><span style="flex-grow: 1;">Priya Desai · visit 2</span><a href="#" style="font-size: 12px;">her calls</a></div>
-              <div style="display: flex; align-items: center; gap: 9px; font-size: 13px;"><span style="width: 22px; height: 22px; border-radius: 11px; background: #f3f0ea; color: #57514c; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center;">TR</span><span style="flex-grow: 1;">Tomás Ruiz · visit 2</span><a href="#" style="font-size: 12px;">his calls</a></div>
+              <div style="display: flex; align-items: center; gap: 9px; font-size: 13px;"><span style="width: 22px; height: 22px; border-radius: 11px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center;">PD</span><span style="flex-grow: 1;">Priya Desai · visit 2</span><a href="#" style="font-size: 12px;">her calls</a></div>
+              <div style="display: flex; align-items: center; gap: 9px; font-size: 13px;"><span style="width: 22px; height: 22px; border-radius: 11px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center;">TR</span><span style="flex-grow: 1;">Tomás Ruiz · visit 2</span><a href="#" style="font-size: 12px;">his calls</a></div>
             </div>
           </div>
         </div>
@@ -235,7 +236,7 @@ cluster_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding: 20
         step('c4', 'search_tasks({"q":"Groceries"})', '{"tasks":[{"id":"tsk_77c",…}],"total":1}'),
     ]))
 
-write('Cluster.dc.html', shell('findings', RUN_PICKER, cluster_content, height=1120))
+write('Cluster.dc.html', shell('findings', RUN_PICKER, cluster_content, height=980))
 
 
 # ---------------------------------------------------------- Coverage gaps --
@@ -284,7 +285,7 @@ gaps_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding: 22px 
       <div style="margin-top: 26px;">
         <div style="display: flex; align-items: baseline; gap: 10px;">
           <div style="font-size: 15px; font-weight: 600;">Tools you expose that nobody reached for</div>
-          <div style="font-size: 12px; color: #857f79;">6 of your 19 tools were never called in this run</div>
+          <div style="font-size: 12px; color: #857f79;">5 of your 19 were never called at all; one was reached once and abandoned</div>
         </div>
         <div style="margin-top: 10px; background: #fefdfb; border: 1px solid #e1ded7; border-radius: 7px; overflow: hidden;">
           <div style="display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid #e1ded7; background: #f3f0ea; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #857f79;">
@@ -319,7 +320,7 @@ gaps_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding: 22px 
         unused('log_in', '0', 'everyone signed up fresh; the return path is untested'),
     ]))
 
-write('Gaps.dc.html', shell('gaps', RUN_PICKER, gaps_content, height=900))
+write('Gaps.dc.html', shell('gaps', RUN_PICKER, gaps_content, height=1040))
 
 
 # ------------------------------------------------------------ Population ---
@@ -378,12 +379,15 @@ population_content = '''    <div style="flex-grow: 1; overflow-y: auto; padding:
                 <span style="font-family: %(mono)s;">priya.desai+m1abc2de@populace.test</span>
               </div>
             </div>
-            <div style="display: flex; align-items: center; gap: 5px; flex-shrink: 0;">
+            <div style="display: flex; flex-direction: column; align-items: flex-end; flex-shrink: 0;">
+              <div style="display: flex; align-items: center; gap: 5px;">
               <span style="font-size: 11.5px; color: #857f79; margin-right: 4px;">visits</span>
               <span style="width: 22px; height: 22px; border-radius: 4px; background: #e2f6e2; color: #0a7a0a; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center;">1</span>
               <span style="width: 22px; height: 22px; border-radius: 4px; background: #e2f6e2; color: #0a7a0a; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center;">2</span>
               <span style="width: 22px; height: 22px; border-radius: 4px; background: #fbe4e4; color: #a32a2a; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center;">3</span>
-              <span style="width: 22px; height: 22px; border-radius: 4px; background: #f3f0ea; color: #a09a92; font-size: 11px; display: flex; align-items: center; justify-content: center;">4</span>
+              <span style="width: 22px; height: 22px; border-radius: 4px; background: #f3f0ea; color: #857f79; font-size: 11px; display: flex; align-items: center; justify-content: center;">4</span>
+              </div>
+              <div style="margin-top: 6px; font-size: 11.5px; color: #857f79;">1 and 2 went fine, she gave up on 3, and 4 never happened</div>
             </div>
           </div>
           <div style="padding: 15px 18px;">
@@ -423,10 +427,10 @@ def wake_row(when, initials, who, persona, n, status, turns, calls, found, cost,
     dot, ink, label = STATUS[status]
     return '''          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 16px; border-bottom: 1px solid #e1ded7;">
             <span style="font-family: %(mono)s; font-size: 11.5px; color: #857f79; width: 52px;">%(when)s</span>
-            <span style="width: 24px; height: 24px; border-radius: 12px; background: #f3f0ea; color: #57514c; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">%(i)s</span>
+            <span style="width: 24px; height: 24px; border-radius: 12px; background: #f3f0ea; color: #57514c; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">%(i)s</span>
             <div style="width: 220px; min-width: 0;">
               <div style="font-size: 13px; font-weight: 500;">%(who)s</div>
-              <div style="font-family: %(mono)s; font-size: 10.5px; color: #857f79;">%(persona)s</div>
+              <div style="font-family: %(mono)s; font-size: 11px; color: #857f79;">%(persona)s</div>
             </div>
             <span style="font-size: 12.5px; color: #57514c; width: 54px;">visit %(n)s</span>
             <div style="width: 150px; display: flex; align-items: center; gap: 7px;">
@@ -456,7 +460,7 @@ wakes_content = '''    <div style="flex-grow: 1; display: flex; flex-direction: 
         <div style="margin-top: 14px; display: flex; align-items: center; gap: 7px;">
           %(chips)s
           <div style="flex-grow: 1;"></div>
-          <span style="font-family: %(mono)s; font-size: 11.5px; color: #857f79;">11 visits · 148 calls · $4.37</span>
+          <span style="font-family: %(mono)s; font-size: 11.5px; color: #857f79;">11 visits · 141 calls · $3.67 on the visits, $0.70 checking what they found</span>
         </div>
       </div>
       <div style="margin-top: 14px; flex-grow: 1; overflow-y: auto; background: #fefdfb; border: 1px solid #e1ded7; border-top-left-radius: 7px; border-top-right-radius: 7px;">
@@ -465,15 +469,15 @@ wakes_content = '''    <div style="flex-grow: 1; display: flex; flex-direction: 
       </div>
     </div>''' % dict(
     mono=MONO, head=HEADCELL,
-    chips=' '.join([chip('All 11', True), chip('Finished 6'), chip('Gave up 1'), chip('Ran out of turns 2'), chip('Hit a budget 0'), chip('Errored 0')]),
+    chips=' '.join([chip('All 11', True), chip('Finished 8'), chip('Gave up 1'), chip('Ran out of turns 2'), chip('Hit a budget 0'), chip('Errored 0')]),
     rows='\n'.join([
         wake_row('14:41', 'TR', 'Tomás Ruiz', 'power-organizer#0', '4', 'done', '11', '19', '1', '$0.61', 'yes'),
-        wake_row('14:38', 'CM', 'Casey Morgan', 'casual-lister#0', '4', 'max-turns', '40', '22', '0', '$0.44', '—'),
-        wake_row('14:34', 'PD', 'Priya Desai', 'project-planner#0', '3', 'gave-up', '14', '23', '1', '$1.12', 'yes'),
-        wake_row('14:30', 'TR', 'Tomás Ruiz', 'power-organizer#0', '3', 'done', '9', '17', '2', '$0.58', 'yes'),
+        wake_row('14:38', 'CM', 'Casey Morgan', 'casual-lister#0', '4', 'max-turns', '40', '22', '1', '$0.44', '—'),
+        wake_row('14:34', 'PD', 'Priya Desai', 'project-planner#0', '3', 'gave-up', '6', '6', '1', '$0.42', 'yes'),
+        wake_row('14:30', 'TR', 'Tomás Ruiz', 'power-organizer#0', '3', 'done', '9', '17', '1', '$0.58', 'yes'),
         wake_row('14:27', 'CM', 'Casey Morgan', 'casual-lister#0', '3', 'done', '7', '9', '1', '$0.22', 'yes'),
         wake_row('14:23', 'PD', 'Priya Desai', 'project-planner#0', '2', 'done', '12', '18', '2', '$0.48', 'yes'),
-        wake_row('14:19', 'TR', 'Tomás Ruiz', 'power-organizer#0', '2', 'max-turns', '40', '16', '2', '$0.39', '—'),
+        wake_row('14:19', 'TR', 'Tomás Ruiz', 'power-organizer#0', '2', 'max-turns', '40', '16', '1', '$0.39', '—'),
         wake_row('14:15', 'CM', 'Casey Morgan', 'casual-lister#0', '2', 'done', '6', '8', '0', '$0.18', 'yes'),
         wake_row('14:10', 'PD', 'Priya Desai', 'project-planner#0', '1', 'done', '10', '9', '1', '$0.15', 'yes'),
         wake_row('14:06', 'TR', 'Tomás Ruiz', 'power-organizer#0', '1', 'done', '8', '10', '2', '$0.14', 'yes'),
