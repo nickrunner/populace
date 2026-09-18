@@ -9,15 +9,16 @@
   },
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "build": "tsc -b tsconfig.build.json",
+    "build": "tsc -b tsconfig.build.json && pnpm --filter @populace/web build",
     "clean": "rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && pnpm --filter @populace/web typecheck",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "pnpm lint && pnpm build && pnpm test",
+    "check": "pnpm build && pnpm lint && pnpm typecheck && pnpm test",
     "populace": "node packages/cli/dist/cli.js",
-    "mock-target": "node packages/mock-target/dist/bin.js"
+    "mock-target": "node packages/mock-target/dist/bin.js",
+    "dev": "pnpm --filter @populace/web dev"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

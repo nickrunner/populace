@@ -9,6 +9,11 @@ renders into a digest for a product team.
 
 This document is the map. Each fixed decision has an ADR in `docs/adr/`.
 
+The web product above this — the HTTP API, the dashboard and the data model they need — is mapped
+in `docs/architecture/WEB-ARCHITECTURE.md` and `docs/architecture/DATA-MODEL.md`, against the
+roadmap in `docs/product/ROADMAP.md`. Nothing there changes the wake loop described below; that is
+the point of the split (ADR-0021 through ADR-0028).
+
 ## Vocabulary
 
 | Term | Meaning | Where it lives |

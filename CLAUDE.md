@@ -16,7 +16,7 @@ why. Check them before reversing something that looks odd.
 ## Commands
 
 ```bash
-pnpm check                      # lint + build + test — what CI runs
+pnpm check                      # build + lint + typecheck + test — what CI runs, in that order
 pnpm build                      # tsc -b, required before any CLI command (the CLI runs from dist/)
 pnpm test                       # vitest run
 pnpm test:watch

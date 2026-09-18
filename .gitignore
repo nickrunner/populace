@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# the dashboard builds into the server package, which serves it (ADR-0021)
+packages/server/public/
 *.tsbuildinfo
 *.sqlite
 *.sqlite-journal

@@ -44,6 +44,20 @@ export function loadConfig(path = "populace.yaml"): LoadedConfig {
   return { config, path: absolute, dir };
 }
 
+/**
+ * The config file if there is one, and nothing if there is not.
+ *
+ * From M2 the database is the source of truth (ADR-0025), so `populace serve` has to start in a
+ * directory with no `populace.yaml` at all — that is how a new user begins, and setting the target
+ * up in the browser is the point. Every other command still needs a file and still says so.
+ */
+export function loadConfigIfPresent(path = "populace.yaml"): LoadedConfig | undefined {
+  return existsSync(resolve(path)) ? loadConfig(path) : undefined;
+}
+
+/** Where the store goes when no config file has named one. */
+export const DEFAULT_STORE_PATH = ".populace/populace.sqlite";
+
 export function storePath(loaded: LoadedConfig): string {
   return loaded.config.store.path === ":memory:" ? ":memory:" : resolve(loaded.dir, loaded.config.store.path);
 }

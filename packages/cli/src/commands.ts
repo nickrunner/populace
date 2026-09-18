@@ -1,12 +1,15 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { EffortSchema, expandPopulation, parseDuration, tagForRun, type Agent, type Identity, type JsonValue, type TeardownDeps } from "@populace/core";
-import { LocalDaemon, McpSession, runWake, type WakeResult } from "@populace/runner";
+import { EffortSchema, ModelConfigSchema, expandPopulation, parseDuration, tagForRun, type Agent } from "@populace/core";
+import { AnthropicProvider, LocalDaemon, McpSession, runWake, type ModelProvider, type WakeResult } from "@populace/runner";
 import { buildDigest, exporterNamed, renderDigestMarkdown, verifyPending } from "@populace/reports";
 import { parseDocument } from "yaml";
-import { loadConfig } from "./config.js";
+import { DEFAULT_STORE_PATH, loadConfig, loadConfigIfPresent, storePath } from "./config.js";
+import { SqliteStore } from "@populace/store-sqlite";
 import { openContext, type CliContext } from "./context.js";
 import { configTemplate } from "./template.js";
+
+const VERSION = "0.1.0";
 
 export interface GlobalOptions {
   config?: string;
@@ -217,51 +220,16 @@ export async function digest(options: DigestOptions): Promise<{ markdown: string
 
 export async function sweep(options: GlobalOptions & { dryRun?: boolean; keepData?: boolean; allRuns?: boolean }): Promise<{ identities: number; failures: number }> {
   const ctx = openContext(options);
+  const { sweepRun } = await import("@populace/server");
   try {
     const runIds = options.allRuns ? await ctx.store.listRunIds() : [ctx.runId];
-    const endpoint = ctx.loaded.config.target.mcp[0];
-    const teardownDeps: TeardownDeps = {
-      callTool: async (bearerToken: string | undefined, tool: string, args: JsonValue) => {
-        if (!endpoint) return { isError: true, text: "no endpoint" };
-        const session = new McpSession(endpoint, bearerToken);
-        try {
-          await session.connect();
-          const outcome = await session.call(tool, typeof args === "object" && args !== null && !Array.isArray(args) ? args : {});
-          return { isError: outcome.result.isError, text: outcome.result.text };
-        } finally {
-          await session.close();
-        }
-      },
-      listStoredIdentities: (tag: string) => ctx.store.listIdentitiesByTag(tag),
-    };
     let identities = 0;
     let failures = 0;
     for (const runId of runIds) {
-      const tag = tagForRun(runId);
-      const found: Identity[] = await ctx.identityProvider.listByTag(tag, teardownDeps);
-      ctx.log(`run ${runId}: ${found.length} identit${found.length === 1 ? "y" : "ies"} tagged ${tag}`);
-      for (const identity of found) {
-        identities++;
-        if (options.dryRun) {
-          ctx.log(`  would tear down ${identity.id} (${identity.credential.email ?? identity.credential.userId ?? "?"})`);
-          continue;
-        }
-        try {
-          await ctx.identityProvider.teardown(identity, teardownDeps);
-          await ctx.store.markIdentityTornDown(identity.id, new Date());
-          ctx.log(`  tore down ${identity.id} (${identity.credential.email ?? identity.credential.userId ?? "?"})`);
-        } catch (err) {
-          failures++;
-          ctx.log(`  FAILED ${identity.id}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      if (!options.dryRun && !options.keepData && failures === 0) {
-        const f = await ctx.store.deleteFindingsByRun(runId);
-        const w = await ctx.store.deleteWakesByRun(runId);
-        const a = await ctx.store.deleteAgentsByRun(runId);
-        const i = await ctx.store.deleteIdentitiesByRun(runId);
-        ctx.log(`  removed ${a} agent(s), ${w} wake(s), ${f} finding(s), ${i} identity record(s)`);
-      }
+      const result = await sweepRun(ctx.store, ctx.loaded.config, runId, { dryRun: options.dryRun === true, keepData: options.keepData === true });
+      for (const line of result.lines) ctx.log(line);
+      identities += result.identities;
+      failures += result.failures;
     }
     return { identities, failures };
   } finally {
@@ -304,5 +272,54 @@ export async function status(options: GlobalOptions): Promise<string[]> {
     return lines;
   } finally {
     await ctx.close();
+  }
+}
+
+// ---- serve -----------------------------------------------------------------
+
+/**
+ * Starts the local HTTP API and the dashboard. M1 is read-only: it reads the store the CLI
+ * already writes (ADR-0024). From M2 this process also hosts the daemon and takes the store
+ * lock (ADR-0022), at which point `serve` and `run` stop being safe to use at the same time.
+ */
+export async function serve(options: GlobalOptions & { port?: number; host?: string; readOnly?: boolean; force?: boolean }): Promise<{ url: string; close: () => Promise<void> }> {
+  // `serve` is the one command that works without a config file: from M2 the database is the
+  // source of truth, and a new user's first act is to set a target up in the browser (ADR-0025).
+  const loaded = loadConfigIfPresent(options.config ?? "populace.yaml");
+  const path = loaded ? storePath(loaded) : resolve(DEFAULT_STORE_PATH);
+  const store = new SqliteStore(path);
+  const log = options.quiet ? (): void => undefined : (line: string): void => console.log(line);
+  const apiKey = process.env.ANTHROPIC_API_KEY ?? loaded?.config.model.apiKey;
+  let provider: ModelProvider | null = null;
+  const { startServer } = await import("@populace/server");
+
+  try {
+    const server = await startServer({
+      store,
+      storePath: path,
+      version: VERSION,
+      processConfig: { store: loaded?.config.store ?? { kind: "sqlite", path }, digestDir: loaded?.config.digestDir ?? "digests" },
+      // Import, not sync: the file seeds an empty project once and is an export target after that.
+      ...(loaded ? { seedConfig: loaded.config } : {}),
+      ...(apiKey ? { provider: () => (provider ??= new AnthropicProvider(loaded?.config.model ?? ModelConfigSchema.parse({}))) } : {}),
+      ...(options.readOnly ? { readOnly: true } : {}),
+      ...(options.force ? { force: true } : {}),
+      ...(options.port !== undefined ? { port: options.port } : {}),
+      ...(options.host !== undefined ? { host: options.host } : {}),
+      log,
+    });
+    if (!loaded) log("no populace.yaml here: set a target up in the dashboard, and export one when you want it in a repo.");
+    if (!apiKey) log("no ANTHROPIC_API_KEY: the dashboard will open, but nothing that calls the model can run.");
+    log("Ctrl-C to stop.");
+    return {
+      url: server.url,
+      close: async () => {
+        await server.close();
+        await store.close();
+      },
+    };
+  } catch (err) {
+    await store.close();
+    throw err;
   }
 }
