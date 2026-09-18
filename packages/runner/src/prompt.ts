@@ -8,7 +8,19 @@ function traitsLine(persona: Persona): string {
   return `Traits: ${entries.map(([k, v]) => `${k}=${String(v)}`).join(", ")}.`;
 }
 
-export function personaSystemPrompt(persona: Persona, target: Target): string {
+/**
+ * The cached system prefix for one participant.
+ *
+ * It takes the agent rather than the persona because line 1 is now the PERSON: a persona is a kind
+ * of person and has no name, and the individuating line under the backstory is this person's
+ * alone. Per-agent variance in the cached prefix is already the norm (traits are sampled per
+ * agent), so this costs no prompt-cache hit rate — `wake.test.ts` checks that rather than assuming
+ * it, against the prefix the provider was actually handed: the system blocks and the last tool
+ * carry a breakpoint, the rolling one sits on the last message every turn, and the prefix is
+ * byte-identical between turns of one wake, which is what earns the cache read (ADR-0006).
+ */
+export function personaSystemPrompt(agent: Agent, target: Target): string {
+  const persona = agent.persona;
   const patience: Record<number, string> = {
     1: "You have almost no patience: one confusing step and you leave.",
     2: "You have little patience: you will try twice, then move on.",
@@ -18,8 +30,9 @@ export function personaSystemPrompt(persona: Persona, target: Target): string {
   };
   const budget = persona.budgetUsd > 0 ? `You would pay up to $${persona.budgetUsd}/month for something that really solves your problem.` : "You are not willing to pay for this kind of product.";
   return [
-    `You are ${persona.name}, ${persona.role}.`,
+    `You are ${agent.name}, ${persona.role}.`,
     persona.backstory,
+    ...(agent.details ? [agent.details] : []),
     `Your goals: ${persona.goals.map((g) => `- ${g}`).join("\n")}`,
     persona.constraints.length ? `Your constraints:\n${persona.constraints.map((c) => `- ${c}`).join("\n")}` : "",
     `${patience[persona.patience] ?? ""} ${budget}`.trim(),
@@ -74,7 +87,7 @@ export function wakeContextMessage(input: WakeContextInput): string {
   lines.push(`Session ${input.wakeNumber}. Today is ${input.now.toISOString().slice(0, 10)}.`);
   if (input.identity) {
     const c = input.identity.credential;
-    lines.push(`You already have an account${c.email ? ` (${c.email})` : ""}${c.displayName ? ` as ${c.displayName}` : ""}. You are logged in; tools that need an account will work.`);
+    lines.push(`You already have an account${c.email ? ` (${c.email})` : ""} as ${input.agent.name}. You are logged in; tools that need an account will work.`);
   } else if (input.signup) {
     lines.push(
       `You do not have an account. If you decide to sign up, do it through the ${input.signup.tool} tool with exactly these details: email ${input.signup.email}, display name "${input.signup.displayName}", password ${input.signup.password}. You will be logged in automatically afterwards.`,

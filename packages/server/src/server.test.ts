@@ -130,7 +130,7 @@ async function seed(): Promise<{ store: SqliteStore; cfg: PopulaceConfig; runId:
   const identityProvider = new SelfSignupProvider(cfg.identity as never);
   const policies: Record<string, ScriptPolicy> = { searcher, organiser };
   const provider = new ScriptedProvider((ctx) => (policies[ctx.metadata.personaId] ?? sequence([]))(ctx));
-  for (const { agent } of expandPopulation(cfg.population, runId)) {
+  for (const { agent } of expandPopulation(cfg.population, runId, cfg.simulation.id)) {
     const result = await runWake({ agent, config: cfg }, { store, provider, identityProvider });
     expect(["done", "gave-up"]).toContain(result.wake.status);
   }
@@ -207,7 +207,7 @@ describe("the read-only M1 API over a real run", () => {
 
     // Retiring the last active agent, as the daemon does at max-wakes, flips the run to completed.
     const organiser = agents.items.find((a) => a.personaId === "organiser");
-    const stored = await store.getAgent(organiser!.id);
+    const stored = await store.getAgent(runId, organiser!.id);
     await store.upsertAgent({ ...stored!, status: "retired", retiredReason: "max-wakes", nextWakeAt: null });
     const after = RunDetailSchema.parse(await json(await api.request(routes.run(runId))));
     expect(after.status).toBe("completed");

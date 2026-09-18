@@ -31,7 +31,7 @@ export function Limits() {
     mutationFn: async () => {
       if (!draft || !pop) return;
       await api.saveSettings({ model: draft.model, guardrails: draft.guardrails, verifier: draft.verifier, daemon: draft.daemon });
-      await api.savePopulation({ scale: pop.scale, cadence: pop.cadence, maxWakes: pop.maxWakes, seed: pop.seed });
+      await api.savePopulation({ cadence: pop.cadence, maxWakes: pop.maxWakes, seed: pop.seed });
     },
     onSuccess: async () => {
       await queries.invalidateQueries();

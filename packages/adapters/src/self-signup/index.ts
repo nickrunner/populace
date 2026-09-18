@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import {
   getPath,
-  slugify,
   type CaptureContext,
   type Credential,
   type Identity,
@@ -21,13 +20,24 @@ export class SelfSignupProvider implements IdentityProvider {
 
   constructor(private readonly config: SelfSignupConfig) {}
 
+  /**
+   * The local part is the PERSON's handle, not `slugify(persona.id)-${ordinal + 1}`: that collided
+   * the moment two cohorts shared a persona, and a colliding signup email means the second cohort
+   * cannot make an account at all. The display name is the person's name for the same reason — a
+   * persona is a kind of person and does not have one.
+   *
+   * The handle is read off the agent rather than re-derived from the name. It was minted once, by
+   * `handleFor`, when the person row was written, and frozen into the config snapshot; deriving a
+   * second one here would mean a person whose handle came from anywhere else — a model, a rename —
+   * signs up as somebody the roster does not know (SPEC §5.3.5).
+   */
   provision(ctx: ProvisionContext): Promise<ProvisionResult> {
-    const local = `${slugify(ctx.agent.persona.id)}-${ctx.agent.ordinal + 1}+${ctx.tag}`;
+    const local = `${ctx.agent.handle}+${ctx.tag}`;
     const password = `Pw-${createHash("sha256").update(`${ctx.tag}:${ctx.agent.id}`).digest("base64url").slice(0, 14)}`;
     return Promise.resolve({
       kind: "self-service",
       signupTool: this.config.signupTool,
-      suggested: { email: `${local}@${this.config.emailDomain}`, displayName: ctx.agent.persona.name, password },
+      suggested: { email: `${local}@${this.config.emailDomain}`, displayName: ctx.agent.name, password },
     });
   }
 

@@ -18,7 +18,20 @@ afterAll(async () => {
   await target.close();
 });
 
-function makeConfig(overrides: Partial<PopulaceConfig["guardrails"]["perWake"]> = {}, persona: Partial<PopulaceConfig["population"]["members"][number]["persona"]> = {}): PopulaceConfig {
+/** The frozen cast a resolved config carries, as `PopulaceConfigSchema` takes it. */
+interface PersonInput {
+  ordinal: number;
+  id: string;
+  name: string;
+  details: string;
+  handle: string;
+}
+
+function makeConfig(
+  overrides: Partial<PopulaceConfig["guardrails"]["perWake"]> = {},
+  persona: Partial<PopulaceConfig["population"]["members"][number]["persona"]> = {},
+  people: PersonInput[] = [],
+): PopulaceConfig {
   return PopulaceConfigSchema.parse({
     target: { name: "Tasklet", mcp: [{ url: target.mcpUrl }], webBaseUrl: target.url, description: "A calm task list." },
     identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", teardownTool: "delete_account" },
@@ -26,18 +39,20 @@ function makeConfig(overrides: Partial<PopulaceConfig["guardrails"]["perWake"]> 
     population: {
       id: "test",
       cadence: { every: "1s" },
-      members: [{ persona: { id: "casual", name: "Casey", role: "a hobbyist", backstory: "Has too many lists.", goals: ["keep a grocery list"], ...persona } }],
+      // The persona has a ROLE LABEL, not a human name: a persona is a kind of person. The human
+      // name belongs to the generated person and is what the prompt and the signup email carry.
+      members: [{ persona: { id: "casual", name: "Casual lister", role: "a hobbyist", backstory: "Has too many lists.", goals: ["keep a grocery list"], ...persona }, people }],
     },
   });
 }
 
 function firstAgent(config: PopulaceConfig, runId = newRunId()): Agent {
-  const [expanded] = expandPopulation(config.population, runId);
+  const [expanded] = expandPopulation(config.population, runId, config.simulation.id);
   if (!expanded) throw new Error("no agent");
   return expanded.agent;
 }
 
-/** Casey's first visit: discover, sign up, hit the case-sensitive search bug, report it, remember, leave. */
+/** The first visit: discover, sign up, hit the case-sensitive search bug, report it, remember, leave. */
 const firstVisit: ScriptPolicy = sequence([
   () => ({ text: "Let me see what this is.", calls: [call("get_product_info"), call("fetch_page", { path: "/" })] }),
   (ctx) => {
@@ -77,7 +92,8 @@ describe("runWake against the mock target", () => {
     const store = new SqliteStore(":memory:");
     const config = makeConfig();
     const agent = firstAgent(config);
-    const result = await runWake({ agent, config }, { store, provider: new ScriptedProvider(firstVisit), identityProvider: new SelfSignupProvider(config.identity as never) });
+    const provider = new ScriptedProvider(firstVisit);
+    const result = await runWake({ agent, config }, { store, provider, identityProvider: new SelfSignupProvider(config.identity as never) });
 
     expect(result.wake.status).toBe("done");
     expect(result.wake.turns).toBe(8);
@@ -100,6 +116,30 @@ describe("runWake against the mock target", () => {
     expect(toolCalls.map((e) => e.tool)).toEqual(["get_product_info", "fetch_page", "sign_up", "create_project", "create_task", "search_tasks", "search_tasks"]);
     expect(ofType(trace, "identity").map((e) => e.event)).toEqual(["missing", "captured", "reconnected"]);
     expect(ofType(trace, "model.call").some((e) => e.costUsd > 0)).toBe(true);
+
+    // The model is told who it is by the PERSON's generated name, never by the persona's label —
+    // asserted against the system prompt the provider was actually handed, not against a fresh
+    // call to `personaSystemPrompt`, which would only prove that the formatter formats.
+    const modelCalls = ofType(trace, "model.call");
+    expect(agent.name).not.toBe(agent.persona.name);
+    expect(modelCalls[0]!.request.lastUserContent).toContain(agent.name);
+    const sent = provider.requests.filter((r) => r.wakeId === result.wake.id);
+    expect(sent).toHaveLength(8);
+    expect(sent[0]!.system.split("\n")[0]).toBe(`You are ${agent.name}, ${agent.persona.role}.`);
+    expect(sent[0]!.system).not.toContain(agent.persona.name);
+
+    // ADR-0006, checked rather than assumed. `ScriptedProvider` reports a cache read only when the
+    // stable prefix it was handed serialises to what the previous turn's did, so a PER-REQUEST
+    // varying value in the system prompt — the regression CLAUDE.md calls silent — turns the last
+    // three of these red. The breakpoints are asserted structurally: one on the system block, one
+    // on the LAST tool, and one rolling onto the last message every turn. Without that rolling one
+    // the whole transcript is re-sent at full price each turn, which was ~70% of a wake's bill.
+    expect(sent.every((r) => r.systemBreakpoints === 1)).toBe(true);
+    expect(sent.every((r) => r.toolBreakpointIndex === r.toolCount - 1)).toBe(true);
+    expect(sent.map((r) => r.messageBreakpoints)).toEqual(sent.map((r) => [r.messageCount - 1]));
+    expect(sent.map((r) => r.cacheHit)).toEqual([false, ...sent.slice(1).map(() => true)]);
+    expect(modelCalls[0]!.usage.cacheReadInputTokens).toBe(0);
+    expect(modelCalls[1]!.usage.cacheReadInputTokens).toBeGreaterThan(0);
     const fetched = toolCalls.find((e) => e.tool === "fetch_page");
     expect(fetched?.result.text).toContain("Delete tasks you no longer need");
 
@@ -119,6 +159,25 @@ describe("runWake against the mock target", () => {
     expect(memory?.done.map((d) => d.text)).toEqual(["Signed up and created project Home with a groceries task."]);
     expect(memory?.annoyances).toHaveLength(1);
     expect(result.wake.findingCount).toBe(1);
+    await store.close();
+  });
+
+  it("puts the person's own name and details in the cached system prefix, and the persona's label nowhere", async () => {
+    const store = new SqliteStore(":memory:");
+    const details = "On a cracked phone, trying to plan one weekend before the shops shut.";
+    const config = makeConfig({}, {}, [{ ordinal: 0, id: "casual#1", name: "Ines Okonkwo", details, handle: "ines-okonkwo-casual-1" }]);
+    const agent = firstAgent(config);
+    expect(agent.name).toBe("Ines Okonkwo");
+    const provider = new ScriptedProvider(sequence([]));
+    await runWake({ agent, config }, { store, provider, identityProvider: new SelfSignupProvider(config.identity as never) });
+
+    const [first] = provider.requests;
+    expect(first).toBeDefined();
+    // SPEC §5.3: line 1 is the person, the individuating line sits under the backstory, and the
+    // persona's display label never reaches the model at all.
+    expect(first!.system.split("\n")[0]).toBe(`You are Ines Okonkwo, ${agent.persona.role}.`);
+    expect(first!.system).toContain(details);
+    expect(first!.system).not.toContain(agent.persona.name);
     await store.close();
   });
 

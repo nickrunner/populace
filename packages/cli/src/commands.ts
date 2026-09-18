@@ -43,9 +43,9 @@ export async function validate(options: GlobalOptions & { connect?: boolean }): 
   lines.push(`target ${config.target.name}: ${config.target.mcp.length} MCP endpoint(s)${config.target.webBaseUrl ? `, web ${config.target.webBaseUrl}` : ""}`);
   lines.push(`identity: ${config.identity.strategy}`);
   lines.push(`model: ${config.model.model} effort=${config.model.effort} fallbacks=${config.model.fallbacks ? "on" : "off"}`);
-  const agents = expandPopulation(config.population, "run_0_000000");
-  lines.push(`population ${config.population.id}: ${config.population.members.length} persona(s) -> ${agents.length} agent(s) at scale ${config.population.scale}, cadence every ${config.population.cadence.every / 1000}s`);
-  for (const { agent } of agents) lines.push(`  - ${agent.id} (${agent.persona.name}, patience ${agent.persona.patience}, budget $${agent.persona.budgetUsd})`);
+  const agents = expandPopulation(config.population, "run_0_000000", config.simulation.id);
+  lines.push(`population ${config.population.id}: ${config.population.members.length} cohort(s) -> ${agents.length} agent(s), cadence every ${config.population.cadence.every / 1000}s`);
+  for (const { agent } of agents) lines.push(`  - ${agent.id} (${agent.name}, ${agent.persona.role}, patience ${agent.persona.patience}, budget $${agent.persona.budgetUsd})`);
   if (options.connect !== false) {
     for (const endpoint of config.target.mcp) {
       const session = new McpSession(endpoint, undefined);
@@ -149,19 +149,26 @@ export async function run(options: GlobalOptions & { newRun?: boolean; maxWakes?
 
 // ---- scale -----------------------------------------------------------------
 
+/**
+ * Multiplies every cohort's headcount and writes the numbers back. There is no `scale` field any
+ * more: a cohort's `count` is the only number that decides how many people exist, so scaling is a
+ * edit to those numbers rather than a second multiplier nobody can see in the file.
+ */
 export async function scale(factor: string, options: GlobalOptions): Promise<Agent[]> {
   const value = Number(factor);
   if (!Number.isFinite(value) || value <= 0) throw new Error(`scale factor must be a positive number, got ${factor}`);
   const loaded = loadConfig(options.config ?? "populace.yaml");
   const { readFileSync } = await import("node:fs");
   const doc = parseDocument(readFileSync(loaded.path, "utf8"));
-  doc.setIn(["population", "scale"], value);
+  loaded.config.population.members.forEach((member, index) => {
+    doc.setIn(["population", "members", index, "count"], Math.max(1, Math.ceil(member.count * value)));
+  });
   writeFileSync(loaded.path, doc.toString());
   const ctx = openContext(options);
   try {
     const daemon = new LocalDaemon({ config: ctx.loaded.config, runId: ctx.runId }, deps(ctx));
     const agents = await daemon.reconcile();
-    ctx.log(`population ${ctx.loaded.config.population.id} scale=${value}: ${agents.length} active agent(s) in run ${ctx.runId}`);
+    ctx.log(`population ${ctx.loaded.config.population.id} scaled by ${value}: ${agents.length} active agent(s) in run ${ctx.runId}`);
     return agents;
   } finally {
     await ctx.close();

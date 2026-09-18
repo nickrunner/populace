@@ -1,5 +1,5 @@
 import { SelfSignupProvider } from "@populace/adapters/self-signup";
-import { PopulaceConfigSchema, expandPopulation, newRunId, type Finding, type PopulaceConfig } from "@populace/core";
+import { PopulaceConfigSchema, expandPopulation, newRunId, signatureOf, type Finding, type PopulaceConfig } from "@populace/core";
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
 import { runWake } from "@populace/runner";
 import { ScriptedProvider, byWake, call, field, sequence, type ScriptContext, type ScriptPolicy } from "@populace/runner/testing";
@@ -203,7 +203,7 @@ describe("reports pipeline against the mock target", () => {
     const identityProvider = new SelfSignupProvider(cfg.identity as never);
     const policies: Record<string, ScriptPolicy> = { searcher, planner, power };
     const provider = new ScriptedProvider((ctx) => (policies[ctx.metadata.personaId] ?? sequence([]))(ctx));
-    const agents = new Map(expandPopulation(cfg.population, runId).map((e) => [e.agent.persona.id, e.agent]));
+    const agents = new Map(expandPopulation(cfg.population, runId, cfg.simulation.id).map((e) => [e.agent.persona.id, e.agent]));
     for (const wakeNumber of [1, 2]) {
       for (const [personaId, agent] of agents) {
         if (personaId === "power" && wakeNumber === 2) continue;
@@ -272,6 +272,7 @@ describe("heuristics", () => {
       wakeId: "w",
       agentId: "ag",
       personaId: "p",
+      signature: signatureOf("bug", "search_tasks", "search_tasks is case sensitive"),
       kind: "bug",
       title: "search_tasks is case sensitive",
       description: "",
@@ -305,6 +306,7 @@ describe("heuristics", () => {
       wakeId: "w",
       agentId: "ag",
       personaId: "p",
+      signature: signatureOf("coverage-gap", "delete_task", "No way to delete a task"),
       kind: "coverage-gap",
       title: "No way to delete a task",
       description: "",

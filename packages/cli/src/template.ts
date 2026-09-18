@@ -1,7 +1,7 @@
 /** The config written by `populace init`: points at the mock target with three personas. */
 export function configTemplate(mockTargetUrl: string): string {
   return `# populace configuration. Validate with: populace validate
-version: 1
+version: 2
 
 target:
   name: Tasklet
@@ -53,7 +53,6 @@ digestDir: digests
 
 population:
   id: tasklet-trial
-  scale: 1
   seed: populace
   cadence: { every: 2m, jitter: 30s }
   maxWakes: 4

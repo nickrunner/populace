@@ -32,7 +32,7 @@ import {
 import { buildDigest, verifyPending } from "@populace/reports";
 import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { ConfigIncomplete, ensurePopulation, ensureSettings, resolveProjectConfig } from "./config-store.js";
+import { ConfigIncomplete, cohortsOf, ensurePopulation, ensureSettings, resolveProjectConfig, setCohortSize } from "./config-store.js";
 import { estimateRun } from "./estimate.js";
 import { fail, page, param, parseBody, parseQuery } from "./http.js";
 import { STARTER_PERSONAS, starterBySlug } from "./starters.js";
@@ -79,9 +79,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
 
   app.get(routes.setup, async (c) => {
     const target = await firstTarget();
-    const population = await ensurePopulation(deps.store, projectId);
     const personas = await deps.store.listPersonas(projectId);
-    const agentCount = population.members.reduce((sum, m) => sum + Math.ceil(m.count * population.scale), 0);
+    const agentCount = (await cohortsOf(deps.store, projectId)).reduce((sum, cohort) => sum + cohort.size, 0);
     const killSwitch = await deps.store.getKillSwitch();
     const blockers: string[] = [];
     if (!target) blockers.push("Connect a target so the people have somewhere to go.");
@@ -109,14 +108,22 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const body = await parseBody(c, TargetInputSchema);
     if (!body.ok) return body.response;
     const at = now();
+    // The slug is the immutable URL segment and is unique within the project, but two targets may
+    // legitimately be given the same name, so a taken slug is disambiguated rather than refused.
+    const taken = new Set((await deps.store.listTargets(projectId)).map((t) => t.slug));
+    const base = slugify(body.value.name) || "target";
+    let slug = base;
+    for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
     const target: StoredTarget = {
       id: newTargetId(),
       projectId,
+      slug,
       name: body.value.name,
       mcp: mergeEndpoints(body.value.mcp, []),
       ...(body.value.webBaseUrl ? { webBaseUrl: body.value.webBaseUrl } : {}),
       ...(body.value.description ? { description: body.value.description } : {}),
       identity: body.value.identity,
+      reset: { kind: "none" },
       createdAt: at,
       updatedAt: at,
     };
@@ -192,23 +199,12 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const existing = (await deps.store.listPersonas(projectId)).find((p) => p.slug === starter.slug);
     const persona: StoredPersona = existing ?? { id: newPersonaId(), projectId, slug: starter.slug, spec: starter.spec, origin: "starter", createdAt: at, updatedAt: at };
     if (!existing) await deps.store.savePersona(persona);
-    await setMemberCount(persona.id, body.value.count);
+    await setCohortSize(deps.store, projectId, persona, body.value.count);
     return c.json(await personaView(persona), existing ? 200 : 201);
   });
 
-  const memberCountOf = async (personaId: string): Promise<number> => {
-    const population = await ensurePopulation(deps.store, projectId);
-    return population.members.find((m) => m.personaId === personaId)?.count ?? 0;
-  };
-
-  /** A count of zero removes the member row: nobody in the population is not a member of size 0. */
-  const setMemberCount = async (personaId: string, count: number): Promise<void> => {
-    const population = await ensurePopulation(deps.store, projectId);
-    const others = population.members.filter((m) => m.personaId !== personaId);
-    const previous = population.members.find((m) => m.personaId === personaId);
-    const members = count <= 0 ? others : [...others, { ...(previous ?? { personaId, count }), personaId, count }];
-    await deps.store.savePopulation({ ...population, members, updatedAt: now() });
-  };
+  const memberCountOf = async (personaId: string): Promise<number> =>
+    (await cohortsOf(deps.store, projectId)).find((cohort) => cohort.personaId === personaId)?.size ?? 0;
 
   const personaView = async (persona: StoredPersona): Promise<PersonaView> => ({
     id: persona.id,
@@ -234,7 +230,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const at = now();
     const persona: StoredPersona = { id: newPersonaId(), projectId, slug, spec: { ...body.value.spec, id: slug }, origin: "authored", createdAt: at, updatedAt: at };
     await deps.store.savePersona(persona);
-    await setMemberCount(persona.id, 1);
+    await setCohortSize(deps.store, projectId, persona, 1);
     return c.json(await personaView(persona), 201);
   });
 
@@ -252,7 +248,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   });
 
   app.delete(routes.persona(":id"), async (c) => {
-    await setMemberCount(param(c, "id"), 0);
+    const persona = await deps.store.getPersona(param(c, "id"));
+    if (persona) await setCohortSize(deps.store, projectId, persona, 0);
     await deps.store.deletePersona(param(c, "id"));
     return c.body(null, 204);
   });
@@ -261,17 +258,28 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
 
   const populationView = async (): Promise<PopulationView> => {
     const population = await ensurePopulation(deps.store, projectId);
+    const settings = await ensureSettings(deps.store, projectId);
+    const cohorts = await cohortsOf(deps.store, projectId);
     const personas = new Map((await deps.store.listPersonas(projectId)).map((p) => [p.id, p]));
     return {
       id: population.id,
       slug: population.slug,
-      scale: population.scale,
-      seed: population.seed,
-      cadence: population.cadence,
-      maxWakes: population.maxWakes ?? null,
-      members: population.members.map((m) => {
-        const persona = personas.get(m.personaId);
-        return { personaId: m.personaId, slug: persona?.slug ?? m.personaId, name: persona?.spec.name ?? m.personaId, count: m.count, maxWakes: m.maxWakes ?? null };
+      name: population.name,
+      seed: settings.seed,
+      cadence: settings.cadence,
+      maxWakes: settings.maxWakes,
+      members: cohorts.map((cohort) => {
+        const persona = personas.get(cohort.personaId);
+        return {
+          cohortId: cohort.id,
+          cohort: cohort.slug,
+          cohortName: cohort.name,
+          personaId: cohort.personaId,
+          slug: persona?.slug ?? cohort.slug,
+          name: persona?.spec.name ?? cohort.name,
+          count: cohort.size,
+          maxWakes: cohort.maxWakes ?? null,
+        };
       }),
     };
   };
@@ -281,21 +289,33 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   app.put(routes.population, async (c) => {
     const body = await parseBody(c, PopulationInputSchema);
     if (!body.ok) return body.response;
-    const population = await ensurePopulation(deps.store, projectId);
-    const known = new Set((await deps.store.listPersonas(projectId)).map((p) => p.id));
-    const unknown = (body.value.members ?? []).filter((m) => !known.has(m.personaId)).map((m) => m.personaId);
+    const settings = await ensureSettings(deps.store, projectId);
+    const personas = new Map((await deps.store.listPersonas(projectId)).map((p) => [p.id, p]));
+    const unknown = (body.value.members ?? []).filter((m) => !personas.has(m.personaId)).map((m) => m.personaId);
     if (unknown.length) return fail(c, "bad_request", `no such person: ${unknown.join(", ")}`);
-    await deps.store.savePopulation({
-      ...population,
-      ...(body.value.scale === undefined ? {} : { scale: body.value.scale }),
+    // The execution plan lives on the settings row until simulations are rows of their own; the
+    // headcounts live on the cohorts, which is the only place headcount lives at all now.
+    await deps.store.saveSettings({
+      ...settings,
       ...(body.value.seed === undefined ? {} : { seed: body.value.seed }),
-      ...(body.value.cadence === undefined ? {} : { cadence: { ...population.cadence, ...body.value.cadence } }),
-      ...(body.value.maxWakes === undefined ? {} : { maxWakes: body.value.maxWakes ?? undefined }),
-      ...(body.value.members === undefined
-        ? {}
-        : { members: body.value.members.filter((m) => m.count > 0).map((m) => ({ personaId: m.personaId, count: m.count, ...(m.maxWakes === undefined || m.maxWakes === null ? {} : { maxWakes: m.maxWakes }) })) }),
+      ...(body.value.cadence === undefined ? {} : { cadence: { ...settings.cadence, ...body.value.cadence } }),
+      ...(body.value.maxWakes === undefined ? {} : { maxWakes: body.value.maxWakes }),
       updatedAt: now(),
     });
+    // The member list REPLACES what is there when it is sent at all. The browser drops a persona
+    // from the array rather than sending `count: 0` (`screens/setup/People.tsx`), so a handler that
+    // only walked the array left the cohort at its old size and the stepper snapped back.
+    if (body.value.members) {
+      const sent = new Set(body.value.members.map((m) => m.personaId));
+      for (const cohort of await cohortsOf(deps.store, projectId)) {
+        const persona = personas.get(cohort.personaId);
+        if (persona && !sent.has(cohort.personaId)) await setCohortSize(deps.store, projectId, persona, 0);
+      }
+      for (const member of body.value.members) {
+        const persona = personas.get(member.personaId);
+        if (persona) await setCohortSize(deps.store, projectId, persona, member.count, member.maxWakes);
+      }
+    }
     return c.json(await populationView());
   });
 

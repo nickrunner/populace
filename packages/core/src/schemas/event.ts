@@ -28,6 +28,8 @@ export const EventSchema = z.object({
   /** Monotonic across the store. This is the SSE cursor and the `pageOf` cursor (ADR-0026). */
   seq: z.number().int().nonnegative(),
   at: z.iso.datetime(),
+  projectId: z.string().nullable().default(null),
+  simulationId: z.string().nullable().default(null),
   runId: z.string().nullable().default(null),
   wakeId: z.string().nullable().default(null),
   type: EventTypeSchema,
@@ -35,11 +37,21 @@ export const EventSchema = z.object({
 });
 export type Event = z.infer<typeof EventSchema>;
 
-/** An event before the store assigns it a sequence number. */
-export type EventInput = Omit<Event, "seq" | "at"> & { at?: string };
+/**
+ * An event before the store assigns it a sequence number. `projectId` and `simulationId` are
+ * optional here because the recording store stamps them from the run: an emitter deep in a wake
+ * knows its wake and its run and has no business knowing which project it is filed under.
+ */
+export type EventInput = Omit<Event, "seq" | "at" | "projectId" | "simulationId"> & {
+  at?: string;
+  projectId?: string | null;
+  simulationId?: string | null;
+};
 
 export interface EventQuery {
   afterSeq?: number;
+  projectId?: string;
+  simulationId?: string;
   runId?: string;
   types?: EventType[];
   limit?: number;

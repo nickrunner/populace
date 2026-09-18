@@ -145,19 +145,34 @@ export const AddStarterBodySchema = z.object({ slug: z.string().min(1), count: z
 
 // ---- population and settings ---------------------------------------------
 
+/**
+ * A population is composition now: an ordered set of cohorts, where a cohort is "N people on one
+ * persona". `scale` is gone — two numbers deciding how many people exist (count × scale) is
+ * exactly the ambiguity the restructure removes.
+ */
 export const PopulationViewSchema = z.object({
   id: z.string(),
   slug: z.string(),
-  scale: z.number().positive(),
+  name: z.string(),
   seed: z.string(),
   cadence: CadenceSchema,
   maxWakes: z.number().int().positive().nullable(),
-  members: z.array(z.object({ personaId: z.string(), slug: z.string(), name: z.string(), count: z.number().int().nonnegative(), maxWakes: z.number().int().positive().nullable() })),
+  members: z.array(
+    z.object({
+      cohortId: z.string(),
+      cohort: z.string(),
+      cohortName: z.string(),
+      personaId: z.string(),
+      slug: z.string(),
+      name: z.string(),
+      count: z.number().int().nonnegative(),
+      maxWakes: z.number().int().positive().nullable(),
+    }),
+  ),
 });
 export type PopulationView = z.infer<typeof PopulationViewSchema>;
 
 export const PopulationInputSchema = z.object({
-  scale: z.number().positive().optional(),
   seed: z.string().optional(),
   cadence: CadenceSchema.partial().optional(),
   maxWakes: z.number().int().positive().nullable().optional(),
@@ -213,7 +228,8 @@ export const RunEstimateSchema = z.object({
   lowUsd: z.number().nonnegative(),
   expectedUsd: z.number().nonnegative(),
   highUsd: z.number().nonnegative(),
-  perPersona: z.array(z.object({ personaId: z.string(), agents: z.number().int(), visits: z.number().int(), capped: z.boolean(), expectedUsd: z.number().nonnegative() })),
+  /** One row per COHORT. Two cohorts may share a persona, so `cohort` is what tells the rows apart. */
+  perPersona: z.array(z.object({ cohort: z.string(), personaId: z.string(), agents: z.number().int(), visits: z.number().int(), capped: z.boolean(), expectedUsd: z.number().nonnegative() })),
   model: z.string(),
   effort: z.string(),
   /** The guardrails that will actually stop it, whatever the arithmetic above says (ADR-0009). */

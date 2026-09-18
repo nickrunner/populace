@@ -11,6 +11,7 @@ import {
   newWakeId,
   priceFor,
   resolveModel,
+  signatureOf,
   stableStringify,
   tagForRun,
   truncate,
@@ -296,7 +297,7 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
   const lastTool = modelTools[modelTools.length - 1];
   if (lastTool) lastTool.cache_control = { type: "ephemeral" };
 
-  const systemText = `${personaSystemPrompt(agent.persona, config.target)}\n\nThe product exposes these tools:\n${describeTargetTools(targetTools.map((t) => ({ ...t.tool, name: t.key })))}`;
+  const systemText = `${personaSystemPrompt(agent, config.target)}\n\nThe product exposes these tools:\n${describeTargetTools(targetTools.map((t) => ({ ...t.tool, name: t.key })))}`;
   const system = systemBlocks(systemText);
   const messages: Anthropic.Beta.BetaMessageParam[] = [
     {
@@ -324,6 +325,10 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
   const fileFinding = async (input: FindingDraft): Promise<Finding> => {
     const reproduction = resolveEvidence(input.evidence);
     const endpoint = reproduction[reproduction.length - 1]?.endpoint ?? config.target.mcp[0]?.name ?? "default";
+    // The signature is computed here, at file time, from the same (kind, primary tool, title
+    // tokens) the digest clusters on. Computing it now is what makes "this problem, across every
+    // execution of this simulation" a lookup rather than a re-clustering (ADR-0028).
+    const primaryTool = input.tool ?? reproduction[reproduction.length - 1]?.tool ?? "";
     const finding: Finding = {
       id: newFindingId(),
       runId,
@@ -331,6 +336,7 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
       wakeId,
       agentId: agent.id,
       personaId: agent.persona.id,
+      signature: signatureOf(input.kind, primaryTool, input.title),
       kind: input.kind,
       title: input.title,
       description: input.description,

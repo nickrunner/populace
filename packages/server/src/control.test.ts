@@ -22,7 +22,7 @@ import { SqliteStore } from "@populace/store-sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
-import { ensurePopulation, ensureProject, ensureSettings, redactConfig, resolveProjectConfig, seedProjectFromConfig, snapshotConfig } from "./config-store.js";
+import { cohortsOf, ensurePopulation, ensureProject, ensureSettings, redactConfig, resolveProjectConfig, seedProjectFromConfig, snapshotConfig } from "./config-store.js";
 import { EventHub, RecordingStore } from "./events.js";
 import { JobRunner } from "./jobs.js";
 import { RunController } from "./runs.js";
@@ -107,6 +107,7 @@ const json = async (res: Response): Promise<ResponseBody> => {
 };
 
 const post = async (app: Hono, path: string, body: object = {}): Promise<Response> => app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+const memberSlugs = async (h: Harness): Promise<string[]> => PopulationViewSchema.parse(await json(await h.app.request(routes.population))).members.map((m) => m.slug);
 const put = async (app: Hono, path: string, body: object): Promise<Response> => app.request(path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 describe("authoring config into the database", () => {
@@ -179,6 +180,61 @@ describe("authoring config into the database", () => {
     await put(h.app, routes.population, { members: [{ personaId: added.id, count: 0 }] });
     expect(PopulationViewSchema.parse(await json(await h.app.request(routes.population))).members).toHaveLength(0);
     expect(pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas))).items).toHaveLength(1);
+    await h.close();
+  });
+
+  /**
+   * `PUT /population` replaces the member list. The browser drops a persona from the array when
+   * its stepper reaches zero rather than sending `count: 0` (`screens/setup/People.tsx`), so a
+   * handler that only walked the array left the cohort at its old size and the UI snapped back.
+   */
+  it("removes a cohort whose persona the body omits, and stores the per-cohort visit cap", async () => {
+    const h = await harness();
+    const seeded = pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas))).items[0]!;
+    const power = PersonaViewSchema.parse(await json(await post(h.app, routes.personaStarters, { slug: "power-user", count: 3 })));
+    expect(PopulationViewSchema.parse(await json(await h.app.request(routes.population))).members).toHaveLength(2);
+
+    const view = PopulationViewSchema.parse(await json(await put(h.app, routes.population, { members: [{ personaId: power.id, count: 3, maxWakes: 6 }] })));
+    expect(view.members.map((m) => m.personaId)).toEqual([power.id]);
+    expect(view.members[0]?.count).toBe(3);
+    expect(view.members[0]?.maxWakes).toBe(6);
+    expect(await memberSlugs(h)).toEqual([power.slug]);
+    // Out of the population, still written down: removing a member never deletes the persona.
+    expect(pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas))).items.map((p) => p.slug)).toContain(seeded.slug);
+
+    // The cap is not just echoed back: it reaches the config the run is expanded from.
+    const resolved = await resolveProjectConfig(h.store, { store: { kind: "sqlite", path: ":memory:" }, digestDir: "digests" });
+    expect(resolved.config.population.members.map((m) => m.maxWakes)).toEqual([6]);
+    await h.close();
+  });
+
+  /**
+   * `population.cohortIds` decides who is expanded into agents and therefore who spends money, so
+   * a cohort the population does not hold stays out of the resolved config. A project can hold
+   * one: a YAML import rewrites `cohortIds` and leaves whatever was authored in the browser behind.
+   */
+  it("expands only the cohorts the population holds, not every cohort in the project", async () => {
+    const h = await harness();
+    const persona = (await h.store.listPersonas("default"))[0]!;
+    const at = new Date().toISOString();
+    await h.store.saveCohort({ id: "coh_orphan", projectId: "default", slug: "orphans", name: "Orphans", personaId: persona.id, size: 9, seed: "populace", notes: "", createdAt: at, updatedAt: at });
+
+    expect((await cohortsOf(h.store)).map((c) => c.slug)).not.toContain("orphans");
+    const resolved = await resolveProjectConfig(h.store, { store: { kind: "sqlite", path: ":memory:" }, digestDir: "digests" });
+    expect(resolved.config.population.members.map((m) => m.cohort)).not.toContain("orphans");
+    expect(SetupStatusSchema.parse(await json(await h.app.request(routes.setup))).agentCount).toBe(1);
+    await h.close();
+  });
+
+  it("gives two targets with the same name different slugs, because a slug is the URL segment", async () => {
+    const h = await harness();
+    const identity = { strategy: "self-signup" as const, signupTool: "sign_up", tokenPath: "token", emailDomain: "populace.test" };
+    const first = StoredTargetViewSchema.parse(await json(await post(h.app, routes.targets, { name: "Tasklet", mcp: [{ name: "default", url: target.mcpUrl }], identity })));
+    const second = StoredTargetViewSchema.parse(await json(await post(h.app, routes.targets, { name: "Tasklet", mcp: [{ name: "default", url: target.mcpUrl }], identity })));
+    const slugs = (await h.store.listTargets("default")).map((t) => t.slug);
+    expect(new Set(slugs).size).toBe(slugs.length);
+    expect((await h.store.getTarget(first.id))?.slug).toBe("tasklet");
+    expect((await h.store.getTarget(second.id))?.slug).toBe("tasklet-2");
     await h.close();
   });
 
@@ -391,6 +447,9 @@ describe("the store underneath", () => {
     await h.store.saveRun({
       id: newRunId(),
       projectId: "default",
+      simulationId: "sim_test",
+      seq: 1,
+      mode: "longitudinal",
       targetId: "t",
       populationId: population.slug,
       label: "abandoned",
@@ -398,6 +457,10 @@ describe("the store underneath", () => {
       configSnapshotId: "",
       parentRunId: null,
       continuation: null,
+      pauseReason: null,
+      resumes: 0,
+      lastResumedAt: null,
+      sweptAt: null,
       startedAt: new Date().toISOString(),
       endedAt: null,
       totals: { agents: 0, activeAgents: 0, wakes: 0, findings: 0, confirmed: 0, costUsd: 0 },
@@ -436,7 +499,7 @@ async function realRun(store: Store): Promise<void> {
       () => ({ calls: [call("done", { summary: "had a look", would_return: true })] }),
     ]),
   );
-  for (const { agent } of expandPopulation(cfg.population, runId)) {
+  for (const { agent } of expandPopulation(cfg.population, runId, cfg.simulation.id)) {
     await runWake({ agent, config: cfg }, { store, provider, identityProvider });
   }
 }

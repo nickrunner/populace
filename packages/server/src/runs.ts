@@ -60,9 +60,19 @@ export class RunController {
     const snapshot = await snapshotConfig(this.store, options.config);
     const runId = newRunId();
     const startedAt = new Date().toISOString();
+    const simulation = options.config.simulation;
+    // Executions of one simulation are numbered within it: "execution 3" is how the user names a
+    // run, and it is independent of the `parentRunId` lineage a carry-forward creates. The project
+    // is in the filter because until simulations are rows of their own every project's context
+    // carries the same placeholder id, and without it project B's first run would be numbered
+    // after project A's last.
+    const seq = (await this.store.listRuns({ projectId: options.projectId, simulationId: simulation.id })).length + 1;
     const run: Run = {
       id: runId,
       projectId: options.projectId,
+      simulationId: simulation.id,
+      seq,
+      mode: simulation.mode,
       targetId: options.targetId,
       populationId: options.config.population.id,
       label: options.label,
@@ -70,6 +80,10 @@ export class RunController {
       configSnapshotId: snapshot.id,
       parentRunId: options.continueFrom ?? null,
       continuation: options.continueFrom ? { reason: options.continuationReason ?? "", carriedAgents: 0, returningAfterGiveUp: 0 } : null,
+      pauseReason: null,
+      resumes: 0,
+      lastResumedAt: null,
+      sweptAt: null,
       startedAt,
       endedAt: null,
       totals: { agents: 0, activeAgents: 0, wakes: 0, findings: 0, confirmed: 0, costUsd: 0 },

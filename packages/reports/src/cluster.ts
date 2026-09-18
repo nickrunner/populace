@@ -1,16 +1,9 @@
-import { SEVERITY_RANK, type Cluster, type Finding, type Severity } from "@populace/core";
+import { SEVERITY_RANK, titleTokens, type Cluster, type Finding, type Severity } from "@populace/core";
 
-const STOPWORDS = new Set(["the", "a", "an", "and", "or", "of", "to", "in", "on", "is", "are", "was", "it", "its", "for", "with", "when", "that", "this", "not", "but", "does", "did", "do", "be", "by", "as", "at", "from"]);
-
-export function titleTokens(title: string): Set<string> {
-  return new Set(
-    title
-      .toLowerCase()
-      .replace(/[^a-z0-9_\s]/g, " ")
-      .split(/\s+/)
-      .filter((t) => t.length > 2 && !STOPWORDS.has(t)),
-  );
-}
+// `titleTokens` moved into core so the runner can compute a finding's signature at file time from
+// exactly the tokens the clusterer will later group on. Re-exported because this is where the rest
+// of the reports package has always imported it from.
+export { titleTokens };
 
 export function jaccard(a: Set<string>, b: Set<string>): number {
   if (a.size === 0 && b.size === 0) return 1;
@@ -64,6 +57,9 @@ export function clusterFindings(findings: Finding[], threshold = 0.3): Cluster[]
     const verdicts = group.members.map((f) => f.verification?.verdict ?? null);
     return {
       id: `cluster-${index + 1}`,
+      // Written at file time by the runner (`signatureOf`), required by `FindingSchema`, and taken
+      // from the representative as-is: recomputing here would be a second definition of the key.
+      signature: representative.signature,
       kind: representative.kind,
       title: representative.title,
       severity: maxSeverity(group.members),
@@ -71,6 +67,8 @@ export function clusterFindings(findings: Finding[], threshold = 0.3): Cluster[]
       representative,
       findings: group.members,
       personaIds: [...new Set(group.members.map((f) => f.personaId))].sort(),
+      cohorts: [],
+      personIds: [],
       wakeIds: [...new Set(group.members.map((f) => f.wakeId))],
       confirmedCount: verdicts.filter((v) => v === "confirmed").length,
       notReproducedCount: verdicts.filter((v) => v === "not-reproduced").length,

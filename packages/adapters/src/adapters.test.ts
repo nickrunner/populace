@@ -8,8 +8,14 @@ import { FirebaseAdminProvider, SelfSignupProvider, StaticIdentityProvider, type
 const agent: Agent = {
   id: "pop/casual#1",
   runId: "run_a_aaaaaa",
+  simulationId: "sim_test",
   populationId: "pop",
-  persona: { id: "casual", name: "Casey", role: "r", backstory: "b", goals: ["g"], constraints: [], patience: 3, budgetUsd: 0, traits: {}, tools: { allow: [], deny: [], destructive: "confirm" }, model: {} },
+  cohortSlug: "casual",
+  personId: "casual#1",
+  name: "Ingrid Bergstrom",
+  details: "",
+  handle: "ingrid-bergstrom-casual-1",
+  persona: { id: "casual", name: "Casual lister", role: "r", backstory: "b", goals: ["g"], constraints: [], patience: 3, budgetUsd: 0, traits: {}, tools: { allow: [], deny: [], destructive: "confirm" }, model: {} },
   ordinal: 0,
   status: "active",
   retiredReason: null,
@@ -31,17 +37,47 @@ describe("SelfSignupProvider", () => {
     const result = await provider.provision(ctx);
     expect(result.kind).toBe("self-service");
     if (result.kind !== "self-service") return;
-    expect(result.suggested.email).toBe("casual-1+populace:run_a_aaaaaa@populace.test");
+    expect(result.suggested.email).toBe("ingrid-bergstrom-casual-1+populace:run_a_aaaaaa@populace.test");
+    expect(result.suggested.displayName).toBe("Ingrid Bergstrom");
     const credential = provider.capture({ tool: "sign_up", arguments: { email: result.suggested.email }, result: { token: "tk_1", user: { id: "usr_1" } } });
     expect(credential).toEqual({ bearerToken: "tk_1", userId: "usr_1", email: result.suggested.email, extra: {} });
     expect(provider.capture({ tool: "other", arguments: {}, result: { token: "x" } })).toBeUndefined();
     expect(provider.capture({ tool: "sign_up", arguments: {}, result: { error: "nope" } })).toBeUndefined();
   });
 
+  /**
+   * The defect this replaces: the local part was `slugify(persona.id)-${ordinal + 1}`, so two
+   * cohorts sharing one persona both asked for `casual-1@…` and the second could not sign up at
+   * all. The handle is the person's and is cohort-scoped, so they cannot collide.
+   */
+  it("gives two cohorts on one persona two distinct signup emails", async () => {
+    const weekenders = { ...agent, id: "pop/weekenders#1", cohortSlug: "weekenders", personId: "weekenders#1", name: "Ingrid Bergstrom", handle: "ingrid-bergstrom-weekenders-1" };
+    const sceptics = { ...agent, id: "pop/sceptics#1", cohortSlug: "sceptics", personId: "sceptics#1", name: "Ingrid Bergstrom", handle: "ingrid-bergstrom-sceptics-1" };
+    const a = await provider.provision({ ...ctx, agent: weekenders });
+    const b = await provider.provision({ ...ctx, agent: sceptics });
+    if (a.kind !== "self-service" || b.kind !== "self-service") throw new Error("expected self-service");
+    expect(a.suggested.email).not.toBe(b.suggested.email);
+    expect(a.suggested.email).toBe("ingrid-bergstrom-weekenders-1+populace:run_a_aaaaaa@populace.test");
+    expect(b.suggested.email).toBe("ingrid-bergstrom-sceptics-1+populace:run_a_aaaaaa@populace.test");
+  });
+
   it("tears down through the configured tool", async () => {
     const identity: Identity = { id: "idn", runId: ctx.runId, tag: ctx.tag, agentId: agent.id, personaId: "casual", strategy: "self-signup", credential: { bearerToken: "tk", extra: {} }, createdAt: new Date().toISOString(), tornDownAt: null };
     await provider.teardown(identity, deps);
     expect(deps.callTool).toHaveBeenCalledWith("tk", "delete_account", {});
+  });
+
+  /**
+   * The handle is READ, not re-derived. The two agree today because both come from `handleFor`,
+   * so a provider that recomputed one from the name would pass every assertion above; a handle the
+   * roster wrote by any other route — a model, a rename — is what separates them (SPEC §5.3.5).
+   */
+  it("signs up with the handle the roster froze, not one derived from the name", async () => {
+    const renamed = { ...agent, name: "Ingrid Bergström-Okonkwo", handle: "ingrid-b-casual-1" };
+    const result = await provider.provision({ ...ctx, agent: renamed });
+    if (result.kind !== "self-service") throw new Error("expected self-service");
+    expect(result.suggested.email).toBe("ingrid-b-casual-1+populace:run_a_aaaaaa@populace.test");
+    expect(result.suggested.displayName).toBe("Ingrid Bergström-Okonkwo");
   });
 });
 

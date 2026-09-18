@@ -43,6 +43,14 @@ export function newPopulationId(): string {
   return `pop_${Date.now().toString(36)}_${randomSuffix(6)}`;
 }
 
+export function newCohortId(): string {
+  return `coh_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
+export function newSimulationId(): string {
+  return `sim_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
 export const TAG_PREFIX = "populace:";
 
 /** The tag a run stamps on every identity, wake and finding it creates. */

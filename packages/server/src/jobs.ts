@@ -25,12 +25,14 @@ export class JobRunner {
   ) {}
 
   /** Enqueues and returns immediately: the caller answers with the job id, not with the outcome. */
-  async enqueue(kind: JobKind, handler: JobHandler, options: { runId?: string; label?: string } = {}): Promise<Job> {
+  async enqueue(kind: JobKind, handler: JobHandler, options: { runId?: string; projectId?: string; label?: string } = {}): Promise<Job> {
     const job: Job = {
       id: newJobId(),
       kind,
       status: "queued",
+      projectId: options.projectId ?? null,
       runId: options.runId ?? null,
+      costUsd: 0,
       progress: { done: 0, total: null, label: options.label ?? "" },
       error: null,
       createdAt: new Date().toISOString(),

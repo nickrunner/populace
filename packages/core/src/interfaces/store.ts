@@ -1,5 +1,9 @@
 import type { Agent } from "../schemas/agent.js";
 import type { Project, StoredPersona, StoredPopulation, StoredSettings, StoredTarget } from "../schemas/authored.js";
+import type { Cohort } from "../schemas/cohort.js";
+import type { Person } from "../schemas/person.js";
+import type { Simulation } from "../schemas/simulation.js";
+import type { Triage } from "../schemas/triage.js";
 import type { Event, EventInput, EventQuery } from "../schemas/event.js";
 import type { Job } from "../schemas/job.js";
 import type { ConfigSnapshot, Run } from "../schemas/run.js";
@@ -17,6 +21,44 @@ export interface FindingQuery {
   unverifiedOnly?: boolean;
 }
 
+/** Everything `listAgents` can narrow by. A run is not optional: agent ids repeat between runs. */
+export interface AgentQuery {
+  runId: string;
+  simulationId?: string;
+  cohortSlug?: string;
+  status?: Agent["status"];
+}
+
+export interface PersonQuery {
+  projectId?: string;
+  cohortId?: string;
+  /** Archived people are the ones past a shrunken cohort's size. Excluded unless asked for. */
+  includeArchived?: boolean;
+}
+
+export interface SimulationQuery {
+  projectId?: string;
+  populationId?: string;
+  targetId?: string;
+  includeArchived?: boolean;
+}
+
+/**
+ * Thrown by a delete that would orphan a row (SPEC §2.14): an authored row referenced by another
+ * authored row cannot be deleted, and the message names the referrers so the user is told what to
+ * take apart first rather than being told "no".
+ */
+export class ReferencedError extends Error {
+  constructor(
+    readonly entity: string,
+    readonly id: string,
+    readonly referrers: string[],
+  ) {
+    super(`cannot delete ${entity} ${id}: still used by ${referrers.join(", ")}`);
+    this.name = "ReferencedError";
+  }
+}
+
 export interface WakeQuery {
   runIds?: string[];
   agentId?: string;
@@ -32,10 +74,17 @@ export interface WakeQuery {
 export interface Store {
   // agents
   upsertAgent(agent: Agent): Promise<void>;
-  getAgent(id: string): Promise<Agent | undefined>;
-  listAgents(filter?: { runId?: string; populationId?: string; status?: Agent["status"] }): Promise<Agent[]>;
-  /** Agents that are active and whose nextWakeAt is at or before `now`, oldest first. */
-  listDueAgents(now: Date, limit: number): Promise<Agent[]>;
+  /**
+   * An agent id is `populationSlug/cohortSlug#ordinal` and is unique WITHIN A RUN, not globally:
+   * two executions of one simulation have an agent of the same id each. `runId` is half the key.
+   */
+  getAgent(runId: string, id: string): Promise<Agent | undefined>;
+  listAgents(filter: AgentQuery): Promise<Agent[]>;
+  /**
+   * Agents of THIS RUN that are active and whose nextWakeAt is at or before `now`, oldest first.
+   * The run predicate is load-bearing: without it one run's daemon claims another run's agents.
+   */
+  listDueAgents(runId: string, now: Date, limit: number): Promise<Agent[]>;
   deleteAgentsByRun(runId: string): Promise<number>;
 
   // identities
@@ -87,7 +136,7 @@ export interface Store {
    */
   saveRun(run: Run): Promise<void>;
   getRun(id: string): Promise<Run | undefined>;
-  listRuns(filter?: { projectId?: string; status?: Run["status"] }): Promise<Run[]>;
+  listRuns(filter?: { projectId?: string; simulationId?: string; status?: Run["status"] }): Promise<Run[]>;
   deleteRun(id: string): Promise<void>;
 
   // config snapshots (immutable; written once when a run starts)
@@ -104,17 +153,58 @@ export interface Store {
   saveTarget(target: StoredTarget): Promise<void>;
   getTarget(id: string): Promise<StoredTarget | undefined>;
   listTargets(projectId?: string): Promise<StoredTarget[]>;
+  /** Refused with `ReferencedError` while a simulation names it. */
   deleteTarget(id: string): Promise<void>;
 
   savePersona(persona: StoredPersona): Promise<void>;
   getPersona(id: string): Promise<StoredPersona | undefined>;
   listPersonas(projectId?: string): Promise<StoredPersona[]>;
+  /** Refused with `ReferencedError` while a cohort points at it. */
   deletePersona(id: string): Promise<void>;
+
+  /**
+   * Cohorts: "N people on one persona", and the only place headcount lives. A population is an
+   * ordered list of these, and the cohort owns the `people` rows drawn from its seed.
+   */
+  saveCohort(cohort: Cohort): Promise<void>;
+  getCohort(id: string): Promise<Cohort | undefined>;
+  listCohorts(projectId?: string): Promise<Cohort[]>;
+  /**
+   * Refused with `ReferencedError` while a population contains it. Its people are ARCHIVED rather
+   * than deleted: past runs' agents name them, and growing the cohort back must meet the same cast.
+   */
+  deleteCohort(id: string): Promise<void>;
+
+  /**
+   * People: one named individual per `(cohort, ordinal)`, written once and then frozen. The id is
+   * `${cohortSlug}#${ordinal + 1}` and is project-scoped, which is why reads take a project.
+   */
+  savePerson(person: Person): Promise<void>;
+  getPerson(projectId: string, id: string): Promise<Person | undefined>;
+  listPeople(query?: PersonQuery): Promise<Person[]>;
+  /** Shrinking a cohort, or deleting one: the rows stay, `archivedAt` is stamped. */
+  archivePeople(cohortId: string, at: Date): Promise<number>;
 
   savePopulation(population: StoredPopulation): Promise<void>;
   getPopulation(id: string): Promise<StoredPopulation | undefined>;
   listPopulations(projectId?: string): Promise<StoredPopulation[]>;
+  /** Refused with `ReferencedError` while a simulation names it. */
   deletePopulation(id: string): Promise<void>;
+
+  /** A population running against a target, in one of two modes (`ephemeral` | `longitudinal`). */
+  saveSimulation(simulation: Simulation): Promise<void>;
+  getSimulation(id: string): Promise<Simulation | undefined>;
+  listSimulations(query?: SimulationQuery): Promise<Simulation[]>;
+  /**
+   * A simulation that has ever run is ARCHIVED, never deleted: its runs are the user's history and
+   * archiving a simulation never touches them.
+   */
+  deleteSimulation(id: string): Promise<void>;
+
+  /** Human judgement about a problem, keyed by signature so it survives a re-execution (ADR-0028). */
+  saveTriage(triage: Triage): Promise<void>;
+  getTriage(projectId: string, signature: string): Promise<Triage | undefined>;
+  listTriage(projectId: string): Promise<Triage[]>;
 
   saveSettings(settings: StoredSettings): Promise<void>;
   getSettings(projectId: string): Promise<StoredSettings | undefined>;

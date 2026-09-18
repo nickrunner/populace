@@ -1,6 +1,6 @@
 # Example population for the mock target (Tasklet): three personas, short cadence.
 # Copy next to your project as populace.yaml, or run: populace -c examples/tasklet-population.yaml validate
-version: 1
+version: 2
 
 target:
   name: Tasklet
@@ -52,7 +52,6 @@ digestDir: digests
 
 population:
   id: tasklet-trial
-  scale: 1
   seed: populace
   cadence: { every: 2m, jitter: 30s }
   maxWakes: 4

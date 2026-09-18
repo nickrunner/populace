@@ -31,6 +31,48 @@ function config(maxWakes: number): PopulaceConfig {
 }
 
 const quits: ScriptPolicy = sequence([() => ({ calls: [call("give_up", { title: "Not for me", reason: "Nope.", would_return: false, severity: "medium", evidence_calls: [] })] })]);
+const leaves: ScriptPolicy = sequence([() => ({ calls: [call("done", { summary: "had a look", would_return: true })] })]);
+
+describe("LocalDaemon cadence", () => {
+  /**
+   * `cadenceOf` matched on `persona.id`, so two cohorts sharing one persona both found the first
+   * member and were rescheduled on its cadence. Keyed by cohort, "25 weekend planners every 30
+   * seconds and 9 sceptics every six hours" is a population that can actually run.
+   */
+  it("reschedules each cohort on its own cadence when two cohorts share a persona", async () => {
+    const persona = { id: "lister", name: "List keeper", role: "a hobbyist", backstory: "Has too many lists.", goals: ["keep a list"] };
+    const loaded = PopulaceConfigSchema.parse({
+      target: { name: "Tasklet", mcp: [{ url: target.mcpUrl }] },
+      identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", teardownTool: "delete_account" },
+      daemon: { tick: "10ms", concurrency: 1 },
+      population: {
+        id: "everyone",
+        cadence: { every: "10ms" },
+        maxWakes: 4,
+        members: [
+          { cohort: "eager", cohortName: "Eager", persona, count: 1, cadence: { every: "10ms" } },
+          { cohort: "patient", cohortName: "Patient", persona, count: 1, cadence: { every: "6h" } },
+        ],
+      },
+    });
+    const store = new SqliteStore(":memory:");
+    const runId = newRunId();
+    const daemon = new LocalDaemon({ config: loaded, runId }, { store, provider: new ScriptedProvider(leaves), identityProvider: new SelfSignupProvider(loaded.identity as never) });
+    const scheduled = await daemon.reconcile();
+    expect(scheduled.map((a) => a.id)).toEqual(["everyone/eager#1", "everyone/patient#1"]);
+
+    const at = new Date();
+    await daemon.tick(at);
+    await daemon.tick(at);
+    expect(daemon.wakesRun).toBe(2);
+
+    const byId = new Map((await store.listAgents({ runId })).map((a) => [a.id, a]));
+    const eager = Date.parse(byId.get("everyone/eager#1")!.nextWakeAt!);
+    const patient = Date.parse(byId.get("everyone/patient#1")!.nextWakeAt!);
+    expect(patient - eager).toBeGreaterThan(5 * 3_600_000);
+    await store.close();
+  });
+});
 
 describe("LocalDaemon retirement", () => {
   it("stops waking an agent that gave up, well short of maxWakes", async () => {
@@ -53,7 +95,7 @@ describe("LocalDaemon retirement", () => {
     const second = new LocalDaemon({ config: loaded, runId }, deps);
     const reconciled = await second.reconcile();
     expect(reconciled[0]?.status).toBe("retired");
-    expect(await store.listDueAgents(new Date(Date.now() + 86_400_000), 10)).toEqual([]);
+    expect(await store.listDueAgents(runId, new Date(Date.now() + 86_400_000), 10)).toEqual([]);
     await store.close();
   });
 

@@ -41,9 +41,15 @@ export class LocalDaemon {
     return this.deps.store;
   }
 
+  /**
+   * Keyed by COHORT. It matched on `persona.id`, which silently assumed one member per persona:
+   * two cohorts on one persona both matched the first member and shared its cadence, which is
+   * precisely what made "25 weekend planners every 10 minutes and 9 sceptics every hour" a
+   * population you could describe and not run.
+   */
   private cadenceOf(agent: Agent): Cadence {
     const population = this.options.config.population;
-    const member = population.members.find((m) => m.persona.id === agent.persona.id);
+    const member = population.members.find((m) => m.cohort === agent.cohortSlug);
     return member ? cadenceFor(population, member) : population.cadence;
   }
 
@@ -56,7 +62,7 @@ export class LocalDaemon {
    */
   private async seedFromParent(parentRunId: string): Promise<Map<string, Agent>> {
     const seeded = new Map<string, Agent>();
-    const parents = await this.store.listAgents({ runId: parentRunId, populationId: this.options.config.population.id });
+    const parents = await this.store.listAgents({ runId: parentRunId });
     for (const parent of parents) {
       const wakes = await this.store.listWakes({ runIds: [parentRunId], agentId: parent.id });
       const last = wakes[wakes.length - 1];
@@ -79,8 +85,8 @@ export class LocalDaemon {
 
   /** Creates (or reconciles) the agents for the population and schedules their first wakes. */
   async reconcile(now: Date = new Date()): Promise<Agent[]> {
-    const expanded = expandPopulation(this.options.config.population, this.options.runId, now);
-    const existing = await this.store.listAgents({ runId: this.options.runId, populationId: this.options.config.population.id });
+    const expanded = expandPopulation(this.options.config.population, this.options.runId, this.options.config.simulation.id, now);
+    const existing = await this.store.listAgents({ runId: this.options.runId });
     // A continuation seeds from the parent run, but only before this run has agents of its own.
     const continuing = this.options.continueFrom !== undefined;
     const inherited = continuing && existing.length === 0 ? await this.seedFromParent(this.options.continueFrom as string) : new Map<string, Agent>();
@@ -121,7 +127,7 @@ export class LocalDaemon {
   async tick(now: Date = new Date()): Promise<number> {
     const free = this.options.config.daemon.concurrency - this.inFlight;
     if (free <= 0) return 0;
-    const due = await this.store.listDueAgents(now, free);
+    const due = await this.store.listDueAgents(this.options.runId, now, free);
     await Promise.all(
       due.map(async (agent) => {
         // Claim: push nextWakeAt into the future so a concurrent tick does not pick it up again.
@@ -157,7 +163,7 @@ export class LocalDaemon {
         } catch (err) {
           this.deps.log?.(`[daemon] tick failed: ${err instanceof Error ? err.message : String(err)}`);
         }
-        const active = await this.store.listAgents({ runId: this.options.runId, populationId: this.options.config.population.id, status: "active" });
+        const active = await this.store.listAgents({ runId: this.options.runId, status: "active" });
         const limitReached = this.options.stopAfterTotalWakes !== undefined && this.totalWakes >= this.options.stopAfterTotalWakes;
         if ((active.length === 0 && this.inFlight === 0) || limitReached) {
           this.running = false;
