@@ -42,8 +42,11 @@ export function parseQuery<T>(c: Context, schema: z.ZodType<T>): Parsed<T> {
 }
 
 /** Parses a JSON request body. A body that is not JSON at all is a bad request, not a crash. */
+// eslint-disable-next-line no-restricted-syntax -- HTTP boundary: the body is parsed against a contract schema below.
+type JsonBody = unknown;
+
 export async function parseBody<T>(c: Context, schema: z.ZodType<T>): Promise<Parsed<T>> {
-  let raw: unknown;
+  let raw: JsonBody;
   try {
     // eslint-disable-next-line no-restricted-syntax -- HTTP boundary: parsed against the contract schema below.
     raw = (await c.req.json()) as unknown;

@@ -1,10 +1,11 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { EffortSchema, expandPopulation, parseDuration, tagForRun, type Agent } from "@populace/core";
-import { LocalDaemon, McpSession, runWake, type WakeResult } from "@populace/runner";
+import { EffortSchema, ModelConfigSchema, expandPopulation, parseDuration, tagForRun, type Agent } from "@populace/core";
+import { AnthropicProvider, LocalDaemon, McpSession, runWake, type ModelProvider, type WakeResult } from "@populace/runner";
 import { buildDigest, exporterNamed, renderDigestMarkdown, verifyPending } from "@populace/reports";
 import { parseDocument } from "yaml";
-import { loadConfig, storePath } from "./config.js";
+import { DEFAULT_STORE_PATH, loadConfig, loadConfigIfPresent, storePath } from "./config.js";
+import { SqliteStore } from "@populace/store-sqlite";
 import { openContext, type CliContext } from "./context.js";
 import { configTemplate } from "./template.js";
 
@@ -282,37 +283,43 @@ export async function status(options: GlobalOptions): Promise<string[]> {
  * lock (ADR-0022), at which point `serve` and `run` stop being safe to use at the same time.
  */
 export async function serve(options: GlobalOptions & { port?: number; host?: string; readOnly?: boolean; force?: boolean }): Promise<{ url: string; close: () => Promise<void> }> {
-  const ctx = openContext(options);
+  // `serve` is the one command that works without a config file: from M2 the database is the
+  // source of truth, and a new user's first act is to set a target up in the browser (ADR-0025).
+  const loaded = loadConfigIfPresent(options.config ?? "populace.yaml");
+  const path = loaded ? storePath(loaded) : resolve(DEFAULT_STORE_PATH);
+  const store = new SqliteStore(path);
+  const log = options.quiet ? (): void => undefined : (line: string): void => console.log(line);
+  const apiKey = process.env.ANTHROPIC_API_KEY ?? loaded?.config.model.apiKey;
+  let provider: ModelProvider | null = null;
   const { startServer } = await import("@populace/server");
-  const hasKey = Boolean(process.env.ANTHROPIC_API_KEY ?? ctx.loaded.config.model.apiKey);
+
   try {
     const server = await startServer({
-      store: ctx.store,
-      storePath: storePath(ctx.loaded),
+      store,
+      storePath: path,
       version: VERSION,
-      processConfig: { store: ctx.loaded.config.store, digestDir: ctx.loaded.config.digestDir },
-      // From M2 the database is the source of truth (ADR-0025). The file is imported the first
-      // time a store is opened and is an export target thereafter, so nothing is authoritative in
-      // two places.
-      seedConfig: ctx.loaded.config,
-      ...(hasKey ? { provider: () => ctx.provider() } : {}),
+      processConfig: { store: loaded?.config.store ?? { kind: "sqlite", path }, digestDir: loaded?.config.digestDir ?? "digests" },
+      // Import, not sync: the file seeds an empty project once and is an export target after that.
+      ...(loaded ? { seedConfig: loaded.config } : {}),
+      ...(apiKey ? { provider: () => (provider ??= new AnthropicProvider(loaded?.config.model ?? ModelConfigSchema.parse({}))) } : {}),
       ...(options.readOnly ? { readOnly: true } : {}),
       ...(options.force ? { force: true } : {}),
       ...(options.port !== undefined ? { port: options.port } : {}),
       ...(options.host !== undefined ? { host: options.host } : {}),
-      log: (line) => ctx.log(line),
+      log,
     });
-    if (!hasKey) ctx.log("no ANTHROPIC_API_KEY: the dashboard will open, but nothing that calls the model can run.");
-    ctx.log("Ctrl-C to stop.");
+    if (!loaded) log("no populace.yaml here: set a target up in the dashboard, and export one when you want it in a repo.");
+    if (!apiKey) log("no ANTHROPIC_API_KEY: the dashboard will open, but nothing that calls the model can run.");
+    log("Ctrl-C to stop.");
     return {
       url: server.url,
       close: async () => {
         await server.close();
-        await ctx.close();
+        await store.close();
       },
     };
   } catch (err) {
-    await ctx.close();
+    await store.close();
     throw err;
   }
 }

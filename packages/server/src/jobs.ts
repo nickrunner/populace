@@ -9,7 +9,11 @@ import { newJobId, type Job, type JobKind, type Store } from "@populace/core";
  * a run, and two of those touching the same store at once buys nothing. In M5 the same table is
  * the queue hosted workers pull from and the concurrency question moves there.
  */
-export type JobHandler = (job: Job, report: (progress: Partial<Job["progress"]>) => Promise<void>) => Promise<{ runId?: string } | void>;
+/** A handler may name the run it produced, so the job row can point at it afterwards. */
+export interface JobOutcome {
+  runId?: string;
+}
+export type JobHandler = (job: Job, report: (progress: Partial<Job["progress"]>) => Promise<void>) => Promise<JobOutcome | undefined>;
 
 export class JobRunner {
   private readonly queue: { job: Job; handler: JobHandler }[] = [];
@@ -53,7 +57,15 @@ export class JobRunner {
       for (let next = this.queue.shift(); next !== undefined; next = this.queue.shift()) {
         let job: Job = { ...next.job, status: "running", startedAt: new Date().toISOString() };
         await this.save(job);
+        // A settled job never changes again. `run.start` outlives its own handler — the handler
+        // returns once the run row exists and the daemon keeps ticking behind it — so its progress
+        // callback goes on firing for every visit long after the job succeeded. Writing those
+        // would leave a finished job with a moving progress count, and put a "run.start:
+        // succeeded" line on the live feed once per visit. Progress after the fact belongs to the
+        // run, which has its own events.
+        let settled = false;
         const report = async (progress: Partial<Job["progress"]>): Promise<void> => {
+          if (settled) return;
           job = { ...job, progress: { ...job.progress, ...progress } };
           await this.save(job);
         };
@@ -65,6 +77,7 @@ export class JobRunner {
           this.log(`job ${job.id} (${job.kind}) failed: ${message}`);
           job = { ...job, status: "failed", error: message, endedAt: new Date().toISOString() };
         }
+        settled = true;
         await this.save(job);
       }
     } finally {

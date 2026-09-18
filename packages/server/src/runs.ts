@@ -187,6 +187,11 @@ export class RunController {
     return fixed;
   }
 
+  /** Resolves once a run this process is driving has settled. Returns at once for any other. */
+  async settled(runId: string): Promise<void> {
+    await this.active.get(runId)?.finished;
+  }
+
   /** Stops every in-flight run without engaging the kill switch. Used when `serve` shuts down. */
   async shutdown(): Promise<void> {
     await Promise.all(

@@ -11,7 +11,7 @@
   "scripts": {
     "build": "tsc -b tsconfig.build.json && pnpm --filter @populace/web build",
     "clean": "rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && pnpm --filter @populace/web typecheck",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",

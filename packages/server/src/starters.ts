@@ -1,4 +1,5 @@
 import { PersonaSpecSchema, type PersonaSpec } from "@populace/core";
+import type { z } from "zod";
 
 /**
  * The starter library: six people you can put in front of anything with an MCP server, each one
@@ -18,9 +19,11 @@ export interface StarterPersona {
   spec: PersonaSpec;
 }
 
-function starter(slug: string, summary: string, spec: Omit<Parameters<typeof PersonaSpecSchema.parse>[0] & object, "id">): StarterPersona {
-  // eslint-disable-next-line no-restricted-syntax -- literal boundary: the spec is parsed against its schema on the next line.
-  return { slug, summary, spec: PersonaSpecSchema.parse({ ...(spec as object), id: slug }) };
+/** The spec as written below, before its schema fills in every default. `id` comes from the slug. */
+type StarterSpec = Omit<z.input<typeof PersonaSpecSchema>, "id">;
+
+function starter(slug: string, summary: string, spec: StarterSpec): StarterPersona {
+  return { slug, summary, spec: PersonaSpecSchema.parse({ ...spec, id: slug }) };
 }
 
 export const STARTER_PERSONAS: StarterPersona[] = [

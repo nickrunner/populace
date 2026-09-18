@@ -112,6 +112,13 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     const orphanJobs = await jobs.reconcileOrphans();
     if (orphanRuns + orphanJobs > 0) log(`populace serve: marked ${orphanRuns} run(s) and ${orphanJobs} job(s) as failed after an earlier process stopped`);
 
+    const configForRun = async (runId: string): Promise<PopulaceConfig> => {
+      const run = await store.getRun(runId);
+      const snapshot = run?.configSnapshotId ? await store.getConfigSnapshot(run.configSnapshotId) : undefined;
+      if (snapshot) return snapshot.config;
+      return (await resolveProjectConfig(store, processConfig, projectId)).config;
+    };
+
     control = {
       store,
       projectId,
@@ -121,15 +128,10 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
       jobs,
       runs,
       hub,
-      configForRun: async (runId: string): Promise<PopulaceConfig> => {
-        const run = await store.getRun(runId);
-        const snapshot = run?.configSnapshotId ? await store.getConfigSnapshot(run.configSnapshotId) : undefined;
-        if (snapshot) return snapshot.config;
-        return (await resolveProjectConfig(store, processConfig, projectId)).config;
-      },
+      configForRun,
       sweep: async (runId: string, sweepOptions: SweepOptions, report: (progress: Partial<Job["progress"]>) => Promise<void>) => {
         await report({ label: "finding the accounts this run created" });
-        const config = await control!.configForRun(runId);
+        const config = await configForRun(runId);
         const result = await sweepRun(store, config, runId, sweepOptions);
         for (const line of result.lines) log(`populace sweep: ${line}`);
         return result;

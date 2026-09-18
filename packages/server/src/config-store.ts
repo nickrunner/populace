@@ -5,7 +5,9 @@ import {
   newPersonaId,
   newPopulationId,
   newTargetId,
+  JsonValueSchema,
   type ConfigSnapshot,
+  type JsonValue,
   type PopulaceConfig,
   type Project,
   type Store,
@@ -241,11 +243,16 @@ export function redactConfig(config: PopulaceConfig): { config: PopulaceConfig; 
   return { config: { ...config, target: { ...config.target, mcp }, model }, redacted };
 }
 
-function stableStringify(value: unknown): string {
+/**
+ * `JSON.stringify` with object keys ordered, so the hash is over the config's content rather than
+ * over whatever order the assembler happened to build it in. The value is a zod-parsed
+ * `PopulaceConfig`, so it is JSON by construction; `JsonValue` is what says so to the compiler.
+ */
+function stableStringify(value: JsonValue): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
+  const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v === undefined ? null : v)}`).join(",")}}`;
 }
 
 /**
@@ -255,7 +262,8 @@ function stableStringify(value: unknown): string {
  */
 export async function snapshotConfig(store: Store, config: PopulaceConfig): Promise<ConfigSnapshot> {
   const { config: safe, redacted } = redactConfig(config);
-  const hash = `sha256:${createHash("sha256").update(stableStringify(safe)).digest("hex").slice(0, 32)}`;
+  // eslint-disable-next-line no-restricted-syntax -- a zod-parsed config is JSON by construction; JsonValueSchema proves it here.
+  const hash = `sha256:${createHash("sha256").update(stableStringify(JsonValueSchema.parse(JSON.parse(JSON.stringify(safe)) as unknown))).digest("hex").slice(0, 32)}`;
   const existing = await store.findConfigSnapshotByHash(hash);
   if (existing) return existing;
   const snapshot: ConfigSnapshot = { id: `cfg_${hash.slice(7, 19)}`, createdAt: now(), hash, config: safe, redacted };

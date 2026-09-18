@@ -106,15 +106,27 @@ const ACTION = /\b(create|add|make|track|organi[sz]e|search|find|share|comment|d
  * it is a coverage gap found before a visit is spent — the pre-run version of what the digest
  * reports afterwards.
  *
- * It is a word-overlap heuristic and is presented as one. It exists to point somewhere, and a
- * promise it gets wrong costs a glance; the population is still what finds the real gaps.
+ * Matching is on the *verb and its object*, not on word overlap. Plain overlap reads "Delete tasks
+ * you no longer need" as kept by `delete_project`, because both say delete and both say task, and
+ * that is the one promise the reference app deliberately does not keep — a matcher that misses it
+ * would be worse than none. So a tool keeps a promise when it shares the promise's verb *and*
+ * names the same thing, or when its own description says enough about the promise to stand in.
+ *
+ * It is still a heuristic and the screen presents it as one. It exists to point somewhere; the
+ * population is what finds the real gaps.
  */
 export async function checkPromises(webBaseUrl: string | null, tools: { name: string; description: string }[]): Promise<TargetPromises> {
   if (!webBaseUrl) return { fetched: false, url: null, error: "no web address is set for this target", promises: [] };
   const page = await fetchPageText(webBaseUrl, "/", 40_000);
   if (!page.ok) return { fetched: false, url: webBaseUrl, error: page.error, promises: [] };
 
-  const vocabulary = tools.map((t) => ({ name: t.name, words: words(`${t.name.replace(/[_-]+/g, " ")} ${t.description}`) }));
+  const vocabulary = tools.map((tool) => {
+    // `search_tasks` is (search, task); `get_product_info` is (get, {product, info}).
+    const parts = tool.name.split(/[_-]+/).filter(Boolean).map((w) => singular(w.toLowerCase()));
+    const verb = parts[0] ?? tool.name.toLowerCase();
+    return { name: tool.name, verb, objects: new Set(parts.slice(1)), description: words(tool.description) };
+  });
+
   const seen = new Set<string>();
   const promises: TargetPromises["promises"] = [];
   for (const candidate of candidatePromises(page.text)) {
@@ -122,14 +134,22 @@ export async function checkPromises(webBaseUrl: string | null, tools: { name: st
     if (seen.has(key)) continue;
     seen.add(key);
     const claim = words(candidate);
-    let best: { name: string; score: number } | null = null;
+    let matched: string | null = null;
     for (const tool of vocabulary) {
-      const overlap = [...claim].filter((w) => tool.words.has(w)).length;
-      if (overlap > (best?.score ?? 0)) best = { name: tool.name, score: overlap };
+      if (!claim.has(tool.verb)) continue;
+      // Same verb and the same thing: `create_project` for "Create projects".
+      if ([...tool.objects].some((object) => claim.has(object))) {
+        matched = tool.name;
+        break;
+      }
+      // Same verb, different noun: only stands in when the tool's own description says enough
+      // about this promise on its own. Two words beyond the verb is the line between
+      // "Search your tasks… on title and notes" answering "search across titles and notes", and
+      // `delete_project` answering "delete tasks".
+      const support = [...claim].filter((word) => word !== tool.verb && tool.description.has(word)).length;
+      if (support >= 2) matched = tool.name;
     }
-    // Two shared content words is the line between "this is that tool" and "both mention tasks".
-    const kept = (best?.score ?? 0) >= 2;
-    promises.push({ text: candidate, kept, matchedTool: kept && best ? best.name : null });
+    promises.push({ text: candidate, kept: matched !== null, matchedTool: matched });
     if (promises.length >= 40) break;
   }
   return { fetched: true, url: webBaseUrl, error: null, promises };

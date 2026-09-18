@@ -124,12 +124,12 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.json(targetView(target), 201);
   });
 
-  app.get(`${routes.targets}/:id`, async (c) => {
+  app.get(routes.target_(":id"), async (c) => {
     const target = await deps.store.getTarget(param(c, "id"));
     return target ? c.json(targetView(target)) : fail(c, "not_found", "no such target");
   });
 
-  app.put(`${routes.targets}/:id`, async (c) => {
+  app.put(routes.target_(":id"), async (c) => {
     const existing = await deps.store.getTarget(param(c, "id"));
     if (!existing) return fail(c, "not_found", "no such target");
     const body = await parseBody(c, TargetInputSchema);
@@ -147,7 +147,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.json(targetView(updated));
   });
 
-  app.delete(`${routes.targets}/:id`, async (c) => {
+  app.delete(routes.target_(":id"), async (c) => {
     await deps.store.deleteTarget(param(c, "id"));
     return c.body(null, 204);
   });
@@ -157,7 +157,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
    * side even though it costs nothing here, and a link that a browser may prefetch should not do
    * it.
    */
-  app.post(`${routes.targets}/:id/check`, async (c) => {
+  app.post(routes.targetCheck(":id"), async (c) => {
     const target = await deps.store.getTarget(param(c, "id"));
     if (!target) return fail(c, "not_found", "no such target");
     return c.json(await checkTarget(target.mcp, target.identity));
@@ -170,7 +170,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.json(await checkTarget(mergeEndpoints(body.value.mcp, []), body.value.identity));
   });
 
-  app.get(`${routes.targets}/:id/promises`, async (c) => {
+  app.get(routes.targetPromises(":id"), async (c) => {
     const target = await deps.store.getTarget(param(c, "id"));
     if (!target) return fail(c, "not_found", "no such target");
     const check = await checkTarget(target.mcp, target.identity);
@@ -415,6 +415,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       "sweep",
       async (_job, report) => {
         await deps.sweep(runId, body.value, report);
+        return undefined;
       },
       { runId, label: "removing the accounts this run created" },
     );
@@ -435,6 +436,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
         const wakes = await deps.store.listWakes({ runIds: [runId] });
         const since = wakes[0]?.startedAt ? new Date(wakes[0].startedAt) : new Date(0);
         await buildDigest({ store: deps.store, config, since, until: new Date(), runIds: [runId] });
+        return undefined;
       },
       { runId, label: "building the digest" },
     );
@@ -514,7 +516,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
    * One stream for the whole screen (ADR-0026). Everything before `after` comes from the table, so
    * a reconnecting browser replays the gap instead of losing it; everything after arrives live.
    */
-  app.get(routes.events, async (c) => {
+  app.get(routes.events, (c) => {
     const q = parseQuery(c, EventStreamQuerySchema);
     if (!q.ok) return q.response;
     // `Last-EventID` is what EventSource sends by itself on a reconnect, so it wins over a cursor
