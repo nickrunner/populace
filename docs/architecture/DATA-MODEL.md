@@ -118,7 +118,7 @@ reports.
 
 ## 5. Config as rows (M2)
 
-The authored layer, once the database is the source of truth (ADR-0024, pending D3).
+The authored layer, once the database is the source of truth (ADR-0025, decided D3).
 
 ```ts
 Project   { id, name, createdAt }                        // "default" exists implicitly until M4

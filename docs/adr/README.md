@@ -28,7 +28,7 @@ One record per fixed decision from the kickoff brief, plus the routine calls mad
 | [0022](0022-serve-owns-the-store.md) | `populace serve` is one process and owns the store |
 | [0023](0023-http-api-contract.md) | REST API under a zod contract, loopback by default |
 | [0024](0024-runs-are-first-class.md) | Runs are first-class and carry a frozen config snapshot |
-| [0025](0025-config-source-of-truth.md) | The store becomes the source of truth for configuration at M2 *(proposed)* |
+| [0025](0025-config-source-of-truth.md) | The store becomes the source of truth for configuration at M2 |
 | [0026](0026-sse-event-log.md) | Live updates over SSE, backed by a persisted event log |
 | [0027](0027-persisted-jobs.md) | Long-running operations are persisted jobs |
 | [0028](0028-triage-keyed-by-cluster-signature.md) | Triage is keyed by cluster signature, not by finding id |

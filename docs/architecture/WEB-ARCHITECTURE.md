@@ -184,10 +184,10 @@ isomorphic. Run summaries are *derived*, not stored (see `DATA-MODEL.md` §3). D
 roadmap acceptance clauses pass against the mock target.
 
 **M2 — control and authoring.** The event log and SSE. The job runner. The daemon hosted in
-`serve`. Config entities become rows and the database becomes the source of truth (ADR-0024,
-pending Nick's confirmation of D3). The target wizard, persona editor and starter library. Cost
-estimation before a run starts. This rung is roughly twice any other and is split by surface
-depth if it must split, never by audience.
+`serve`. Config entities become rows and the database becomes the source of truth (ADR-0025,
+decided D3). The target wizard, persona editor and starter library. Cost estimation before a
+run starts. This rung is roughly twice any other and is split by surface depth if it must
+split, never by audience.
 
 **M3 — the loop.** Cluster signatures persisted, triage state attached to them rather than to
 finding rows (ADR-0027), run comparison, "re-run the people who complained" as a job over

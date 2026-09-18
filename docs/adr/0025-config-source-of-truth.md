@@ -1,6 +1,6 @@
 # ADR-0025: The store becomes the source of truth for configuration at M2
 
-**Status:** proposed — this is roadmap decision D3, escalated to Nick
+**Status:** accepted 2026-09-18 (roadmap decision D3). Nick's reason: users will author config through the dashboard anyway, so the database is where it should move.
 
 ## Decision
 
