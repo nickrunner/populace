@@ -280,7 +280,7 @@ export function Target() {
               </div>
             </>
           ) : draft.strategy === "static" ? (
-            <Field label="Accounts file" hint="JSON, keyed by person id, holding the tokens to use.">
+            <Field label="Accounts file" hint={'JSON keyed by cohort — { "byCohort": { "<cohort slug>": [ { "bearerToken": "..." } ] } } — with one entry per person. These accounts are yours: a clean-up leaves them alone.'}>
               <Input value={draft.staticFile} onChange={(v) => set("staticFile", v)} placeholder="accounts.json" mono />
             </Field>
           ) : (

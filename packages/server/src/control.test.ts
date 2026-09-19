@@ -166,7 +166,7 @@ async function harness(options: { hasApiKey?: boolean; seed?: boolean; policy?: 
       runs,
       hub,
       configForRun: async () => (await resolveProject(store)).config,
-      sweep: () => Promise.resolve({ identities: 0, removed: 0, failures: 0, lines: [] }),
+      sweep: () => Promise.resolve({ identities: 0, removed: 0, preExisting: 0, stranded: 0, failures: 0, lines: [] }),
     },
   });
   return {

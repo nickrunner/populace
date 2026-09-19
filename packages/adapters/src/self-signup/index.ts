@@ -21,6 +21,16 @@ export class SelfSignupProvider implements IdentityProvider {
   constructor(private readonly config: SelfSignupConfig) {}
 
   /**
+   * With no `teardownTool` there is nothing to call, so a sweep removes nothing — and must say so.
+   * The accounts ARE populace's (it signed them up), which is why this is not `ownsAccounts:
+   * false`: they exist on the user's product, under this run's tag, and only the run's own rows
+   * still record which ones they are.
+   */
+  get cannotRemove(): string | undefined {
+    return this.config.teardownTool ? undefined : "this target has no teardown tool configured (identity.teardownTool), so populace cannot delete the accounts the population signed up for";
+  }
+
+  /**
    * The local part is the PERSON's handle, not `slugify(persona.id)-${ordinal + 1}`: that collided
    * the moment two cohorts shared a persona, and a colliding signup email means the second cohort
    * cannot make an account at all. The display name is the person's name for the same reason — a

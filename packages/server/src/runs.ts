@@ -1,5 +1,5 @@
 import { identityProviderFor } from "@populace/adapters";
-import { newRunId, tagForRun, type JsonValue, type PauseReason, type PopulaceConfig, type Run, type Store } from "@populace/core";
+import { expandPopulation, newRunId, tagForRun, type JsonValue, type PauseReason, type PopulaceConfig, type Run, type Store } from "@populace/core";
 import { LocalDaemon, type ModelProvider, type WakeResult } from "@populace/runner";
 import { snapshotConfig, withLiveSecrets } from "./config-store.js";
 import { sweepRun } from "./sweep.js";
@@ -121,6 +121,13 @@ export class RunController {
     if (kill.engaged) throw new Error(`everything is stopped${kill.reason ? ` (${kill.reason})` : ""}; release the stop before starting a run`);
 
     const config = options.config;
+    // Before the run row, before the snapshot, and — the reason it is this early — before an
+    // ephemeral start RESETS THE TARGET. The identity provider only ever sees one agent, so a pool
+    // too small for the population, or one legacy pool serving two cohorts that both number their
+    // people from 1, is invisible to it and would quietly hand two people the same login.
+    const identityProblems = identityProviderFor(config.identity).checkPopulation?.(expandPopulation(config.population, "preflight", options.simulationId).map((e) => e.agent)) ?? [];
+    if (identityProblems.length > 0) throw new Error(`this run cannot start — every person needs their own account: ${identityProblems.join("; ")}`);
+
     const snapshot = await snapshotConfig(this.store, config);
     const runId = newRunId();
     const startedAt = new Date().toISOString();
@@ -267,7 +274,11 @@ export class RunController {
         runId: run.id,
         wakeId: null,
         type: "run.status",
-        payload: { action: "swept", identities: result.identities, removed: result.removed, failures: result.failures },
+        // `preExisting` and `stranded` travel with `removed`, or the event reads `removed: 0` on a
+        // run whose accounts were deliberately left alone (a static pool) or could not be deleted
+        // at all (no teardown tool) — which is the "the numbers do not say what happened" shape
+        // this change exists to remove, just moved into the run's event log.
+        payload: { action: "swept", identities: result.identities, removed: result.removed, preExisting: result.preExisting, stranded: result.stranded, failures: result.failures },
       });
     } catch (err) {
       this.deps.log?.(`[run ${run.id}] the accounts could not be swept: ${err instanceof Error ? err.message : String(err)}`);
@@ -339,10 +350,15 @@ export class RunController {
     if (kill.engaged) throw new Error(`everything is stopped${kill.reason ? ` (${kill.reason})` : ""}; release the stop before picking a run back up`);
 
     const config = await this.configFor(run);
-    const resumed: Run = { ...run, status: "running", pauseReason: null, resumes: run.resumes + 1, lastResumedAt: new Date().toISOString(), endedAt: null };
-    await this.store.saveRun(resumed);
+    // Built and reconciled BEFORE the row says `running`. `reconcile()` refuses a population its
+    // identity provider cannot serve, and building the provider re-reads the static pool file,
+    // which may have been edited, moved or outgrown while the run sat paused. A throw after the
+    // row had been written left it claiming `running` with no daemon behind it — and `resume`
+    // refuses anything that is not `paused`, so the user could not even try again.
     const daemon = this.build(runId, config, undefined, onProgress);
     const agents = await daemon.reconcile();
+    const resumed: Run = { ...run, status: "running", pauseReason: null, resumes: run.resumes + 1, lastResumedAt: new Date().toISOString(), endedAt: null };
+    await this.store.saveRun(resumed);
     await this.store.appendEvent({ runId, wakeId: null, type: "run.status", payload: { action: "resumed", resumes: resumed.resumes, agents: agents.length } });
     const finished = this.drive(runId, daemon, config);
     this.active.set(runId, { daemon, config, stopping: null, pauseReason: "user", finished });
@@ -387,6 +403,33 @@ export class RunController {
     const snapshot = await snapshotConfig(this.store, config);
     if (snapshot.id === run.configSnapshotId) return run;
     const before = run.configSnapshotId ? await this.store.getConfigSnapshot(run.configSnapshotId) : undefined;
+    const entry = this.active.get(runId);
+    const previous = entry?.config;
+    // Reconcile first; commit nothing until it has agreed. `reconcile()` refuses a population its
+    // identity provider cannot serve — growing a cohort past what the static pool holds is exactly
+    // what that check is for — and writing the row first made the RETRY a silent no-op: a config
+    // snapshot is content-addressed and the pool file's CONTENTS are not part of the config, only
+    // its path, so adding the missing entries and asking again mints the same snapshot id, matches
+    // the row the failed attempt had already written, and returns early having changed nothing
+    // while answering as though the change had gone through.
+    try {
+      if (entry) {
+        entry.config = config;
+        entry.daemon.applyConfig(config);
+        // Added cohorts get fresh participants at visit 1, removed ones retire as `scaled-down`, and
+        // everybody else keeps their memory — which is what `reconcile()` has always done.
+        await entry.daemon.reconcile();
+      } else {
+        await this.build(runId, config, undefined).reconcile();
+      }
+    } catch (err) {
+      // A refused change changes nothing: the live daemon goes back to the plan it was executing.
+      if (entry && previous) {
+        entry.config = previous;
+        entry.daemon.applyConfig(previous);
+      }
+      throw err;
+    }
     const updated: Run = { ...run, configSnapshotId: snapshot.id, populationId: config.population.id };
     await this.store.saveRun(updated);
     await this.store.appendEvent({
@@ -395,16 +438,6 @@ export class RunController {
       type: "run.config",
       payload: { from: run.configSnapshotId, to: snapshot.id, ...cohortChanges(before?.config, config) },
     });
-    const entry = this.active.get(runId);
-    if (entry) {
-      entry.config = config;
-      entry.daemon.applyConfig(config);
-      // Added cohorts get fresh participants at visit 1, removed ones retire as `scaled-down`, and
-      // everybody else keeps their memory — which is what `reconcile()` has always done.
-      await entry.daemon.reconcile();
-    } else {
-      await this.build(runId, config, undefined).reconcile();
-    }
     return updated;
   }
 

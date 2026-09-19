@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Agent, Credential, Identity, JsonValue, TeardownDeps } from "@populace/core";
+import type { Agent, Credential, Identity, JsonValue, ProvisionResult, TeardownDeps } from "@populace/core";
 import { describe, expect, it, vi } from "vitest";
 import { FirebaseAdminProvider, SelfSignupProvider, StaticIdentityProvider, type FetchLike, type FirebaseAuthLike } from "./index.js";
 
@@ -82,15 +82,189 @@ describe("SelfSignupProvider", () => {
 });
 
 describe("StaticIdentityProvider", () => {
-  it("hands out credentials per persona", async () => {
+  /** Writes a pool file and returns its path; each test gets its own directory. */
+  function poolFile(contents: JsonValue): string {
     const dir = mkdtempSync(join(tmpdir(), "populace-static-"));
     const file = join(dir, "creds.json");
-    writeFileSync(file, JSON.stringify({ casual: [{ bearerToken: "a" }, { bearerToken: "b" }], "*": [{ bearerToken: "z" }] }));
+    writeFileSync(file, JSON.stringify(contents));
+    return file;
+  }
+
+  /** Person `ordinal` of `cohortSlug`, on `personaId`. */
+  function person(cohortSlug: string, ordinal: number, personaId = "casual"): Agent {
+    return {
+      ...agent,
+      id: `pop/${cohortSlug}#${ordinal + 1}`,
+      cohortSlug,
+      personId: `${cohortSlug}#${ordinal + 1}`,
+      handle: `person-${cohortSlug}-${ordinal + 1}`,
+      ordinal,
+      persona: { ...agent.persona, id: personaId },
+    };
+  }
+
+  const bearerOf = (result: ProvisionResult): string => (result.kind === "credential" ? (result.credential.bearerToken ?? "?") : "?");
+
+  it("hands out credentials per persona, one per person in cohort order", async () => {
+    const file = poolFile({ casual: [{ bearerToken: "a" }, { bearerToken: "b" }], "*": [{ bearerToken: "z" }] });
     const provider = new StaticIdentityProvider({ strategy: "static", file });
-    const first = await provider.provision(ctx);
-    const second = await provider.provision(ctx);
-    const third = await provider.provision({ ...ctx, agent: { ...agent, persona: { ...agent.persona, id: "other" } } });
-    expect([first, second, third].map((r) => (r.kind === "credential" ? r.credential.bearerToken : "?"))).toEqual(["a", "b", "z"]);
+    const first = await provider.provision({ ...ctx, agent: person("casual", 0) });
+    const second = await provider.provision({ ...ctx, agent: person("casual", 1) });
+    const third = await provider.provision({ ...ctx, agent: person("other-cohort", 0, "other") });
+    expect([first, second, third].map(bearerOf)).toEqual(["a", "b", "z"]);
+  });
+
+  /**
+   * The defect this replaces: `list[index % list.length]`. Ten people against three entries meant
+   * people 4-10 silently reused accounts 1-3 — several simulated people were literally the same
+   * account on the target, seeing each other's data, and a per-user-state defect was
+   * indistinguishable from two people sharing a login. Exhaustion is an error now.
+   */
+  it("refuses to wrap when the pool runs out, and says what to add", async () => {
+    const file = poolFile({ byCohort: { casual: [{ bearerToken: "a" }, { bearerToken: "b" }, { bearerToken: "c" }] } });
+    const provider = new StaticIdentityProvider({ strategy: "static", file });
+    const people = Array.from({ length: 10 }, (_, ordinal) => person("casual", ordinal));
+
+    const handed: string[] = [];
+    const failures: string[] = [];
+    for (const who of people) {
+      try {
+        handed.push(bearerOf(await provider.provision({ ...ctx, agent: who })));
+      } catch (err) {
+        failures.push(err instanceof Error ? err.message : String(err));
+      }
+    }
+    // Nobody got somebody else's account, and the seven who had none were told so.
+    expect(handed).toEqual(["a", "b", "c"]);
+    expect(new Set(handed).size).toBe(handed.length);
+    expect(failures).toHaveLength(7);
+    expect(failures[0]).toContain('"casual"');
+    expect(failures[0]).toContain("3 entries");
+    expect(failures[0]).toContain("4 people need an account");
+
+    // And the whole population is refused before a run starts, with the real shortfall.
+    const problems = provider.checkPopulation(people);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('"casual"');
+    expect(problems[0]).toContain("3 entries");
+    expect(problems[0]).toContain("10 people need an account");
+    expect(problems[0]).toContain("add 7 more entries");
+  });
+
+  /**
+   * The restart. The hand-out counter was a per-instance `Map`, so four people provisioning, a
+   * process restart and a fifth person meant entry 1 went out twice — and pause/resume makes a
+   * restart a routine part of a longitudinal simulation rather than an accident. Assignment is
+   * derived from the agent (cohort + ordinal), so a brand-new provider agrees with the old one.
+   */
+  it("assigns the same entry to the same person across provider instances", async () => {
+    const file = poolFile({ byCohort: { casual: [{ bearerToken: "a" }, { bearerToken: "b" }, { bearerToken: "c" }, { bearerToken: "d" }, { bearerToken: "e" }] } });
+    const people = Array.from({ length: 5 }, (_, ordinal) => person("casual", ordinal));
+
+    const before = new StaticIdentityProvider({ strategy: "static", file });
+    const early = await Promise.all(people.slice(0, 4).map((who) => before.provision({ ...ctx, agent: who }).then(bearerOf)));
+
+    // The process dies here. Nothing of it survives but the file.
+    const after = new StaticIdentityProvider({ strategy: "static", file });
+    const late = await Promise.all(people.slice(4).map((who) => after.provision({ ...ctx, agent: who }).then(bearerOf)));
+    const again = await Promise.all(people.slice(0, 4).map((who) => after.provision({ ...ctx, agent: who }).then(bearerOf)));
+
+    expect(new Set([...early, ...late]).size).toBe(5);
+    expect(again).toEqual(early);
+  });
+
+  /**
+   * Indexing by ordinal is only unambiguous when the pool belongs to ONE cohort: two cohorts on
+   * one persona both have a person 1. Cohort-keyed files are the answer and the preferred shape.
+   */
+  it("gives two cohorts sharing one persona two distinct entries from a cohort-keyed file", async () => {
+    const file = poolFile({ byCohort: { weekenders: [{ bearerToken: "w1" }, { bearerToken: "w2" }], sceptics: [{ bearerToken: "s1" }] } });
+    const provider = new StaticIdentityProvider({ strategy: "static", file });
+    const people = [person("weekenders", 0), person("weekenders", 1), person("sceptics", 0)];
+    const handed = await Promise.all(people.map((who) => provider.provision({ ...ctx, agent: who }).then(bearerOf)));
+    expect(handed).toEqual(["w1", "w2", "s1"]);
+    expect(provider.checkPopulation(people)).toEqual([]);
+  });
+
+  /** The legacy shapes are the shipped format and must keep working. */
+  it("still reads a flat array whose entries name their persona", async () => {
+    const file = poolFile([
+      { bearerToken: "a", personaId: "casual" },
+      { bearerToken: "b", personaId: "casual" },
+      { bearerToken: "z" },
+    ]);
+    const provider = new StaticIdentityProvider({ strategy: "static", file });
+    expect(bearerOf(await provider.provision({ ...ctx, agent: person("casual", 1) }))).toBe("b");
+    expect(bearerOf(await provider.provision({ ...ctx, agent: person("others", 0, "nobody") }))).toBe("z");
+  });
+
+  /**
+   * A persona-keyed pool serving two cohorts cannot be resolved by ordinal, and the provider —
+   * which sees one agent at a time — cannot tell. Refusing is the only honest answer.
+   */
+  it("refuses a persona-keyed pool that serves more than one cohort", () => {
+    const file = poolFile({ casual: [{ bearerToken: "a" }, { bearerToken: "b" }, { bearerToken: "c" }, { bearerToken: "d" }] });
+    const provider = new StaticIdentityProvider({ strategy: "static", file });
+    const problems = provider.checkPopulation([person("weekenders", 0), person("weekenders", 1), person("sceptics", 0), person("sceptics", 1)]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("sceptics");
+    expect(problems[0]).toContain("weekenders");
+    expect(problems[0]).toContain("byCohort");
+  });
+
+  /**
+   * A key the user WROTE is a key the error should name. `add` only created a pool key when it
+   * pushed an entry, so a persona list emptied out — rotated away, or left as `[]` — was not in
+   * the pool at all and the lookup fell through to the `"*"` fallback: the message then told them
+   * to add entries under a key their file does not contain, and never mentioned the one it does.
+   */
+  it("names the persona key the user wrote, even when they left its list empty", async () => {
+    const file = poolFile({ casual: [], other: [{ bearerToken: "o" }] });
+    const provider = new StaticIdentityProvider({ strategy: "static", file });
+    await expect(provider.provision({ ...ctx, agent: person("casual", 0) })).rejects.toThrow(/"casual"/);
+    const problems = provider.checkPopulation([person("casual", 0)]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('"casual"');
+    expect(problems[0]).not.toContain('under "*"');
+  });
+
+  it("refuses a pool that lists the same credential twice", () => {
+    const file = poolFile({ byCohort: { casual: [{ bearerToken: "same" }, { bearerToken: "same" }] } });
+    const provider = new StaticIdentityProvider({ strategy: "static", file });
+    const problems = new StaticIdentityProvider({ strategy: "static", file }).checkPopulation([person("casual", 0), person("casual", 1)]);
+    expect(provider.strategy).toBe("static");
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("same static credential");
+  });
+
+  /**
+   * Two bearers, one account: a second API key for the same user, or a rotated token pasted in
+   * beside the one it replaced. Matching on the bearer alone waved those through, and the two
+   * people holding them were then the same login on the target — seeing each other's data, filing
+   * "independent" reports that were nothing of the kind — while the run-start error claimed the
+   * stronger property that everyone had their own account.
+   */
+  it("refuses two entries that name one account with different bearer tokens", () => {
+    const file = poolFile({
+      byCohort: {
+        casual: [
+          { bearerToken: "old-key", userId: "u_1", email: "sam@example.test" },
+          { bearerToken: "rotated-key", userId: "u_1", email: "sam@example.test" },
+        ],
+      },
+    });
+    const problems = new StaticIdentityProvider({ strategy: "static", file }).checkPopulation([person("casual", 0), person("casual", 1)]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("same static credential");
+    expect(problems[0]).toContain("u_1");
+    // Never the token itself: these messages are printed and logged.
+    expect(problems[0]).not.toContain("rotated-key");
+  });
+
+  /** Static logins existed before populace and belong to whoever pasted them in; a sweep must not claim it removed them. */
+  it("declares that it does not own the accounts it hands out", () => {
+    const file = poolFile({ byCohort: { casual: [{ bearerToken: "a" }] } });
+    expect(new StaticIdentityProvider({ strategy: "static", file }).ownsAccounts).toBe(false);
   });
 
   /**

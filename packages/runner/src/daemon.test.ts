@@ -1,5 +1,9 @@
 import { SelfSignupProvider } from "@populace/adapters/self-signup";
-import { PopulaceConfigSchema, newRunId, type PopulaceConfig } from "@populace/core";
+import { StaticIdentityProvider } from "@populace/adapters/static";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PopulaceConfigSchema, newRunId, type JsonValue, type PopulaceConfig } from "@populace/core";
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
 import { SqliteStore } from "@populace/store-sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -185,6 +189,68 @@ describe("LocalDaemon retirement", () => {
     // And it is not silently replaced by a new agent wearing the same id: a continuation
     // reports on the cohort it inherited, it does not acquire users.
     expect(agents).toHaveLength(0);
+    await store.close();
+  });
+});
+
+/**
+ * `reconcile()` is where every path — `populace run`, a start from the dashboard, a resume —
+ * turns a population into agents, and the last moment before one of them wakes. A provider that
+ * cannot give every person their own account is asked here, because it only ever sees one agent
+ * and a collision is a property of the whole cast.
+ */
+describe("LocalDaemon identity checks", () => {
+  const persona = { id: "lister", name: "List keeper", role: "a hobbyist", backstory: "Has too many lists.", goals: ["keep a list"] };
+
+  function pool(contents: JsonValue): string {
+    const dir = mkdtempSync(join(tmpdir(), "populace-daemon-pool-"));
+    const file = join(dir, "creds.json");
+    writeFileSync(file, JSON.stringify(contents));
+    return file;
+  }
+
+  function twoCohorts(file: string): PopulaceConfig {
+    return PopulaceConfigSchema.parse({
+      target: { name: "Tasklet", mcp: [{ url: target.mcpUrl }] },
+      identity: { strategy: "static", file },
+      daemon: { tick: "10ms", concurrency: 1 },
+      population: {
+        id: "everyone",
+        cadence: { every: "1h" },
+        maxWakes: 1,
+        members: [
+          { cohort: "weekenders", cohortName: "Weekenders", persona, count: 2 },
+          { cohort: "sceptics", cohortName: "Sceptics", persona, count: 1 },
+        ],
+      },
+    });
+  }
+
+  it("refuses to create agents when one persona-keyed pool would serve two cohorts", async () => {
+    const loaded = twoCohorts(pool({ lister: [{ bearerToken: "a" }, { bearerToken: "b" }, { bearerToken: "c" }] }));
+    const store = new SqliteStore(":memory:");
+    const runId = newRunId();
+    const daemon = new LocalDaemon({ config: loaded, runId }, { store, provider: new ScriptedProvider(leaves), identityProvider: new StaticIdentityProvider(loaded.identity as never) });
+    await expect(daemon.reconcile()).rejects.toThrow(/weekenders.*sceptics|sceptics.*weekenders/s);
+    // Nothing was written: a refusal happens before the population exists, not halfway through it.
+    expect(await store.listAgents({ runId })).toHaveLength(0);
+    await store.close();
+  });
+
+  it("creates every agent when a cohort-keyed pool covers the whole cast", async () => {
+    const loaded = twoCohorts(pool({ byCohort: { weekenders: [{ bearerToken: "w1" }, { bearerToken: "w2" }], sceptics: [{ bearerToken: "s1" }] } }));
+    const store = new SqliteStore(":memory:");
+    const runId = newRunId();
+    const provider = new StaticIdentityProvider(loaded.identity as never);
+    const daemon = new LocalDaemon({ config: loaded, runId }, { store, provider: new ScriptedProvider(leaves), identityProvider: provider });
+    const agents = await daemon.reconcile();
+    expect(agents.map((a) => a.id)).toEqual(["everyone/weekenders#1", "everyone/weekenders#2", "everyone/sceptics#1"]);
+    // And each of them is given a different account.
+    const handed = await Promise.all(agents.map(async (agent) => {
+      const result = await provider.provision({ agent, runId, tag: "populace:test" });
+      return result.kind === "credential" ? result.credential.bearerToken : "?";
+    }));
+    expect(handed).toEqual(["w1", "w2", "s1"]);
     await store.close();
   });
 });

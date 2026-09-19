@@ -86,6 +86,11 @@ export class LocalDaemon {
   /** Creates (or reconciles) the agents for the population and schedules their first wakes. */
   async reconcile(now: Date = new Date()): Promise<Agent[]> {
     const expanded = expandPopulation(this.options.config.population, this.options.runId, this.options.config.simulation.id, now);
+    // The identity provider sees one agent at a time, so "every person gets their own account" can
+    // only be checked here, where the whole population is visible — and before any row is written
+    // or any wake is paid for. A run that will hand two people one login is worse than a refusal.
+    const problems = this.deps.identityProvider.checkPopulation?.(expanded.map((e) => e.agent)) ?? [];
+    if (problems.length > 0) throw new Error(`this population cannot be given identities: ${problems.join("; ")}`);
     const existing = await this.store.listAgents({ runId: this.options.runId });
     // A continuation seeds from the parent run, but only before this run has agents of its own.
     const continuing = this.options.continueFrom !== undefined;

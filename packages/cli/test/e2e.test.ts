@@ -128,14 +128,21 @@ describe("local daemon + CLI end to end", () => {
     expect(markdown).toContain("3 personas");
     expect(markdown).toMatch(/3 confirmed/);
 
-    // sweep tears down the three accounts on the target and removes run data
+    // A bare sweep tears down the three accounts on the target and KEEPS the evidence: the digest
+    // above is the reason the run happened, and losing it is asked for by name.
     const before = (await (await fetch(`${target.url}/admin/users?tag=populace:${runId}`, { headers: { "x-admin-token": target.adminToken } })).json()) as { users: object[] };
     expect(before.users).toHaveLength(3);
     const swept = await populace("sweep");
     expect(swept).toContain("3 identities tagged");
-    expect(swept).toContain("removed 3 agent(s), 9 wake(s), 6 finding(s)");
+    expect(swept).toContain("tore down");
+    expect(swept).not.toContain("removed 3 agent(s)");
     const after = (await (await fetch(`${target.url}/admin/users?tag=populace:${runId}`, { headers: { "x-admin-token": target.adminToken } })).json()) as { users: object[] };
     expect(after.users).toHaveLength(0);
+    expect(await populace("status")).toContain("3 agent(s), 9 wake(s), 6 finding(s)");
+
+    // --delete-data is the one that throws the run's rows away.
+    const deleted = await populace("sweep", "--delete-data");
+    expect(deleted).toContain("removed 3 agent(s), 9 wake(s), 6 finding(s)");
     expect(await populace("status")).toContain("0 agent(s), 0 wake(s), 0 finding(s)");
   });
 

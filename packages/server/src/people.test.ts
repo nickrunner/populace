@@ -86,7 +86,7 @@ async function harness(options: { size?: number; policy?: ScriptPolicy; provider
       runs,
       hub,
       configForRun: () => Promise.reject(new Error("no runs in this file")),
-      sweep: () => Promise.resolve({ identities: 0, removed: 0, failures: 0, lines: [] }),
+      sweep: () => Promise.resolve({ identities: 0, removed: 0, preExisting: 0, stranded: 0, failures: 0, lines: [] }),
     },
   });
   return { app, store, jobs, cohort, persona, calls: () => provider.requests.length, close: () => inner.close() };

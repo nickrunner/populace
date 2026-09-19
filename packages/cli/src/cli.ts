@@ -108,11 +108,12 @@ program
 
 program
   .command("sweep")
-  .description("tear down every identity the run created and remove its data")
+  .description("tear down every account the run created on the target; the run's wakes, traces and findings are kept")
   .option("--dry-run", "list what would be removed")
-  .option("--keep-data", "tear down identities but keep wakes, traces and findings")
+  .option("--keep-data", "(default, kept for scripts) keep wakes, traces and findings; wins if --delete-data is also given")
+  .option("--delete-data", "ALSO delete this run's wakes, traces and findings — the evidence it paid for, irreversibly")
   .option("--all-runs", "sweep every run in the store")
-  .action(async (opts: { dryRun?: boolean; keepData?: boolean; allRuns?: boolean }) => {
+  .action(async (opts: { dryRun?: boolean; keepData?: boolean; deleteData?: boolean; allRuns?: boolean }) => {
     try {
       const result = await sweep({ ...globals(), ...opts });
       if (result.failures > 0) process.exit(1);

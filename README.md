@@ -41,7 +41,8 @@ pnpm populace run             # Ctrl-C to stop; agents retire after maxWakes
 # 5. Verify, cluster and render the digest for the last 24 hours.
 pnpm populace digest          # writes digests/<date>-<id>.md (and .json)
 
-# 6. Remove every account the run created on the target and the run's data.
+# 6. Remove every account the run created on the target. The wakes, traces and
+#    findings are kept; `--delete-data` is what throws the evidence away.
 pnpm populace sweep
 ```
 
@@ -74,8 +75,11 @@ Edit `populace.yaml`:
 - `target.mcp[]`: one or more Streamable HTTP endpoints, with an optional static
   bearer token per endpoint and an optional `webBaseUrl` the agent may read pages from.
 - `identity`: `self-signup` (the agent signs up through your tools; name the
-  signup tool and where the token is in its result), `static` (a credentials
-  file), or `admin-mint` (Firebase Admin custom tokens; install `firebase-admin`).
+  signup tool and where the token is in its result), `static` (a pool of accounts
+  that already exist, in a JSON file keyed by cohort — `{ "byCohort": { "<slug>": [
+  { "bearerToken": "..." } ] } }`, one entry per person, and a sweep leaves them
+  alone because populace did not create them), or `admin-mint` (Firebase Admin
+  custom tokens; install `firebase-admin`).
 - `cohorts[]`: "N people on one persona" — a slug, a `size`, and optional `seed`,
   `cadence` and `maxWakes` overrides. **There is no scale factor: `size` is the only
   number that decides how many people exist.** Two cohorts may share one persona, which

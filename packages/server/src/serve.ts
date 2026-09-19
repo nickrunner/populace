@@ -166,6 +166,16 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
         const config = await configForRun(runId);
         const result = await sweepRun(store, config, runId, sweepOptions);
         for (const line of result.lines) log(`populace sweep: ${line}`);
+        // The honest sentence has to reach the BROWSER, not just this process's stdout: a static
+        // run otherwise showed a job called "removing the accounts this run created" completing
+        // happily with nothing anywhere saying the accounts were deliberately left in place.
+        const summary = [
+          result.removed > 0 ? `${result.removed} account(s) removed` : "",
+          result.preExisting > 0 ? `${result.preExisting} used pre-existing accounts; populace did not create them and has not removed them` : "",
+          result.stranded > 0 ? `${result.stranded} could not be removed and ${result.stranded === 1 ? "is" : "are"} still on the target` : "",
+          result.failures > 0 ? `${result.failures} failed` : "",
+        ].filter((part) => part !== "");
+        await report({ label: summary.length > 0 ? summary.join("; ") : "nothing was tagged for this run" });
         return result;
       },
     };

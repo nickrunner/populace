@@ -131,8 +131,14 @@ policy driven by MCP tool annotations (`destructiveHint`).
 `IdentityProvider.provision()` runs before the session. For `self-signup` it
 returns nothing and the agent signs up through the target's own tools; the
 interceptor recognises the configured signup tool, extracts the credential from
-its result and reconnects with the bearer token (ADR-0012). `static` reads a
-credentials file. `admin-mint` (Firebase Admin) creates a user with the run tag
+its result and reconnects with the bearer token (ADR-0012). `static` reads a pool
+of accounts that already exist from a JSON file, preferably keyed by cohort
+(`{ "byCohort": { "<cohortSlug>": [ … ] } }`); person n of a cohort is always
+handed entry n, which is the same in every process and after a restart, and a pool
+too small — or an older persona-keyed pool that would serve two cohorts, which both
+number their people from 1 — is refused when the run starts rather than wrapping
+round and giving two people one login. Those accounts are not populace's, so a
+sweep leaves them where they are and says so. `admin-mint` (Firebase Admin) creates a user with the run tag
 in its custom claims, mints a custom token and exchanges it at Google's identity
 toolkit for the ID token the target will actually accept — a custom token is not
 an ID token, so the exchange is the path, not an extra, and a config with neither
@@ -159,8 +165,16 @@ A redeemable outlives the bearer it mints, so it is treated as `bearerToken` is:
 never on the wire, never in a config snapshot, never in a trace.
 
 Every identity, wake and finding carries a run id (`run_...`) and a tag
-(`populace:run_...`). `populace sweep` tears down identities by tag and removes
-everything the run created (ADR-0010).
+(`populace:run_...`). `populace sweep` tears down identities by tag (ADR-0010).
+The run's wakes, traces and findings are KEPT: the evidence is what the run was
+for, and losing it is asked for by name with `--delete-data`. A provider that
+declares `ownsAccounts: false` created none of the accounts it handed out, so
+nothing is torn down and the sweep reports them as pre-existing instead of
+counting a no-op as a removal. A provider that declares `cannotRemove` DID create
+them and has no way to delete them — self-signup on a target with no
+`teardownTool` — so those are counted apart, said in words, and they hold back
+both the `sweptAt` stamp and `--delete-data`: the run's own rows are the only
+remaining record of which accounts were left on the product.
 
 ## Reports
 

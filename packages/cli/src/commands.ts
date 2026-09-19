@@ -1,5 +1,6 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { identityProviderFor } from "@populace/adapters";
 import { EffortSchema, ModelConfigSchema, expandPopulation, parseDuration, tagForRun, type Agent } from "@populace/core";
 import { AnthropicProvider, LocalDaemon, McpSession, runWake, type ModelProvider, type WakeResult } from "@populace/runner";
 import { buildDigest, exporterNamed, renderDigestMarkdown, verifyPending } from "@populace/reports";
@@ -49,6 +50,18 @@ export async function validate(options: GlobalOptions & { connect?: boolean }): 
   );
   lines.push(`population ${config.population.id}: ${config.population.members.length} cohort(s) -> ${agents.length} agent(s), cadence every ${config.population.cadence.every / 1000}s`);
   for (const { agent } of agents) lines.push(`  - ${agent.id} (${agent.name}, ${agent.persona.role}, patience ${agent.persona.patience}, budget $${agent.persona.budgetUsd})`);
+  // "Every person gets their own account" is a property of the whole cast, so it is checked where
+  // the cast is visible. A run refuses to start on it; `validate` is where the user finds out
+  // without starting one.
+  try {
+    for (const problem of identityProviderFor(config.identity).checkPopulation?.(agents.map((a) => a.agent)) ?? []) {
+      ok = false;
+      lines.push(`  ERROR ${problem}`);
+    }
+  } catch (err) {
+    ok = false;
+    lines.push(`identity ${config.identity.strategy}: ERROR ${err instanceof Error ? err.message : String(err)}`);
+  }
   if (options.connect !== false) {
     for (const endpoint of config.target.mcp) {
       const session = new McpSession(endpoint, undefined);
@@ -233,20 +246,43 @@ export async function digest(options: DigestOptions): Promise<{ markdown: string
 
 // ---- sweep -----------------------------------------------------------------
 
-export async function sweep(options: GlobalOptions & { dryRun?: boolean; keepData?: boolean; allRuns?: boolean }): Promise<{ identities: number; failures: number }> {
+/**
+ * `--delete-data` is the only way to lose the evidence.
+ *
+ * `--keep-data` used to be the flag and keeping the data the exception, so a bare `populace sweep`
+ * deleted the wakes, traces and findings the run had paid a model to produce — while the dashboard,
+ * calling the same function, defaulted the opposite way and kept them. Two defaults pointing in
+ * opposite directions, with the destructive one on the bare command. Keeping is now the default on
+ * both paths; `--keep-data` is still accepted so existing scripts and muscle memory keep working,
+ * and it now says what already happens.
+ *
+ * Asked for BOTH, the safe one wins. `--keep-data` reads as a guarantee, and a wrapper script that
+ * appends it defensively to a user-supplied argument list is worthless if the destructive flag
+ * quietly outranks it — the whole point of the change is that losing the evidence has to be asked
+ * for unambiguously.
+ */
+export async function sweep(options: GlobalOptions & { dryRun?: boolean; keepData?: boolean; deleteData?: boolean; allRuns?: boolean }): Promise<{ identities: number; removed: number; preExisting: number; stranded: number; failures: number }> {
   const ctx = openContext(options);
   const { sweepRun } = await import("@populace/server");
   try {
     const runIds = options.allRuns ? await ctx.store.listRunIds() : [ctx.runId];
+    const keepData = options.keepData === true || options.deleteData !== true;
+    if (options.keepData === true && options.deleteData === true) ctx.log("--keep-data and --delete-data ask for opposite things; keeping this run's wakes, traces and findings");
     let identities = 0;
+    let removed = 0;
+    let preExisting = 0;
+    let stranded = 0;
     let failures = 0;
     for (const runId of runIds) {
-      const result = await sweepRun(ctx.store, ctx.loaded.config, runId, { dryRun: options.dryRun === true, keepData: options.keepData === true });
+      const result = await sweepRun(ctx.store, ctx.loaded.config, runId, { dryRun: options.dryRun === true, keepData });
       for (const line of result.lines) ctx.log(line);
       identities += result.identities;
+      removed += result.removed;
+      preExisting += result.preExisting;
+      stranded += result.stranded;
       failures += result.failures;
     }
-    return { identities, failures };
+    return { identities, removed, preExisting, stranded, failures };
   } finally {
     await ctx.close();
   }
