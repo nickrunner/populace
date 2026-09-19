@@ -133,7 +133,30 @@ returns nothing and the agent signs up through the target's own tools; the
 interceptor recognises the configured signup tool, extracts the credential from
 its result and reconnects with the bearer token (ADR-0012). `static` reads a
 credentials file. `admin-mint` (Firebase Admin) creates a user with the run tag
-in its custom claims and mints a custom token.
+in its custom claims, mints a custom token and exchanges it at Google's identity
+toolkit for the ID token the target will actually accept — a custom token is not
+an ID token, so the exchange is the path, not an extra, and a config with neither
+`identity.apiKey` nor `identity.exchangeUrl` refuses to mint a session rather than
+hand back a token the target will bounce. That refusal is raised where a session
+is minted, not at construction, because `teardown` and `listByTag` go through the
+service account alone: a sweep must still be able to delete the users a
+misconfigured run left behind.
+
+A credential is redeemable, not permanent. `Credential` carries `expiresAt` and a
+`redeemable` (a refresh token, a ticket, a password), and a wake whose bearer is
+expired or within ten minutes of it — a margin sized to a whole wake, not to an
+instant — calls `IdentityProvider.refresh()` before it connects, off the
+tool-dispatch path, so nothing about the renewal enters the transcript. Whether a
+renewal is possible is the provider's question and not the schema's: Firebase can
+mint a fresh session from the uid alone, so an identity whose exchange handed back
+no refresh token is renewed too. When the target refuses a credential anyway —
+at connect, where an HTTP-layer bearer is checked, or on three tool calls in a row
+— the wake ends `auth-failed` rather than spending the rest of its budget on 401s.
+A person whose credential carries no bearer at all ends the same way, because the
+alternative is a session that silently falls back to the operator's own gateway
+token and drives the target with the operator's privileges.
+A redeemable outlives the bearer it mints, so it is treated as `bearerToken` is:
+never on the wire, never in a config snapshot, never in a trace.
 
 Every identity, wake and finding carries a run id (`run_...`) and a tag
 (`populace:run_...`). `populace sweep` tears down identities by tag and removes

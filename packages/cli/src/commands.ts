@@ -208,7 +208,7 @@ export async function digest(options: DigestOptions): Promise<{ markdown: string
     const runIds = options.allRuns ? undefined : [ctx.runId];
     if (options.verify !== false) {
       const verified = await verifyPending(
-        { store: ctx.store, config, ...(config.verifier.judge === "model" ? { provider: ctx.provider() } : {}), log: (line) => ctx.log(line) },
+        { store: ctx.store, config, identityProvider: ctx.identityProvider, ...(config.verifier.judge === "model" ? { provider: ctx.provider() } : {}), log: (line) => ctx.log(line) },
         { ...(runIds ? { runIds } : {}), since, until },
       );
       ctx.log(`verified ${verified.length} finding(s) with the ${config.verifier.judge} judge`);

@@ -28,6 +28,12 @@ interface Draft {
   emailDomain: string;
   strategy: "self-signup" | "static" | "admin-mint";
   staticFile: string;
+  /** admin-mint: the Firebase Web API key. Empty means "leave whatever is stored alone". */
+  apiKey: string;
+  apiKeySet: boolean;
+  serviceAccountFile: string;
+  firebaseProjectId: string;
+  exchangeUrl: string;
 }
 
 const EMPTY: Draft = {
@@ -42,6 +48,11 @@ const EMPTY: Draft = {
   emailDomain: "populace.test",
   strategy: "self-signup",
   staticFile: "",
+  apiKey: "",
+  apiKeySet: false,
+  serviceAccountFile: "",
+  firebaseProjectId: "",
+  exchangeUrl: "",
 };
 
 function draftFrom(target: StoredTarget): Draft {
@@ -58,23 +69,49 @@ function draftFrom(target: StoredTarget): Draft {
     emailDomain: identity.strategy === "self-signup" ? identity.emailDomain : "populace.test",
     strategy: identity.strategy,
     staticFile: identity.strategy === "static" ? identity.file : "",
+    // Never pre-filled: the stored key is not sent to the browser, so blank means "keep it".
+    apiKey: "",
+    apiKeySet: identity.strategy === "admin-mint" ? identity.apiKeySet : false,
+    serviceAccountFile: identity.strategy === "admin-mint" ? (identity.serviceAccountFile ?? "") : "",
+    firebaseProjectId: identity.strategy === "admin-mint" ? (identity.projectId ?? "") : "",
+    exchangeUrl: identity.strategy === "admin-mint" ? (identity.exchangeUrl ?? "") : "",
   };
 }
 
+/**
+ * A `switch`, not an if/else chain: the chain's final `else` silently produced an admin-mint
+ * config for any strategy it did not know about, so a fourth way in would have compiled and
+ * quietly sent the wrong one.
+ */
+function identityFrom(draft: Draft): TargetInput["identity"] {
+  switch (draft.strategy) {
+    case "self-signup":
+      return {
+        strategy: "self-signup",
+        signupTool: draft.signupTool,
+        tokenPath: draft.tokenPath || "token",
+        ...(draft.userIdPath ? { userIdPath: draft.userIdPath } : {}),
+        ...(draft.teardownTool ? { teardownTool: draft.teardownTool } : {}),
+        emailDomain: draft.emailDomain || "populace.test",
+      };
+    case "static":
+      return { strategy: "static", file: draft.staticFile };
+    case "admin-mint":
+      return {
+        strategy: "admin-mint",
+        provider: "firebase",
+        emailDomain: draft.emailDomain || "populace.test",
+        // Absent leaves the stored key alone; the form only sends one when it was typed.
+        ...(draft.apiKey ? { apiKey: draft.apiKey } : {}),
+        ...(draft.serviceAccountFile ? { serviceAccountFile: draft.serviceAccountFile } : {}),
+        ...(draft.firebaseProjectId ? { projectId: draft.firebaseProjectId } : {}),
+        ...(draft.exchangeUrl ? { exchangeUrl: draft.exchangeUrl } : {}),
+      };
+  }
+}
+
 function bodyFrom(draft: Draft): TargetInput {
-  const identity: TargetInput["identity"] =
-    draft.strategy === "self-signup"
-      ? {
-          strategy: "self-signup",
-          signupTool: draft.signupTool,
-          tokenPath: draft.tokenPath || "token",
-          ...(draft.userIdPath ? { userIdPath: draft.userIdPath } : {}),
-          ...(draft.teardownTool ? { teardownTool: draft.teardownTool } : {}),
-          emailDomain: draft.emailDomain || "populace.test",
-        }
-      : draft.strategy === "static"
-        ? { strategy: "static", file: draft.staticFile }
-        : { strategy: "admin-mint", provider: "firebase", emailDomain: draft.emailDomain || "populace.test" };
+  const identity: TargetInput["identity"] = identityFrom(draft);
   return {
     name: draft.name,
     mcp: draft.mcp.map((e) => ({ name: e.name, url: e.url, ...(e.bearerToken === "" ? {} : { bearerToken: e.bearerToken }) })),
@@ -247,9 +284,31 @@ export function Target() {
               <Input value={draft.staticFile} onChange={(v) => set("staticFile", v)} placeholder="accounts.json" mono />
             </Field>
           ) : (
-            <Field label="Email domain">
-              <Input value={draft.emailDomain} onChange={(v) => set("emailDomain", v)} mono />
-            </Field>
+            <>
+              <p className="t-body text-ink-soft mb-3 max-w-[68ch]">
+                The service account creates each person in Firebase; the Web API key turns what comes back into a session the product will accept. Both are needed — a Firebase custom token is
+                not an ID token, and anything that verifies one will refuse it.
+              </p>
+              <Field label="Web API key" hint={draft.apiKeySet ? "One is already stored. Leave this blank to keep it, or type a new one to replace it." : "Firebase console → Project settings → General → Web API Key. Used to exchange the custom token and to renew it every hour."}>
+                <Input value={draft.apiKey} onChange={(v) => set("apiKey", v)} placeholder={draft.apiKeySet ? "•••••••• stored" : "AIza…"} type="password" mono />
+              </Field>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Service account file" hint="Path to the JSON key. Leave empty to use GOOGLE_APPLICATION_CREDENTIALS.">
+                  <Input value={draft.serviceAccountFile} onChange={(v) => set("serviceAccountFile", v)} placeholder="./service-account.json" mono />
+                </Field>
+                <Field label="Firebase project" hint="Optional. Only needed when the credentials do not name one.">
+                  <Input value={draft.firebaseProjectId} onChange={(v) => set("firebaseProjectId", v)} placeholder="my-app-staging" mono />
+                </Field>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Email domain" hint="Every address carries the run's tag, so sweep can find them again.">
+                  <Input value={draft.emailDomain} onChange={(v) => set("emailDomain", v)} mono />
+                </Field>
+                <Field label="Exchange endpoint" hint="Optional. An endpoint of your own that turns a custom token into the bearer your product accepts. Set one and it replaces Google's exchange entirely — sessions are renewed through it too, never through Google.">
+                  <Input value={draft.exchangeUrl} onChange={(v) => set("exchangeUrl", v)} placeholder="https://…" mono />
+                </Field>
+              </div>
+            </>
           )}
           {check?.identity.because.length ? (
             <ul className="mt-2 border-t border-rule pt-3">

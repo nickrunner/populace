@@ -49,6 +49,10 @@ export class SelfSignupProvider implements IdentityProvider {
     const email = typeof ctx.arguments === "object" && ctx.arguments !== null && !Array.isArray(ctx.arguments) ? ctx.arguments.email : undefined;
     return {
       bearerToken: token,
+      // The target said nothing about an expiry or a way to renew, so neither is invented: a
+      // self-signup token is taken at its word until the target refuses it (see `auth-failed`).
+      expiresAt: null,
+      redeemable: null,
       ...(typeof userId === "string" ? { userId } : {}),
       ...(typeof email === "string" ? { email } : {}),
       extra: {},

@@ -106,7 +106,7 @@ describe("SqliteStore", () => {
       agentId: "pop/p#1",
       personaId: "p",
       strategy: "self-signup",
-      credential: { bearerToken: "tk", email: "x@y.z", extra: {} },
+      credential: { bearerToken: "tk", expiresAt: null, redeemable: null, email: "x@y.z", extra: {} },
       createdAt: now.toISOString(),
       tornDownAt: null,
     };

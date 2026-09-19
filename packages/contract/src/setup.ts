@@ -2,14 +2,16 @@ import {
   CadenceSchema,
   DaemonConfigSchema,
   EventSchema,
+  FirebaseAdminConfigSchema,
   GuardrailsSchema,
-  IdentityConfigSchema,
   JobSchema,
   ModelConfigSchema,
   PauseReasonSchema,
   PersonaSpecSchema,
   RunStatusSchema,
+  SelfSignupConfigSchema,
   SimulationModeSchema,
+  StaticIdentityConfigSchema,
   VerifierConfigSchema,
 } from "@populace/core/isomorphic";
 import { z } from "zod";
@@ -40,13 +42,37 @@ export const EndpointInputSchema = z.object({
   bearerToken: z.string().optional(),
 });
 
+/**
+ * The identity block as the browser may see it. admin-mint's `apiKey` mints and renews sessions,
+ * so it obeys the same rule as a bearer token: it goes up when a user types one and never comes
+ * back down. `apiKeySet` is how the form knows one is already stored.
+ */
+export const IdentityConfigViewSchema = z.discriminatedUnion("strategy", [
+  SelfSignupConfigSchema,
+  StaticIdentityConfigSchema,
+  FirebaseAdminConfigSchema.omit({ apiKey: true }).extend({ apiKeySet: z.boolean() }),
+]);
+export type IdentityConfigView = z.infer<typeof IdentityConfigViewSchema>;
+
+/**
+ * The identity block on the way up. admin-mint's `apiKey` follows `EndpointInputSchema.bearerToken`
+ * exactly — absent leaves the stored key alone, the empty string clears it — which is why this is
+ * the core schema with that one field relaxed rather than the core schema itself.
+ */
+export const IdentityConfigInputSchema = z.discriminatedUnion("strategy", [
+  SelfSignupConfigSchema,
+  StaticIdentityConfigSchema,
+  FirebaseAdminConfigSchema.extend({ apiKey: z.string().optional() }),
+]);
+export type IdentityConfigInput = z.infer<typeof IdentityConfigInputSchema>;
+
 export const TargetInputSchema = z.object({
   name: z.string().min(1),
   mcp: z.array(EndpointInputSchema).min(1),
   webBaseUrl: z.url().optional(),
   /** "What the marketing says", handed to every person before their first visit. */
   description: z.string().optional(),
-  identity: IdentityConfigSchema,
+  identity: IdentityConfigInputSchema,
 });
 export type TargetInput = z.infer<typeof TargetInputSchema>;
 
@@ -57,7 +83,7 @@ export const StoredTargetViewSchema = z.object({
   mcp: z.array(EndpointViewSchema),
   webBaseUrl: z.string().nullable(),
   description: z.string().nullable(),
-  identity: IdentityConfigSchema,
+  identity: IdentityConfigViewSchema,
   updatedAt: z.iso.datetime(),
 });
 export type StoredTargetView = z.infer<typeof StoredTargetViewSchema>;

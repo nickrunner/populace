@@ -12,6 +12,7 @@ const OUTCOME_INK: Record<string, string> = {
   "gave-up": "text-critical",
   "max-turns": "text-high",
   "budget-exceeded": "text-high",
+  "auth-failed": "text-critical",
   error: "text-critical",
 };
 

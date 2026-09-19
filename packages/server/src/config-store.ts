@@ -449,7 +449,14 @@ export function withLiveSecrets(frozen: PopulaceConfig, live: PopulaceConfig): P
     for (const [key, value] of Object.entries(headers)) if (value === REDACTED && current[key] !== undefined) headers[key] = current[key];
     reset = { ...reset, headers };
   }
-  return { ...frozen, target: { ...frozen.target, mcp, reset }, model };
+  // A resumed run renews its people's sessions through the same key it minted them with, so a
+  // frozen `[redacted]` here would be a population that authenticates until its first hour is up.
+  let identity = frozen.identity;
+  if (identity.strategy === "admin-mint" && identity.apiKey === REDACTED) {
+    const current = live.identity.strategy === "admin-mint" ? live.identity.apiKey : undefined;
+    identity = current === undefined ? { ...identity, apiKey: undefined } : { ...identity, apiKey: current };
+  }
+  return { ...frozen, target: { ...frozen.target, mcp, reset }, model, identity };
 }
 
 /**
@@ -606,7 +613,15 @@ export function redactConfig(config: PopulaceConfig): { config: PopulaceConfig; 
     }
     reset = { ...reset, headers };
   }
-  return { config: { ...config, target: { ...config.target, mcp, reset }, model }, redacted };
+  // The identity block holds a credential too. admin-mint's `apiKey` is what turns a custom token
+  // into a live session and what renews it, so a snapshot that carried it would hand a session
+  // minter to anyone the database is copied to. The other strategies hold PATHS, never material.
+  let identity = config.identity;
+  if (identity.strategy === "admin-mint" && identity.apiKey !== undefined) {
+    identity = { ...identity, apiKey: REDACTED };
+    redacted.push("identity.apiKey");
+  }
+  return { config: { ...config, target: { ...config.target, mcp, reset }, model, identity }, redacted };
 }
 
 /**

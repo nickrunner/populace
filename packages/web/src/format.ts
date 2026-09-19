@@ -36,6 +36,7 @@ export const wakeOutcome = (status: string): string =>
     "gave-up": "gave up",
     "max-turns": "ran out of turns",
     "budget-exceeded": "hit a budget",
+    "auth-failed": "the account's token was rejected",
     killed: "stopped",
     running: "in progress",
     error: "errored",

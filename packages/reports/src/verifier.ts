@@ -2,10 +2,12 @@ import type Anthropic from "@anthropic-ai/sdk";
 import {
   JsonObjectSchema,
   costOf,
+  credentialNeedsRedeem,
   priceFor,
   resolveModel,
   stableStringify,
   truncate,
+  type Credential,
   type Finding,
   type Identity,
   type JsonValue,
@@ -23,6 +25,14 @@ export interface VerifierDeps {
   config: PopulaceConfig;
   /** Required when the judge is `model`. */
   provider?: ModelProvider;
+  /**
+   * How an expired bearer is renewed before the replay. A digest runs long after the wakes it reads
+   * — an hour is enough for a Firebase ID token — and a replay with a dead token is refused by the
+   * target, which the heuristic judge reads as `inconclusive`: the whole run's findings land as
+   * "unsure" rather than confirmed. Optional, because a target whose bearers never expire needs
+   * nothing here.
+   */
+  identityProvider?: { refresh?(identity: Identity): Promise<Credential> };
   now?: () => Date;
   log?: (line: string) => void;
 }
@@ -36,6 +46,25 @@ export interface ReplayOutcome {
 }
 
 /**
+ * Renews the finding's credential if it has expired, exactly as the runner does before a wake, and
+ * persists it so the next finding in the digest reuses it. A renewal that fails is not fatal here:
+ * the replay goes ahead with what there is and the judge reports what the target said.
+ */
+async function renewed(identity: Identity, deps: VerifierDeps, now: Date): Promise<Identity> {
+  const provider = deps.identityProvider;
+  if (!provider?.refresh || !credentialNeedsRedeem(identity.credential, now)) return identity;
+  try {
+    const credential = await provider.refresh(identity);
+    const next = { ...identity, credential };
+    await deps.store.saveIdentity(next);
+    return next;
+  } catch (err) {
+    deps.log?.(`could not renew the session for ${identity.id}: ${err instanceof Error ? err.message : String(err)}`);
+    return identity;
+  }
+}
+
+/**
  * Mechanical half of verification (ADR-0014): replay the reproduction steps
  * with the finding's identity and record what the target does now.
  */
@@ -44,7 +73,7 @@ export async function replayFinding(finding: Finding, deps: VerifierDeps): Promi
   const endpoint = deps.config.target.mcp.find((e) => e.name === finding.endpoint) ?? deps.config.target.mcp[0];
   if (!endpoint) return { steps: [], toolNames: [], identityUsed: null, error: "target has no MCP endpoint" };
   const identity = finding.identityId ? ((await deps.store.getIdentity(finding.identityId)) ?? null) : null;
-  const usable = identity && identity.tornDownAt === null ? identity : null;
+  const usable = identity && identity.tornDownAt === null ? await renewed(identity, deps, now()) : null;
   const session = new McpSession(endpoint, usable?.credential.bearerToken);
   try {
     await session.connect();

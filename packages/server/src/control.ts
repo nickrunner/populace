@@ -20,6 +20,8 @@ import {
   routes,
   type ParticipantLive,
   type CohortView,
+  type IdentityConfigInput,
+  type IdentityConfigView,
   type PersonaView,
   type PersonView,
   type PopulationView,
@@ -44,6 +46,7 @@ import {
   type Agent,
   type Cohort,
   type Event,
+  type IdentityConfig,
   type McpEndpoint,
   type Person,
   type PopulaceConfig,
@@ -55,6 +58,7 @@ import {
   type TraceEvent,
   type Triage,
 } from "@populace/core";
+import { identityProviderFor } from "@populace/adapters";
 import { buildDigest, verifyPending } from "@populace/reports";
 import { personaSystemPrompt } from "@populace/runner";
 import type { Context, Hono } from "hono";
@@ -120,9 +124,27 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     mcp: target.mcp.map((e) => ({ name: e.name, url: e.url, authenticated: e.bearerToken !== undefined || Object.keys(e.headers).length > 0 })),
     webBaseUrl: target.webBaseUrl ?? null,
     description: target.description ?? null,
-    identity: target.identity,
+    identity: identityView(target.identity),
     updatedAt: target.updatedAt,
   });
+
+  /**
+   * admin-mint's Firebase Web API key is what mints and renews a person's session, so it leaves
+   * the same way a bearer token does: never. The form is told one is stored, not what it is.
+   */
+  const identityView = (identity: IdentityConfig): IdentityConfigView => {
+    if (identity.strategy !== "admin-mint") return identity;
+    const { apiKey, ...rest } = identity;
+    return { ...rest, apiKeySet: apiKey !== undefined };
+  };
+
+  /** The write-only rule, the other way round: absent keeps the stored key, blank clears it. */
+  const mergeIdentity = (input: IdentityConfigInput, existing: IdentityConfig | undefined): IdentityConfig => {
+    if (input.strategy !== "admin-mint") return input;
+    const previous = existing?.strategy === "admin-mint" ? existing.apiKey : undefined;
+    const apiKey = input.apiKey === undefined ? previous : input.apiKey === "" ? undefined : input.apiKey;
+    return { ...input, ...(apiKey === undefined ? { apiKey: undefined } : { apiKey }) };
+  };
 
   /**
    * A blank `bearerToken` clears a stored one and an absent one leaves it alone, which is what
@@ -249,7 +271,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       mcp: mergeEndpoints(body.value.mcp, []),
       ...(body.value.webBaseUrl ? { webBaseUrl: body.value.webBaseUrl } : {}),
       ...(body.value.description ? { description: body.value.description } : {}),
-      identity: body.value.identity,
+      identity: mergeIdentity(body.value.identity, undefined),
       reset: { kind: "none" },
       createdAt: at,
       updatedAt: at,
@@ -287,7 +309,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       mcp: mergeEndpoints(body.value.mcp, existing.mcp),
       ...(body.value.webBaseUrl ? { webBaseUrl: body.value.webBaseUrl } : { webBaseUrl: undefined }),
       ...(body.value.description ? { description: body.value.description } : { description: undefined }),
-      identity: body.value.identity,
+      identity: mergeIdentity(body.value.identity, existing.identity),
       updatedAt: now(),
     };
     await deps.store.saveTarget(updated);
@@ -1305,7 +1327,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
         const config = await deps.configForRun(runId);
         await report({ label: "checking the findings nobody has ruled on yet" });
         if (config.verifier.judge === "model" && !deps.hasApiKey()) throw new Error("the model judge needs ANTHROPIC_API_KEY; switch the judge to heuristic or set a key");
-        await verifyPending({ store: deps.store, config, ...(deps.provider ? { provider: deps.provider() } : {}) }, { runIds: [runId] });
+        await verifyPending({ store: deps.store, config, identityProvider: identityProviderFor(config.identity), ...(deps.provider ? { provider: deps.provider() } : {}) }, { runIds: [runId] });
         await report({ label: "clustering what came back" });
         const wakes = await deps.store.listWakes({ runIds: [runId] });
         const since = wakes[0]?.startedAt ? new Date(wakes[0].startedAt) : new Date(0);

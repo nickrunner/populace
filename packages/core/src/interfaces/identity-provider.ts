@@ -39,6 +39,16 @@ export interface IdentityProvider {
    * extract the credential. Returns undefined when nothing was captured.
    */
   capture?(ctx: CaptureContext): Credential | undefined;
+  /**
+   * Mint a fresh credential for an identity whose bearer has expired, from what
+   * `credential.redeemable` holds. The runner calls this before a wake rather than after a 401,
+   * so a person provisioned on Monday is still the same person on Friday.
+   *
+   * Absent when the strategy has nothing to redeem — a self-signup token the target never expires,
+   * a static pool whose entries a human pasted in. Returns the whole credential, not just the
+   * bearer, because a redemption usually rotates the redeemable too.
+   */
+  refresh?(identity: Identity): Promise<Credential>;
   /** Remove the identity from the target. Must be idempotent. */
   teardown(identity: Identity, deps: TeardownDeps): Promise<void>;
   /** Identities carrying the tag that this provider knows about (target-side where possible, store-side otherwise). */

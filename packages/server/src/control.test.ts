@@ -307,6 +307,32 @@ describe("authoring config into the database", () => {
     await h.close();
   });
 
+  /**
+   * The Firebase Web API key is what exchanges a custom token for a session and what renews it an
+   * hour later, so it obeys the bearer token's rule in both directions: it is never sent back to
+   * the browser, an absent one leaves the stored key alone, and a blank one clears it.
+   */
+  it("never puts an admin-mint api key on the wire, in either direction", async () => {
+    const h = await harness();
+    const targets = pageOf(StoredTargetViewSchema).parse(await json(await h.app.request(routes.targets(P))));
+    const view = targets.items[0]!;
+    const adminMint = { strategy: "admin-mint", provider: "firebase", emailDomain: "populace.test", apiKey: "AIza-secret-key", serviceAccountFile: "./sa.json" };
+    const saved = StoredTargetViewSchema.parse(await json(await put(h.app, routes.target_(P, view.id), { name: "Tasklet", mcp: [{ name: "default", url: target.mcpUrl }], identity: adminMint })));
+    expect(JSON.stringify(saved)).not.toContain("AIza-secret-key");
+    expect(saved.identity.strategy === "admin-mint" ? saved.identity.apiKeySet : false).toBe(true);
+    expect((await h.store.getTarget(view.id))?.identity).toMatchObject({ strategy: "admin-mint", apiKey: "AIza-secret-key" });
+
+    // The form round-trips what it was shown, which carries no key, and the stored one survives.
+    await put(h.app, routes.target_(P, view.id), { name: "Tasklet", mcp: [{ name: "default", url: target.mcpUrl }], identity: saved.identity });
+    expect((await h.store.getTarget(view.id))?.identity).toMatchObject({ apiKey: "AIza-secret-key" });
+
+    // An explicitly empty one clears it.
+    await put(h.app, routes.target_(P, view.id), { name: "Tasklet", mcp: [{ name: "default", url: target.mcpUrl }], identity: { ...adminMint, apiKey: "" } });
+    const cleared = (await h.store.getTarget(view.id))?.identity;
+    expect(cleared?.strategy === "admin-mint" ? cleared.apiKey : "x").toBeUndefined();
+    await h.close();
+  });
+
   it("keeps a persona's slug immutable when its display name changes, so agent ids survive", async () => {
     const h = await harness();
     const people = pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas(P))));
@@ -809,6 +835,38 @@ describe("executions of a simulation", () => {
   });
 
   /**
+   * A redeemable is a LONGER-LIVED secret than the bearer it mints, and the person views are the
+   * one place an identity row is read for the browser. They are handle-only by design; this is the
+   * assertion that says so, because the design is one field away from being untrue.
+   */
+  it("never puts a person's redeemable on the wire", async () => {
+    const h = await harness({ policy: signsUp });
+    const runId = await startRun(h);
+    await h.jobs.idle();
+    await h.runs.settled(runId);
+
+    const identities = await h.store.listIdentitiesByTag(tagForRun(runId), true);
+    expect(identities.length).toBeGreaterThan(0);
+    for (const identity of identities) {
+      await h.store.saveIdentity({
+        ...identity,
+        credential: { ...identity.credential, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), redeemable: { kind: "refresh-token", secret: "refresh-token-never-share-this" } },
+      });
+    }
+
+    const participants = pageOf(ParticipantSummaryViewSchema).parse(await json(await h.app.request(routes.runParticipants(runId))));
+    const person = ParticipantDetailViewSchema.parse(await json(await h.app.request(routes.participant(runId, participants.items[0]!.id))));
+    // The readable handle is there — this is a view of an account, not an empty object...
+    expect(person.account?.email).toContain("@");
+    // ...and nothing else about the credential is.
+    expect(JSON.stringify(person)).not.toContain("refresh-token-never-share-this");
+    expect(JSON.stringify(participants)).not.toContain("refresh-token-never-share-this");
+    const live = RunLiveSchema.parse(await json(await h.app.request(routes.runLive(runId))));
+    expect(JSON.stringify(live)).not.toContain("refresh-token-never-share-this");
+    await h.close();
+  });
+
+  /**
    * An ephemeral start RESETS THE TARGET. A second execution begun while the first is still going
    * therefore wipes the database out from under the people already in it, and every report they
    * file afterwards is against a state nobody asked for.
@@ -1284,6 +1342,24 @@ describe("the store underneath", () => {
     // Key order must not change the hash, or two identical configs would make two rows.
     const reordered = { ...cfg, population: cfg.population, target: cfg.target };
     expect((await snapshotConfig(h.store, reordered)).id).toBe(one.id);
+    await h.close();
+  });
+
+  /**
+   * A refresh token and the key that mints one are longer-lived than the bearer they produce, so
+   * neither may sit in a snapshot that gets copied around and attached to bug reports — and a
+   * resume must still be able to renew, which is what `withLiveSecrets` puts back.
+   */
+  it("redacts the identity block's credential from a snapshot and puts it back for a resume", async () => {
+    const h = await harness();
+    const base = config();
+    const cfg: PopulaceConfig = { ...base, identity: { strategy: "admin-mint", provider: "firebase", emailDomain: "populace.test", apiKey: "AIza-secret-key" } };
+    const snapshot = await snapshotConfig(h.store, cfg);
+    expect(snapshot.redacted).toContain("identity.apiKey");
+    expect(JSON.stringify(snapshot)).not.toContain("AIza-secret-key");
+
+    const live = withLiveSecrets(snapshot.config, cfg);
+    expect(live.identity.strategy === "admin-mint" ? live.identity.apiKey : null).toBe("AIza-secret-key");
     await h.close();
   });
 

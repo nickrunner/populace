@@ -4,6 +4,7 @@ import {
   JsonValueSchema,
   applyMemoryOperation,
   costOf,
+  credentialNeedsRedeem,
   emptyMemory,
   isToolAllowed,
   newFindingId,
@@ -117,6 +118,34 @@ function rollCacheBreakpoint(messages: Anthropic.Beta.BetaMessageParam[]): void 
   const tail = last.content.findLast(isCacheable);
   if (tail) tail.cache_control = { type: "ephemeral" };
 }
+
+/**
+ * Whether a target's error reads as "your credential was not accepted" rather than "that did not
+ * work". A tool result carries no status code — an MCP server answers a 401 with an error result
+ * whose text is whatever it chose to write — so this is a text test, and it is applied only when
+ * the wake actually presented the person's own credential. Before signup, "this tool requires a
+ * bearer token" is the product telling a new user to make an account, which is the wake working
+ * as intended.
+ *
+ * A bare `401`/`403` is deliberately NOT enough. The test runs over the whole of any error result,
+ * and a target that answers `{"error":"task 403 not found"}` would otherwise have three ordinary
+ * product errors read as a dead account: the wake would stop before the persona could file the
+ * finding, and a real defect would be relabelled as a harness auth story and vanish from the
+ * digest. So a status has to sit next to auth vocabulary, and `forbidden` has to be about access.
+ */
+const AUTH_REJECTION =
+  /\b(401|403)\b[^\n]{0,40}(unauthori[sz]|forbidden|not authenticated|auth|token|credential)|(unauthori[sz]|forbidden|auth\w*|token|credential)[^\n]{0,40}\b(401|403)\b|\b(http|https|status|code)\b[^\n]{0,12}\b(401|403)\b|unauthori[sz]|(access|permission) (is )?(denied|forbidden)|forbidden:|invalid.{0,20}token|token.{0,24}(not valid|invalid|expired|has expired)|authentication (failed|required)|not authenticated/i;
+
+export function looksLikeAuthRejection(text: string): boolean {
+  return AUTH_REJECTION.test(text);
+}
+
+/**
+ * How many refusals in a row end the session. One can be a tool that wants a scope this account
+ * does not have; three in a row is the account itself, and everything after them is budget spent
+ * on being told no (ADR-0009: the guardrail is in the runner, not in the prompt).
+ */
+const MAX_AUTH_REJECTIONS = 3;
 
 const WRAP_UP_NOTICE =
   "[runner notice] Your session budget is used up. Do not call any more product tools. If there is anything future-you should know, call remember now, then call done. This is your last turn.";
@@ -266,14 +295,58 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
     }
   }
 
+  // ---- redeem an expiring credential -------------------------------------
+  // An identity is provisioned once and reused for every wake, so a bearer with an expiry is a
+  // wake that works today and spends its whole budget on 401s next week. Redeeming here — before
+  // the sessions are built, off the tool-dispatch path the model is blocked on — keeps `runWake`
+  // the same stateless job it was (ADR-0003) and keeps the renewal out of the transcript.
+  if (identity && identityProvider.refresh && credentialNeedsRedeem(identity.credential, now())) {
+    try {
+      const renewed = await identityProvider.refresh(identity);
+      identity = { ...identity, credential: renewed };
+      await store.saveIdentity(identity);
+      await trace.write({
+        type: "identity",
+        event: "redeemed",
+        strategy: identityProvider.strategy,
+        detail: `renewed this account's session${renewed.expiresAt ? `, good until ${renewed.expiresAt}` : ""}`,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await trace.write({ type: "identity", event: "rejected", strategy: identityProvider.strategy, detail: `could not renew this account's session: ${message}` });
+      return finish("auth-failed", `could not renew this account's session: ${message}`, null, message);
+    }
+  }
+
   // ---- connect -----------------------------------------------------------
+  // A person who holds an identity but no bearer is NOT the same as a person who holds no identity.
+  // `McpSession` falls back to the endpoint's own token when it is handed `undefined`, which is
+  // right before signup — the gateway token is how the agent reaches the product at all — and very
+  // wrong afterwards: the persona would drive the target with the OPERATOR's privileges, destructive
+  // tools included, while the trace said `provisioned` and the participant view showed their email.
+  // The redemption above is this credential's chance to acquire one; past it, there is no session.
+  const bearer = identity?.credential.bearerToken;
+  if (identity && bearer === undefined) {
+    const summary = "this person has no usable credential: their account was provisioned without a token and none could be minted";
+    await trace.write({ type: "identity", event: "rejected", strategy: identityProvider.strategy, detail: summary });
+    return finish("auth-failed", summary, null);
+  }
+
   const sessions = new Map<string, McpSession>();
-  for (const endpoint of config.target.mcp) sessions.set(endpoint.name, new McpSession(endpoint, identity?.credential.bearerToken));
+  for (const endpoint of config.target.mcp) sessions.set(endpoint.name, new McpSession(endpoint, bearer));
   try {
     for (const session of sessions.values()) await session.connect();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     for (const session of sessions.values()) await session.close();
+    // Where the bearer is enforced at the HTTP layer — which is how a Firebase-authenticated MCP
+    // server does it — a rejected token fails the `initialize` POST rather than a tool call, so the
+    // classification has to happen here too. Otherwise the one failure this outcome exists to name
+    // is the one that reads as "errored", i.e. as a bug in the harness.
+    if (bearer !== undefined && looksLikeAuthRejection(message)) {
+      await trace.write({ type: "identity", event: "rejected", strategy: identityProvider.strategy, detail: `the target refused this account's credential at connect: ${truncate(message, 200)}` });
+      return finish("auth-failed", `the target rejected this account's credential when the session opened: ${message}`, null, message);
+    }
     return finish("error", `could not connect to target: ${message}`, null, message);
   }
 
@@ -317,6 +390,7 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
   let callCounter = 0;
   let wrapUp = false;
   let nudged = false;
+  let authRejections = 0;
   let ended: { status: WakeStatus; summary: string } | null = null;
   let jsonRetries = 0;
 
@@ -424,9 +498,34 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
         agent = { ...agent, identityId: identity.id };
         await store.upsertAgent(agent);
         await trace.write({ type: "identity", event: "captured", strategy: identityProvider.strategy, detail: identity.credential.email ?? identity.credential.userId ?? "credential" });
-        for (const session of sessions.values()) await session.reconnectWith(credential.bearerToken);
-        await trace.write({ type: "identity", event: "reconnected", strategy: identityProvider.strategy, detail: "MCP sessions reconnected with the new bearer token" });
+        // A captured credential with no bearer is an account the agent made and cannot use yet;
+        // reconnecting with nothing would drop the endpoint's own token and authenticate as nobody.
+        const captured = credential.bearerToken;
+        if (captured !== undefined) {
+          for (const session of sessions.values()) await session.reconnectWith(captured);
+          await trace.write({ type: "identity", event: "reconnected", strategy: identityProvider.strategy, detail: "MCP sessions reconnected with the new bearer token" });
+        }
       }
+    }
+    // A credential the target refuses is its own outcome, not a tool error the model should keep
+    // working around: without this the wake grinds through forty turns of refusals and reports
+    // "ran out of turns", which says nothing about the account being dead.
+    if (identity?.credential.bearerToken !== undefined && outcome.result.isError && looksLikeAuthRejection(outcome.result.text)) {
+      authRejections++;
+      await trace.write({
+        type: "identity",
+        event: "rejected",
+        strategy: identityProvider.strategy,
+        detail: `${entry.tool.name} refused this account's credential: ${truncate(outcome.result.text, 200)}`,
+      });
+      if (authRejections >= MAX_AUTH_REJECTIONS) {
+        ended = { status: "auth-failed", summary: `the target rejected this account's credential on ${authRejections} calls in a row; the session was stopped instead of spending the rest of the budget on refusals` };
+      }
+    } else {
+      // Reset on ANY result that is not a refusal, not only on a success: counting across an
+      // unrelated "task not found" would end the wake reporting three refusals "in a row" that
+      // never happened, and point the reader at an account that is fine.
+      authRejections = 0;
     }
     return { type: "tool_result", tool_use_id: block.id, is_error: outcome.result.isError, content: shown(record.ref, outcome.result.text) };
   };

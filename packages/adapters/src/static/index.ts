@@ -2,7 +2,14 @@ import { readFileSync } from "node:fs";
 import { CredentialSchema, type Identity, type IdentityProvider, type ProvisionContext, type ProvisionResult, type StaticIdentityConfig, type TeardownDeps } from "@populace/core";
 import { z } from "zod";
 
-const EntrySchema = CredentialSchema.extend({ personaId: z.string().optional(), tags: z.array(z.string()).default([]) });
+/**
+ * A pool entry must carry its own bearer. `CredentialSchema` makes `bearerToken` optional because a
+ * Firebase bearer is derived from a redeemable, but a static pool has nothing to derive one from: a
+ * typo'd key or a blanked-out rotated entry would parse, and the wake would then connect with the
+ * endpoint's own gateway token — every agent authenticating as the SAME shared account, which is a
+ * wrong-data run rather than a failed one. Required here, so the file fails loudly at construction.
+ */
+const EntrySchema = CredentialSchema.extend({ bearerToken: z.string().min(1), personaId: z.string().optional(), tags: z.array(z.string()).default([]) });
 const FileSchema = z.union([z.array(EntrySchema), z.record(z.string(), z.array(EntrySchema))]);
 
 /** Credentials from a file. Entries are handed out per persona in order; teardown is a no-op. */

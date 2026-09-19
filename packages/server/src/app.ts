@@ -1,3 +1,4 @@
+import { identityProviderFor } from "@populace/adapters";
 import { API_BASE, DigestQuerySchema, FindingListQuerySchema, RunListQuerySchema, TraceQuerySchema, WakeListQuerySchema } from "@populace/contract";
 import type { Finding, PopulaceConfig, TraceEvent } from "@populace/core";
 import { buildDigest, verifyPending } from "@populace/reports";
@@ -132,7 +133,7 @@ export function createApp(deps: ServerDeps): Hono {
       if (config.verifier.judge === "model" && !deps.verifier) {
         return fail(c, "unavailable", "the model judge needs an API key; set ANTHROPIC_API_KEY or configure verifier.judge: heuristic");
       }
-      await verifyPending({ store: deps.store, config, ...(deps.verifier ? { provider: deps.verifier } : {}) }, { runIds: [runId] });
+      await verifyPending({ store: deps.store, config, identityProvider: identityProviderFor(config.identity), ...(deps.verifier ? { provider: deps.verifier } : {}) }, { runIds: [runId] });
     }
     // The digest window is the run, not a clock window: a run is the unit the dashboard shows.
     const since = run.startedAt ? new Date(run.startedAt) : new Date(0);
