@@ -21,6 +21,14 @@ target:
     Tasklet keeps your projects and tasks in one place. Create projects, add tasks
     with due dates and priorities, search everything instantly, comment on tasks,
     and tick them off. Free for up to 3 projects; Pro is $6/month.
+  # What ANYBODY sent here may touch, whatever persona they wear. A persona's own \`tools\` block is
+  # merged onto this one: deny wins and allow intersects, so a persona can only ever narrow this
+  # and never widen it. Put the tools nobody should reach here rather than on every persona —
+  # a persona added later would otherwise inherit the whole surface.
+  tools:
+    allow: []                  # globs; empty means everything the target exposes
+    deny: []                   # globs; always wins over allow
+    destructive: confirm       # allow | confirm | deny, for tools annotated destructiveHint
 
 identity:
   strategy: self-signup        # self-signup | static | admin-mint

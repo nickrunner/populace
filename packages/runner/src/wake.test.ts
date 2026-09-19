@@ -3,7 +3,7 @@ import { PopulaceConfigSchema, expandPopulation, newRunId, type Agent, type Popu
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
 import { SqliteStore } from "@populace/store-sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ScriptedProvider, byWake, call, field, sequence, type ScriptPolicy } from "./testing/index.js";
+import { ScriptedProvider, byWake, call, field, sequence, type ScriptContext, type ScriptPolicy } from "./testing/index.js";
 import { runWake } from "./wake.js";
 
 let target: RunningMockTarget;
@@ -339,6 +339,109 @@ describe("runWake against the mock target", () => {
     expect(result.agent.nextWakeAt).toBeNull();
     const [stored] = await store.listAgents({ runId: result.agent.runId });
     expect(stored?.status).toBe("retired");
+    await store.close();
+  });
+});
+
+/**
+ * The target's policy is the floor. These assert the INTERCEPTOR's decision — what reached the
+ * model, what the trace says was refused, what actually ran against the target — rather than the
+ * merged object, because a merge that is correct and applied in the wrong place is still a hole.
+ */
+describe("the target's tool policy, merged with the persona's", () => {
+  /** The same config, with a policy on the TARGET rather than on the persona. */
+  const withTargetPolicy = (config: PopulaceConfig, tools: PopulaceConfig["target"]["tools"]): PopulaceConfig => ({ ...config, target: { ...config.target, tools } });
+
+  const signUpFirst = (ctx: ScriptContext): { name: string; input: Record<string, string> }[] => {
+    const s = /email (\S+), display name "([^"]+)", password (\S+)/.exec(ctx.wakeContext)!;
+    return [{ name: "sign_up", input: { email: s[1]!, displayName: s[2]!, password: s[3]! } }];
+  };
+
+  it("refuses a tool the target denies however permissive the persona is, and keeps the target's destructive setting", async () => {
+    const store = new SqliteStore(":memory:");
+    // The persona is as open as a persona can be: everything allowed, nothing denied, destructive
+    // work waved through. None of that may loosen what the target said.
+    const config = withTargetPolicy(makeConfig({}, { tools: { allow: ["*"], deny: [], destructive: "allow" } }), { allow: [], deny: ["upgrade_plan"], destructive: "confirm" });
+    const agent = firstAgent(config);
+    const policy = sequence([
+      (ctx) => ({ calls: signUpFirst(ctx) }),
+      () => ({ calls: [{ name: "create_project", input: { name: "Temp" } }] }),
+      (ctx) => ({ calls: [{ name: "delete_project", input: { projectId: field(ctx.lastResults[0], "id") } }] }),
+      () => ({ calls: [{ name: "upgrade_plan", input: {} }] }),
+    ]);
+    const result = await runWake({ agent, config }, { store, provider: new ScriptedProvider(policy), identityProvider: new SelfSignupProvider(config.identity as never) });
+    const trace = await store.getTrace(result.wake.id);
+    const guardrails = ofType(trace, "guardrail").map((e) => e.rule);
+
+    // The target says confirm; the persona says allow; the stricter one wins, so the first
+    // delete_project came back as a confirmation prompt instead of deleting anything.
+    expect(guardrails).toContain("destructive-confirm");
+    expect(ofType(trace, "tool.call").filter((e) => e.tool === "delete_project")).toHaveLength(0);
+    // The target denies upgrade_plan, so it was never offered and the call was refused.
+    expect(guardrails).toContain("tool-denied");
+    expect(ofType(trace, "tool.call").some((e) => e.tool === "upgrade_plan")).toBe(false);
+    await store.close();
+  });
+
+  it("intersects the allowlists: a persona cannot add back a tool the target's allowlist leaves out", async () => {
+    const store = new SqliteStore(":memory:");
+    const config = withTargetPolicy(makeConfig({}, { tools: { allow: ["get_*", "create_*", "sign_up"], deny: [], destructive: "confirm" } }), {
+      allow: ["get_*", "list_*", "sign_up"],
+      deny: [],
+      destructive: "confirm",
+    });
+    const agent = firstAgent(config);
+    let offered: string[] = [];
+    const policy = sequence([
+      (ctx) => {
+        offered = ctx.toolNames;
+        return { calls: signUpFirst(ctx) };
+      },
+      // Allowed by the persona, not by the target.
+      () => ({ calls: [{ name: "create_project", input: { name: "Temp" } }] }),
+      // Allowed by the target, not by the persona.
+      () => ({ calls: [{ name: "list_projects", input: {} }] }),
+      // In both.
+      () => ({ calls: [{ name: "get_me", input: {} }] }),
+    ]);
+    const result = await runWake({ agent, config }, { store, provider: new ScriptedProvider(policy), identityProvider: new SelfSignupProvider(config.identity as never) });
+    const trace = await store.getTrace(result.wake.id);
+    const ran = ofType(trace, "tool.call").map((e) => e.tool);
+
+    expect(offered).toContain("get_me");
+    expect(offered).not.toContain("create_project");
+    expect(offered).not.toContain("list_projects");
+    expect(ran).toContain("get_me");
+    expect(ran).not.toContain("create_project");
+    expect(ran).not.toContain("list_projects");
+    expect(ofType(trace, "guardrail").filter((e) => e.rule === "tool-denied").map((e) => e.tool)).toEqual(["create_project", "list_projects"]);
+    await store.close();
+  });
+
+  it("blocks a tool the target denies for every persona in the population", async () => {
+    const store = new SqliteStore(":memory:");
+    const base = makeConfig();
+    const config: PopulaceConfig = {
+      ...base,
+      target: { ...base.target, tools: { allow: [], deny: ["upgrade_plan"], destructive: "confirm" } },
+      population: {
+        ...base.population,
+        members: [
+          { ...base.population.members[0]!, cohort: "open", persona: { ...base.population.members[0]!.persona, id: "open", tools: { allow: ["*"], deny: [], destructive: "allow" } } },
+          { ...base.population.members[0]!, cohort: "plain", persona: { ...base.population.members[0]!.persona, id: "plain", tools: { allow: [], deny: [], destructive: "confirm" } } },
+        ],
+      },
+    };
+    const agents = expandPopulation(config.population, newRunId(), config.simulation.id).map((e) => e.agent);
+    expect(agents).toHaveLength(2);
+
+    const policy = sequence([(ctx) => ({ calls: signUpFirst(ctx) }), () => ({ calls: [{ name: "upgrade_plan", input: {} }] })]);
+    for (const agent of agents) {
+      const result = await runWake({ agent, config }, { store, provider: new ScriptedProvider(policy), identityProvider: new SelfSignupProvider(config.identity as never) });
+      const trace = await store.getTrace(result.wake.id);
+      expect(ofType(trace, "guardrail").filter((e) => e.rule === "tool-denied").map((e) => e.tool), `${agent.persona.id} reached upgrade_plan`).toEqual(["upgrade_plan"]);
+      expect(ofType(trace, "tool.call").some((e) => e.tool === "upgrade_plan")).toBe(false);
+    }
     await store.close();
   });
 });

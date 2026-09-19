@@ -110,6 +110,32 @@ export function Preflight() {
             ))}
           </p>
           {view.target.tools.length === 0 ? <p className="t-body text-ink-muted italic">The target did not answer with a tool list.</p> : null}
+          {view.target.blocked.length > 0 ? (
+            <div className="mt-4 border-t border-rule pt-3">
+              <p className="t-body text-ink-soft mb-2">
+                {view.target.blocked.length === 1 ? "One tool it exposes is off limits" : `${view.target.blocked.length} tools it exposes are off limits`}, so whatever they are for will go
+                untested. This is what a tool policy does; it is here so a typo'd glob is not discovered as a silence in the digest tomorrow.
+              </p>
+              <ul className="divide-y divide-rule border-t border-rule">
+                {view.target.blocked.map((tool) => (
+                  <li key={tool.name} className="py-2 flex items-baseline gap-3">
+                    <span className="line-through opacity-50">
+                      <ToolName name={tool.name} />
+                    </span>
+                    <span className="t-meta text-ink-muted flex-1">{tool.why}</span>
+                    <span className="t-meta text-ink-muted">blocked for {tool.who}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          <p className="t-meta text-ink-muted mt-3">
+            {view.target.destructive === "deny"
+              ? "Nobody may use a tool the target marks destructive."
+              : view.target.destructive === "allow"
+                ? "Tools the target marks destructive go through without a second thought."
+                : "A tool the target marks destructive takes two identical calls: the first comes back asking whether they meant it."}
+          </p>
           <p className="t-meta text-ink-muted mt-3">
             {view.target.resets
               ? "This target can be put back the way it was between executions, so an ephemeral run really is a clean slate on both sides."

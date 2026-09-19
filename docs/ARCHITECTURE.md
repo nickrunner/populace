@@ -67,7 +67,7 @@ process; a local daemon and a cloud job both just call `runWake()`.
       |
  connect MCP client (+ bearer if identity) (McpSession)
       |
- list tools -> filter by allow/deny lists  (guardrails)
+ list tools -> target policy + persona policy, merged (guardrails)
       |
  system prompt = persona + behaviour        stable, cached
  tools        = target tools + reporter     stable order, cached
@@ -123,8 +123,15 @@ users who complained about it (ADR-0020).
 
 Guardrails live in the runner, not in the prompt (ADR-0009): per-wake token
 and dollar ceilings, per-population daily dollar ceiling, a global kill switch
-in the store, allow/deny lists of tool names per persona, and a destructive-tool
-policy driven by MCP tool annotations (`destructiveHint`).
+in the store, allow/deny lists of tool names, and a destructive-tool policy driven
+by MCP tool annotations (`destructiveHint`).
+
+A tool policy lives on the TARGET as well as on a persona, and the effective policy for a wake is
+the two merged: deny wins, allow intersects, and the stricter destructive setting applies
+(ADR-0033). A persona can take more away and can never put anything back, so a tool the target
+forbids is unreachable whoever is wearing the costume — and a persona added later inherits the
+target's floor rather than the whole surface. The merge happens in `runWake`, in the one loop that
+decides which target tools reach the model at all.
 
 ### Identity
 
@@ -163,6 +170,19 @@ alternative is a session that silently falls back to the operator's own gateway
 token and drives the target with the operator's privileges.
 A redeemable outlives the bearer it mints, so it is treated as `bearerToken` is:
 never on the wire, never in a config snapshot, never in a trace.
+
+None of that is knowable from a form, so **first contact** does it for real before a run
+(ADR-0034): with a target saved, one identity is provisioned through the configured strategy, one
+READ-ONLY tool the target itself annotates `readOnlyHint` is called with it, and the account is
+taken back down. It is a POST because it creates an account on somebody's product; it calls no
+model, so it costs nothing. It distinguishes "could not reach the endpoint" from "could not
+provision" from "provisioned and the target refused the token" from "it worked", and for
+`admin-mint` it says outright that a refusal is the case where the product does not accept this
+issuer's tokens. When the account cannot be removed — a pool populace never owned, a self-signup
+target with no teardown tool — the result names the account that was left. No credential ever
+reaches the result, the log or the stored row. The last result is kept on the target row so
+preflight, which is a GET and must provision nothing, can block a start that would only rediscover
+the same failure.
 
 Every identity, wake and finding carries a run id (`run_...`) and a tag
 (`populace:run_...`). `populace sweep` tears down identities by tag (ADR-0010).

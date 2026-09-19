@@ -4,13 +4,16 @@ import {
   PopulaceConfigSchema,
   PopulationSchema,
   applyMemoryOperation,
+  blockedBecause,
   costOf,
+  effectiveToolPolicy,
   emptyMemory,
   expandPopulation,
   getPath,
   handleFor,
   isRunId,
   isToolAllowed,
+  isToolPermitted,
   nameFrom,
   newRunId,
   parseDuration,
@@ -18,6 +21,7 @@ import {
   runIdFromTag,
   signatureOf,
   stableStringify,
+  strictestDestructive,
   tagForRun,
 } from "./index.js";
 
@@ -46,6 +50,45 @@ describe("tool policy", () => {
     expect(isToolAllowed("delete_project", [], ["delete_*"])).toBe(false);
     expect(isToolAllowed("create_task", ["list_*"], [])).toBe(false);
     expect(isToolAllowed("list_tasks", ["list_*"], ["list_tasks"])).toBe(false);
+  });
+});
+
+describe("merging a target policy with a persona's", () => {
+  const target = { allow: ["list_*", "get_*", "sign_up"], deny: ["get_secrets"], destructive: "confirm" as const };
+
+  it("intersects the allowlists, so a persona cannot widen what the target permits", () => {
+    const policy = effectiveToolPolicy(target, { allow: ["get_*", "create_*"], deny: [], destructive: "allow" });
+    // In both lists: allowed.
+    expect(isToolPermitted("get_me", policy)).toBe(true);
+    // The persona allows it and the target does not. The persona does not get to add it back.
+    expect(isToolPermitted("create_task", policy)).toBe(false);
+    // The target allows it and the persona does not: narrowing in the other direction still works.
+    expect(isToolPermitted("list_tasks", policy)).toBe(false);
+  });
+
+  it("unions the denylists and never lets an allow undo one", () => {
+    const policy = effectiveToolPolicy(target, { allow: ["get_*", "sign_up"], deny: ["sign_up"], destructive: "confirm" });
+    expect(isToolPermitted("get_secrets", policy)).toBe(false);
+    expect(isToolPermitted("sign_up", policy)).toBe(false);
+    expect(blockedBecause("get_secrets", policy)).toBe("on the denylist");
+    expect(blockedBecause("create_task", policy)).toBe("not on the allowlist");
+    expect(blockedBecause("get_me", policy)).toBeNull();
+  });
+
+  it("takes the stricter destructive setting, whichever side it came from", () => {
+    expect(effectiveToolPolicy(target, { allow: [], deny: [], destructive: "allow" }).destructive).toBe("confirm");
+    expect(effectiveToolPolicy(target, { allow: [], deny: [], destructive: "deny" }).destructive).toBe("deny");
+    expect(effectiveToolPolicy({ ...target, destructive: "deny" }, { allow: [], deny: [], destructive: "allow" }).destructive).toBe("deny");
+    expect(strictestDestructive("allow", "confirm")).toBe("confirm");
+    expect(strictestDestructive("deny", "confirm")).toBe("deny");
+  });
+
+  it("treats an empty allowlist as no restriction rather than as nothing allowed", () => {
+    const neither = effectiveToolPolicy({ allow: [], deny: [], destructive: "confirm" }, { allow: [], deny: [], destructive: "confirm" });
+    expect(isToolPermitted("anything_at_all", neither)).toBe(true);
+    const personaOnly = effectiveToolPolicy({ allow: [], deny: [], destructive: "confirm" }, { allow: ["list_*"], deny: [], destructive: "confirm" });
+    expect(isToolPermitted("list_tasks", personaOnly)).toBe(true);
+    expect(isToolPermitted("create_task", personaOnly)).toBe(false);
   });
 });
 

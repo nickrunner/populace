@@ -32,8 +32,12 @@ import {
   type StoredTargetView,
 } from "@populace/contract";
 import {
+  blockedBecause,
+  effectiveToolPolicy,
   expandPopulation,
+  firstContactWorked,
   handleFor,
+  isToolPermitted,
   instantiatePersona,
   nameFrom,
   newCohortId,
@@ -43,6 +47,7 @@ import {
   newTargetId,
   slugify,
   ReferencedError,
+  StoredTargetSchema,
   type Agent,
   type Cohort,
   type Event,
@@ -84,6 +89,7 @@ import { ProjectReadModel } from "./project-read-model.js";
 import { ReadModel } from "./read-model.js";
 import { STARTER_PERSONAS, starterBySlug } from "./starters.js";
 import { checkPromises, checkTarget } from "./target-check.js";
+import { firstContact } from "./first-contact.js";
 import { resetTarget } from "./target-reset.js";
 import { targetView as liveTargetView } from "./target.js";
 import type { ControlDeps } from "./deps.js";
@@ -125,6 +131,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     webBaseUrl: target.webBaseUrl ?? null,
     description: target.description ?? null,
     identity: identityView(target.identity),
+    tools: target.tools,
+    firstContact: target.firstContact,
     updatedAt: target.updatedAt,
   });
 
@@ -156,6 +164,17 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       const token = endpoint.bearerToken === undefined ? previous?.bearerToken : endpoint.bearerToken === "" ? undefined : endpoint.bearerToken;
       return { name: endpoint.name, url: endpoint.url, ...(token === undefined ? {} : { bearerToken: token }), headers: previous?.headers ?? {} };
     });
+
+  /**
+   * The two things a first-contact result is evidence about — where the target is and how a person
+   * gets an account there — as one comparable string.
+   *
+   * Both sides are put back through their own schema rather than stringified as they are: key
+   * order is what an equality-by-serialisation gets wrong, and a schema parse rebuilds an object
+   * in schema order whichever construction site it came from.
+   */
+  const addressAndIdentity = (target: Pick<StoredTarget, "mcp" | "identity">): string =>
+    `${JSON.stringify(StoredTargetSchema.shape.mcp.parse(target.mcp))}|${JSON.stringify(StoredTargetSchema.shape.identity.parse(target.identity))}`;
 
   /** A row belonging to another project is not this project's to read, edit or delete. */
   const owned = <T extends { projectId: string }>(row: T | undefined, projectId: string): T | undefined => (row && row.projectId === projectId ? row : undefined);
@@ -272,6 +291,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       ...(body.value.webBaseUrl ? { webBaseUrl: body.value.webBaseUrl } : {}),
       ...(body.value.description ? { description: body.value.description } : {}),
       identity: mergeIdentity(body.value.identity, undefined),
+      tools: body.value.tools ?? { allow: [], deny: [], destructive: "confirm" },
+      firstContact: null,
       reset: { kind: "none" },
       createdAt: at,
       updatedAt: at,
@@ -303,13 +324,26 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!existing) return fail(c, "not_found", "no such target");
     const body = await parseBody(c, TargetInputSchema);
     if (!body.ok) return body.response;
+    const mcp = mergeEndpoints(body.value.mcp, existing.mcp);
+    const identity = mergeIdentity(body.value.identity, existing.identity);
+    // A first-contact result is evidence about ONE address and ONE set of identity settings.
+    // Repoint either and it stops being evidence about anything: a green tick would go on
+    // suppressing "nobody has tried getting an account here yet" for a configuration nobody has
+    // tried, and a red one would go on blocking preflight after the user has fixed precisely what
+    // it complained about. Both mislead on the screen whose whole job is "what will happen if I
+    // run this", so the result is dropped and the check is offered again.
+    const aboutSomethingElse = addressAndIdentity({ mcp, identity }) !== addressAndIdentity(existing);
     const updated: StoredTarget = {
       ...existing,
       name: body.value.name,
-      mcp: mergeEndpoints(body.value.mcp, existing.mcp),
+      mcp,
       ...(body.value.webBaseUrl ? { webBaseUrl: body.value.webBaseUrl } : { webBaseUrl: undefined }),
       ...(body.value.description ? { description: body.value.description } : { description: undefined }),
-      identity: mergeIdentity(body.value.identity, existing.identity),
+      identity,
+      ...(aboutSomethingElse ? { firstContact: null } : {}),
+      // Absent leaves the stored policy alone, exactly as an absent bearer token does: a client
+      // that does not know about tool policy must not be able to delete one by saving a name.
+      tools: body.value.tools ?? existing.tools,
       updatedAt: now(),
     };
     await deps.store.saveTarget(updated);
@@ -335,6 +369,27 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const target = owned(await deps.store.getTarget(param(c, "t")), s.project.id);
     if (!target) return fail(c, "not_found", "no such target");
     return c.json(await checkTarget(target.mcp, target.identity));
+  });
+
+  /**
+   * One person through the front door, for real.
+   *
+   * POST because it PROVISIONS AN ACCOUNT on somebody's product and makes a call with it — the
+   * ADR-0023 rule is that nothing with effects is a side effect of a GET, and this has the most
+   * side effects of anything on this screen. It calls no model, so it costs nothing in Anthropic
+   * spend whatever it finds; the screen says so.
+   *
+   * The result is written back onto the target row so that preflight — which is a GET and must
+   * therefore never provision anything — can say whether anybody has checked, and what happened.
+   */
+  app.post(routes.targetFirstContact(":p", ":t"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const target = owned(await deps.store.getTarget(param(c, "t")), s.project.id);
+    if (!target) return fail(c, "not_found", "no such target");
+    const result = await firstContact(target);
+    await deps.store.saveTarget({ ...target, firstContact: result, updatedAt: now() });
+    return c.json(result);
   });
 
   app.get(routes.targetPromises(":p", ":t"), async (c) => {
@@ -509,6 +564,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       mcp: target?.mcp ?? [],
       ...(target?.webBaseUrl ? { webBaseUrl: target.webBaseUrl } : {}),
       ...(target?.description ? { description: target.description } : {}),
+      tools: target?.tools ?? { allow: [], deny: [], destructive: "confirm" },
       reset: target?.reset ?? { kind: "none" },
     });
     return c.json({ personaSlug: persona.slug, text });
@@ -1106,10 +1162,50 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (killSwitch.engaged) blockers.push(`Everything is stopped${killSwitch.reason ? ` (${killSwitch.reason})` : ""}. Release it to start a run.`);
     if (simulation.requireFreshTarget && config.target.reset.kind === "none")
       blockers.push("This simulation insists on a fresh target, and the target declares no reset.");
+    // A first contact that FAILED is a blocker: it is the one thing on this page that has actually
+    // been tried against the target, and starting a run past it spends money to rediscover it.
+    // Never having run one is not a blocker — it is a warning — because a check that provisions an
+    // account cannot be made a precondition of a page that must not provision anything.
+    const contact = resolved.value.target.firstContact;
+    if (contact && !firstContactWorked(contact)) blockers.push(`First contact with ${resolved.value.target.name} did not work: ${contact.summary}`);
+
+    // What the policy leaves, and what it takes away, tool by tool. The target's policy is the
+    // floor everybody stands on; a persona can only narrow it further, which is why a tool blocked
+    // by the target is reported as blocked for "everyone" and a tool a persona refuses names the
+    // cohorts it is shut off for.
+    const targetOnly = effectiveToolPolicy(config.target.tools);
+    const cohorts = config.population.members.map((member) => ({
+      label: member.cohortName || member.cohort,
+      policy: effectiveToolPolicy(config.target.tools, member.persona.tools),
+    }));
+    // A self-signup target whose own policy blocks its sign-up tool is a dead configuration and it
+    // is detectable without touching anything: nobody sent here could make an account, so every
+    // wake would end auth-failed. First contact reports it too, but only once somebody has run
+    // one, and this costs nothing to say up front.
+    if (config.identity.strategy === "self-signup" && !isToolPermitted(config.identity.signupTool, targetOnly))
+      blockers.push(`The target's own tool policy blocks ${config.identity.signupTool}, which is the tool an account is made with — nobody sent here could sign up.`);
+    const exposed = view.tools ?? [];
+    const allowed = exposed.filter((tool) => isToolPermitted(tool.name, targetOnly));
+    const blocked = exposed.flatMap((tool) => {
+      if (!isToolPermitted(tool.name, targetOnly)) {
+        return [{ name: tool.name, who: "everyone", why: `the target's tool policy — ${blockedBecause(tool.name, targetOnly) ?? "blocked"}` }];
+      }
+      const shutOut = cohorts.filter((cohort) => !isToolPermitted(tool.name, cohort.policy));
+      if (shutOut.length === 0) return [];
+      const why = blockedBecause(tool.name, shutOut[0]?.policy ?? targetOnly) ?? "blocked";
+      return [{ name: tool.name, who: shutOut.length === cohorts.length ? "everyone" : shutOut.map((cohort) => cohort.label).join(", "), why: `their persona's tool policy — ${why}` }];
+    });
+
     return c.json(
       await projects.preflight(simulation, {
         estimate,
-        tools: (view.tools ?? []).map((t) => ({ name: t.name, description: t.description })),
+        tools: allowed.map((t) => ({ name: t.name, description: t.description })),
+        blocked,
+        // The TARGET's setting, not the strictest across the population: this is the target
+        // section, and one cautious persona must not make the screen read "nobody may" for
+        // everybody. A persona that tightens it further shows up in `blocked`.
+        destructive: config.target.tools.destructive,
+        firstContact: contact,
         toolsError: view.toolsError,
         promptPreview: first
           ? { personName: first.agent.name, cohortSlug: first.agent.cohortSlug, text: personaSystemPrompt(first.agent, config.target) }

@@ -39,6 +39,7 @@ import {
   DigestSchema,
   ErrorBodySchema,
   FindingSchema,
+  FirstContactSchema,
   HealthViewSchema,
   MemorySchema,
   RunDetailSchema,
@@ -158,6 +159,12 @@ export const api = {
   checkTarget: (p: string, id: string) => send("POST", routes.targetCheck(p, id), undefined, TargetCheckSchema),
   checkDraftTarget: (p: string, body: { mcp: TargetInput["mcp"] }) => send("POST", routes.targetsCheck(p), body, TargetCheckSchema),
   promises: (p: string, id: string) => get(routes.targetPromises(p, id), TargetPromisesSchema),
+  /**
+   * One person through the front door: an account is provisioned, one read-only tool is called and
+   * the account is removed again. POST because it creates something on somebody else's product —
+   * not because it spends anything, which it does not: no model is called.
+   */
+  firstContact: (p: string, id: string) => send("POST", routes.targetFirstContact(p, id), undefined, FirstContactSchema),
 
   personas: (p: string) => get(routes.personas(p), personas),
   persona: (p: string, x: string) => get(routes.persona(p, x), PersonaViewSchema),
@@ -293,6 +300,7 @@ export type SetupStatus = z.infer<typeof SetupStatusSchema>;
 export type StoredTarget = z.infer<typeof StoredTargetViewSchema>;
 export type TargetCheck = z.infer<typeof TargetCheckSchema>;
 export type TargetPromises = z.infer<typeof TargetPromisesSchema>;
+export type FirstContact = z.infer<typeof FirstContactSchema>;
 export type Persona = z.infer<typeof PersonaViewSchema>;
 export type Starter = z.infer<typeof StarterPersonaViewSchema>;
 export type PopulationView = z.infer<typeof PopulationViewSchema>;

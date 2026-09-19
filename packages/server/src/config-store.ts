@@ -395,7 +395,9 @@ export async function resolveSimulationConfig(store: Store, process: ProcessConf
       visitsPerPerson: simulation.visitsPerPerson,
       autoSweep: simulation.autoSweep,
     },
-    target: { name: target.name, mcp: target.mcp, ...(target.webBaseUrl ? { webBaseUrl: target.webBaseUrl } : {}), ...(target.description ? { description: target.description } : {}), reset: target.reset },
+    // The target's tool policy is resolved into the config the runner sees, alongside the address
+    // and the reset hook. The runner merges it with each persona's; nothing else may.
+    target: { name: target.name, mcp: target.mcp, ...(target.webBaseUrl ? { webBaseUrl: target.webBaseUrl } : {}), ...(target.description ? { description: target.description } : {}), tools: target.tools, reset: target.reset },
     identity: target.identity,
     // The simulation's overrides layer over the project's settings field-wise, exactly as a
     // persona's model override layers over the global one. An unset field falls through.
@@ -488,6 +490,8 @@ export async function seedProjectFromConfig(
     ...(config.target.webBaseUrl ? { webBaseUrl: config.target.webBaseUrl } : {}),
     ...(config.target.description ? { description: config.target.description } : {}),
     identity: config.identity,
+    tools: config.target.tools,
+    firstContact: null,
     reset: config.target.reset,
     createdAt: at,
     updatedAt: at,

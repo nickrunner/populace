@@ -128,6 +128,13 @@ export const routes = {
   targetsCheck: (p: string) => `${API_BASE}/projects/${seg(p)}/targets/check`,
   targetCheck: (p: string, t: string) => `${API_BASE}/projects/${seg(p)}/targets/${seg(t)}/check`,
   targetPromises: (p: string, t: string) => `${API_BASE}/projects/${seg(p)}/targets/${seg(t)}/promises`,
+  /**
+   * One person through the front door, for real: provision an identity, make one read-only call,
+   * take the account back down. A POST because it MAKES AN ACCOUNT on somebody's product — the
+   * same rule that keeps a run behind a POST (ADR-0023) — and not because it costs model money,
+   * which it does not: nothing here calls a model.
+   */
+  targetFirstContact: (p: string, t: string) => `${API_BASE}/projects/${seg(p)}/targets/${seg(t)}/first-contact`,
   /** Puts the target back by hand, outside a run. 202 and a job, because it is somebody's server. */
   targetReset: (p: string, t: string) => `${API_BASE}/projects/${seg(p)}/targets/${seg(t)}/reset`,
 

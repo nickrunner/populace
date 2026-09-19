@@ -20,6 +20,7 @@ import {
   SettingsViewSchema,
   SetupStatusSchema,
   StarterPersonaViewSchema,
+  FirstContactSchema,
   StoredTargetViewSchema,
   TargetCheckSchema,
   TargetPromisesSchema,
@@ -533,6 +534,157 @@ describe("what the connect wizard reads off a live target", () => {
     expect(check.ok).toBe(false);
     expect(check.errors).toHaveLength(1);
     expect(check.tools).toHaveLength(0);
+    await h.close();
+  });
+
+  it("saves a tool policy on the target and answers with it", async () => {
+    const h = await harness();
+    const targets = pageOf(StoredTargetViewSchema).parse(await json(await h.app.request(routes.targets(P))));
+    const existing = targets.items[0]!;
+    expect(existing.tools).toEqual({ allow: [], deny: [], destructive: "confirm" });
+
+    const saved = StoredTargetViewSchema.parse(
+      await json(
+        await put(h.app, routes.target_(P, existing.id), {
+          name: existing.name,
+          mcp: existing.mcp.map((e) => ({ name: e.name, url: e.url })),
+          identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", emailDomain: "populace.test" },
+          tools: { allow: [], deny: ["upgrade_plan", "delete_*"], destructive: "deny" },
+        }),
+      ),
+    );
+    expect(saved.tools.deny).toEqual(["upgrade_plan", "delete_*"]);
+    expect(saved.tools.destructive).toBe("deny");
+    // And it reaches the config the runner is handed, which is the only place it does anything.
+    const resolved = await resolveProject(h.store);
+    expect(resolved.config.target.tools.deny).toEqual(["upgrade_plan", "delete_*"]);
+
+    // A save that does not mention the policy leaves it alone, exactly as a bearer token is left.
+    const again = StoredTargetViewSchema.parse(
+      await json(
+        await put(h.app, routes.target_(P, existing.id), {
+          name: "Tasklet renamed",
+          mcp: existing.mcp.map((e) => ({ name: e.name, url: e.url })),
+          identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", emailDomain: "populace.test" },
+        }),
+      ),
+    );
+    expect(again.tools.deny).toEqual(["upgrade_plan", "delete_*"]);
+    await h.close();
+  });
+
+  /**
+   * The check that answers "did I configure identity right" without starting a run. It provisions
+   * an account on somebody's product, so it is a POST; it calls no model, so it costs nothing.
+   */
+  it("makes first contact, reports the account and the tool, cleans up, and tells preflight", async () => {
+    const h = await harness();
+    const targets = pageOf(StoredTargetViewSchema).parse(await json(await h.app.request(routes.targets(P))));
+    const targetId = targets.items[0]!.id;
+    expect(targets.items[0]!.firstContact).toBeNull();
+
+    // Never a GET: the route exists only as a POST, because it creates an account.
+    expect((await h.app.request(routes.targetFirstContact(P, targetId))).status).toBe(404);
+
+    const result = FirstContactSchema.parse(await json(await post(h.app, routes.targetFirstContact(P, targetId))));
+    expect(result.outcome).toBe("accepted");
+    expect(result.handle).toContain("@");
+    expect(result.tool).toBe("get_me");
+    expect(result.tornDown).toBe(true);
+    // Nothing it held ever comes back down the wire.
+    expect(JSON.stringify(result)).not.toContain("tk_");
+
+    // It is remembered on the target, so preflight — a GET, which must never provision anything —
+    // can say what happened without doing it again.
+    const stored = StoredTargetViewSchema.parse(await json(await h.app.request(routes.target_(P, targetId))));
+    expect(stored.firstContact?.outcome).toBe("accepted");
+    const simulation = await ensureSimulation(h.store);
+    const ok = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    expect(ok.blockers.join(" ")).not.toContain("First contact");
+    expect(ok.target.warnings.join(" ")).not.toContain("Nobody has tried");
+
+    // A check that FAILED stands between the user and "Send them in".
+    const row = (await h.store.getTarget(targetId))!;
+    await h.store.saveTarget({
+      ...row,
+      firstContact: { ...result, outcome: "rejected", summary: "the target refused this account's credential" },
+      updatedAt: new Date().toISOString(),
+    });
+    const blocked = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    expect(blocked.blockers.join(" ")).toContain("refused this account's credential");
+    await h.close();
+  });
+
+  /**
+   * A result is evidence about the address and the identity settings it ran against. Keeping it
+   * past an edit to either misleads in both directions: a passed check would go on suppressing
+   * "nobody has tried getting an account here yet" for settings nobody has tried, and a failed one
+   * would go on blocking preflight after the user fixed exactly what it complained about.
+   */
+  it("forgets a first-contact result when the address or the identity settings change, and keeps it when only the name does", async () => {
+    const h = await harness();
+    const targets = pageOf(StoredTargetViewSchema).parse(await json(await h.app.request(routes.targets(P))));
+    const targetId = targets.items[0]!.id;
+    const seeded = (await h.store.getTarget(targetId))!;
+    const identity = seeded.identity;
+    const mcp = seeded.mcp.map((e) => ({ name: e.name, url: e.url }));
+
+    const result = FirstContactSchema.parse(await json(await post(h.app, routes.targetFirstContact(P, targetId))));
+    expect(result.outcome).toBe("accepted");
+
+    // A rename is not a change to what was checked.
+    const renamed = StoredTargetViewSchema.parse(await json(await put(h.app, routes.target_(P, targetId), { name: "Tasklet, renamed", mcp, identity })));
+    expect(renamed.firstContact?.outcome).toBe("accepted");
+
+    // Repointing the endpoint is.
+    const moved = StoredTargetViewSchema.parse(
+      await json(await put(h.app, routes.target_(P, targetId), { name: "Tasklet, renamed", mcp: [{ name: "default", url: "http://127.0.0.1:1/mcp" }], identity })),
+    );
+    expect(moved.firstContact).toBeNull();
+
+    // And so is changing how a person gets an account.
+    await post(h.app, routes.targetFirstContact(P, targetId));
+    const reidentified = StoredTargetViewSchema.parse(
+      await json(await put(h.app, routes.target_(P, targetId), { name: "Tasklet, renamed", mcp: [{ name: "default", url: "http://127.0.0.1:1/mcp" }], identity: { ...identity, tokenPath: "accessToken" } })),
+    );
+    expect(reidentified.firstContact).toBeNull();
+
+    // Which puts the warning back on preflight, rather than a tick for a configuration nobody tried.
+    const simulation = await ensureSimulation(h.store);
+    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    expect(view.target.warnings.join(" ")).toContain("Nobody has tried");
+    await h.close();
+  });
+
+  it("tells preflight which tools the policy takes away, and from whom", async () => {
+    const h = await harness();
+    const simulation = await ensureSimulation(h.store);
+    const row = (await h.store.getTarget(simulation.targetId))!;
+    await h.store.saveTarget({ ...row, tools: { allow: [], deny: ["upgrade_plan"], destructive: "deny" }, updatedAt: new Date().toISOString() });
+
+    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    expect(view.target.tools).not.toContain("upgrade_plan");
+    expect(view.target.blocked.map((b) => b.name)).toContain("upgrade_plan");
+    expect(view.target.blocked.find((b) => b.name === "upgrade_plan")?.who).toBe("everyone");
+    expect(view.target.destructive).toBe("deny");
+    expect(view.target.warnings.join(" ")).toContain("blocked by a tool policy");
+    await h.close();
+  });
+
+  /**
+   * A policy that takes away the one tool an account is made with is not a narrowing, it is a dead
+   * configuration: every wake would end auth-failed. It is detectable without touching anything,
+   * so preflight says it rather than letting a run discover it.
+   */
+  it("blocks a run whose target policy takes away the tool people sign up with", async () => {
+    const h = await harness();
+    const simulation = await ensureSimulation(h.store);
+    const row = (await h.store.getTarget(simulation.targetId))!;
+    await h.store.saveTarget({ ...row, tools: { allow: ["get_*", "list_*"], deny: [], destructive: "confirm" }, updatedAt: new Date().toISOString() });
+
+    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    expect(view.blockers.join(" ")).toContain("sign_up");
+    expect(view.blockers.join(" ")).toContain("nobody sent here could sign up");
     await h.close();
   });
 

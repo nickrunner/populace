@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { JsonValueSchema } from "../json.js";
+import { ToolPolicySchema } from "./tool-policy.js";
 
 export const McpEndpointSchema = z.object({
   /** Stable name used in traces when a target has more than one endpoint. */
@@ -51,6 +52,15 @@ export const TargetSchema = z.object({
   webBaseUrl: z.url().optional(),
   /** Optional product description shown to the agent as "what the marketing says". */
   description: z.string().optional(),
+  /**
+   * What ANYBODY sent here may touch, whatever persona they are wearing.
+   *
+   * A tool that is dangerous is dangerous regardless of who reaches for it, so this is the floor:
+   * a persona's own policy is merged with this one by `effectiveToolPolicy`, where deny wins and
+   * allow intersects. A persona can therefore only ever narrow what the target permits — which is
+   * what keeps a persona added next month from silently inheriting the whole surface.
+   */
+  tools: ToolPolicySchema.prefault({}),
   /** How an ephemeral execution puts the target back to a known state before its first visit. */
   reset: TargetResetSchema.prefault({ kind: "none" }),
 });

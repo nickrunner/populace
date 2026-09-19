@@ -36,3 +36,5 @@ One record per fixed decision from the kickoff brief, plus the routine calls mad
 | [0030](0030-ephemeral-is-a-clean-slate.md) | Ephemeral is a clean slate, not a repeatable result |
 | [0031](0031-people-are-written-once-and-stored.md) | People are written once and stored |
 | [0032](0032-translate-at-the-contract-boundary.md) | Translate at the contract boundary; do not rename internal nouns |
+| [0033](0033-tool-policy-belongs-to-the-target.md) | A tool policy belongs to the target; a persona may only narrow it |
+| [0034](0034-first-contact-check.md) | First contact — one account, one read-only call, before a run |

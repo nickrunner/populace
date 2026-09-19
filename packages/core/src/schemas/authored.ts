@@ -7,6 +7,8 @@ import { IdentityConfigSchema } from "./identity-config.js";
 import { ModelConfigSchema } from "./model.js";
 import { PersonaSpecSchema } from "./persona.js";
 import { McpEndpointSchema, TargetResetSchema } from "./target.js";
+import { ToolPolicySchema } from "./tool-policy.js";
+import { FirstContactSchema } from "./first-contact.js";
 
 /**
  * The authored layer (`DATA-MODEL.md` §5): what a person edits, mutable and versioned, never read
@@ -48,6 +50,21 @@ export const StoredTargetSchema = z.object({
   /** "What the marketing says"; reaches the prompt. */
   description: z.string().optional(),
   identity: IdentityConfigSchema,
+  /**
+   * What anybody sent here may touch, whatever persona they wear. Resolved into `config.target`
+   * and merged with each persona's own policy in the runner, where deny wins and allow intersects
+   * — so this is a floor a persona can narrow and never widen.
+   */
+  tools: ToolPolicySchema.prefault({}),
+  /**
+   * The last first-contact check against this target, or null when nobody has run one.
+   *
+   * It is kept on the row because the question it answers — can a person actually get in here —
+   * has to be visible on a screen that must not itself provision an account. Preflight is a GET;
+   * making one account per page view on somebody's product is exactly what ADR-0023 forbids, so
+   * preflight reads this and the POST that made it is the only thing that touches the target.
+   */
+  firstContact: FirstContactSchema.nullable().default(null),
   reset: TargetResetSchema.prefault({ kind: "none" }),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),

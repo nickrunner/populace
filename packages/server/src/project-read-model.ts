@@ -6,6 +6,7 @@ import {
   type FindingKind,
   type Cohort,
   type Finding,
+  type FirstContact,
   type Project,
   type Run,
   type Simulation,
@@ -261,7 +262,19 @@ export class ProjectReadModel {
    */
   async preflight(
     simulation: Simulation,
-    input: { estimate: RunEstimate; tools: { name: string; description: string }[]; toolsError: string | null; promptPreview: PreflightView["promptPreview"]; blockers: string[] },
+    input: {
+      estimate: RunEstimate;
+      /** What the tool policy LEAVES, already filtered: the tools these people will be offered. */
+      tools: { name: string; description: string }[];
+      /** What it takes away, and from whom. */
+      blocked: PreflightView["target"]["blocked"];
+      destructive: PreflightView["target"]["destructive"];
+      /** The last first-contact check against this target, or null when nobody has run one. */
+      firstContact: FirstContact | null;
+      toolsError: string | null;
+      promptPreview: PreflightView["promptPreview"];
+      blockers: string[];
+    },
   ): Promise<PreflightView> {
     const summary = await this.simulationSummary(simulation);
     const [population, cohorts, personas, target] = await Promise.all([
@@ -279,6 +292,11 @@ export class ProjectReadModel {
     if (target !== undefined && target.reset.kind === "none" && simulation.mode === "ephemeral")
       warnings.push("This target declares no reset, so each execution starts on the data the last one left behind.");
     if (input.toolsError !== null) warnings.push(input.toolsError);
+    if (input.blocked.length)
+      warnings.push(`${input.blocked.length} tool(s) the target exposes are blocked by a tool policy, so nobody will reach ${input.blocked.length === 1 ? "it" : "them"}.`);
+    // Never checked is a warning, not a blocker: the check provisions an account, and a GET cannot
+    // be allowed to require one. A check that FAILED is a blocker, and control.ts adds it.
+    if (input.firstContact === null) warnings.push("Nobody has tried getting an account here yet. Run First contact on the target — it makes one account, calls one read-only tool, removes it again, and costs nothing.");
 
     return {
       simulation: { ...summary, target: { ...summary.target, reachable: input.toolsError === null } },
@@ -286,6 +304,8 @@ export class ProjectReadModel {
         id: target?.id ?? simulation.targetId,
         name: target?.name ?? "",
         tools: input.tools.map((t) => t.name),
+        blocked: input.blocked,
+        destructive: input.destructive,
         undescribed,
         resets: target !== undefined && target.reset.kind !== "none",
         warnings,

@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { identityProviderFor } from "@populace/adapters";
-import { EffortSchema, ModelConfigSchema, expandPopulation, parseDuration, tagForRun, type Agent } from "@populace/core";
+import { EffortSchema, ModelConfigSchema, effectiveToolPolicy, expandPopulation, isToolPermitted, parseDuration, tagForRun, type Agent } from "@populace/core";
 import { AnthropicProvider, LocalDaemon, McpSession, runWake, type ModelProvider, type WakeResult } from "@populace/runner";
 import { buildDigest, exporterNamed, renderDigestMarkdown, verifyPending } from "@populace/reports";
 import { isCollection, parseDocument } from "yaml";
@@ -76,8 +76,14 @@ export async function validate(options: GlobalOptions & { connect?: boolean }): 
           }
           if (config.identity.teardownTool && !session.hasTool(config.identity.teardownTool)) lines.push(`  WARNING teardown tool ${config.identity.teardownTool} not found; sweep will only forget identities`);
         }
+        // The same merge the runner applies: the target's policy is the floor, and a persona can
+        // only narrow it. Reporting the persona's alone told a user their population could reach
+        // tools the target forbids.
+        const blockedForEveryone = tools.filter((t) => !isToolPermitted(t.name, effectiveToolPolicy(config.target.tools))).map((t) => t.name);
+        if (blockedForEveryone.length) lines.push(`  the target's tool policy blocks: ${blockedForEveryone.join(", ")}`);
         for (const { agent } of agents) {
-          const denied = tools.filter((t) => !isAllowed(t.name, agent.persona.tools.allow, agent.persona.tools.deny)).map((t) => t.name);
+          const policy = effectiveToolPolicy(config.target.tools, agent.persona.tools);
+          const denied = tools.filter((t) => !isToolPermitted(t.name, policy)).map((t) => t.name);
           if (denied.length) lines.push(`  ${agent.id} cannot use: ${denied.join(", ")}`);
         }
       } catch (err) {
@@ -90,12 +96,6 @@ export async function validate(options: GlobalOptions & { connect?: boolean }): 
   }
   if (!process.env.ANTHROPIC_API_KEY && !config.model.apiKey) lines.push("note: ANTHROPIC_API_KEY is not set; wake and run will fail until it is");
   return { ok, lines };
-}
-
-function isAllowed(name: string, allow: string[], deny: string[]): boolean {
-  const glob = (p: string): RegExp => new RegExp(`^${p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`);
-  if (deny.some((p) => glob(p).test(name))) return false;
-  return allow.length === 0 || allow.some((p) => glob(p).test(name));
 }
 
 // ---- wake ------------------------------------------------------------------

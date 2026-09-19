@@ -5,8 +5,9 @@ import {
   applyMemoryOperation,
   costOf,
   credentialNeedsRedeem,
+  effectiveToolPolicy,
   emptyMemory,
-  isToolAllowed,
+  isToolPermitted,
   newFindingId,
   newIdentityId,
   newWakeId,
@@ -350,12 +351,19 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
     return finish("error", `could not connect to target: ${message}`, null, message);
   }
 
+  // The TARGET's policy merged with the PERSONA's, in the one place that decides what reaches the
+  // model at all. Deny wins and allow intersects, so a persona can narrow this and never widen it:
+  // a tool the target forbids is unreachable whoever is wearing the costume, and a persona added
+  // later inherits the target's floor rather than the whole surface. Merging anywhere further out
+  // — in the config assembler, in a UI — would leave a wake built by hand (the CLI, a test, a
+  // future cloud job) running on the persona's policy alone.
+  const policy = effectiveToolPolicy(config.target.tools, agent.persona.tools);
   const multi = sessions.size > 1;
   const targetTools: { key: string; tool: TargetTool; session: McpSession }[] = [];
   for (const session of sessions.values()) {
     for (const tool of session.listTools()) {
       const key = multi ? `${session.endpoint.name}__${tool.name}` : tool.name;
-      if (!isToolAllowed(tool.name, agent.persona.tools.allow, agent.persona.tools.deny)) continue;
+      if (!isToolPermitted(tool.name, policy)) continue;
       targetTools.push({ key, tool, session });
     }
   }
@@ -458,12 +466,14 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
       return { type: "tool_result", tool_use_id: block.id, is_error: true, content: "Session budget is used up; product tools are closed. Call remember and done." };
     }
     if (entry.tool.destructive) {
-      const policy = agent.persona.tools.destructive;
-      if (policy === "deny") {
-        await trace.write({ type: "guardrail", rule: "destructive-denied", tool: entry.tool.name, detail: "destructive tool denied by persona policy" });
+      // The stricter of the target's setting and the persona's: a persona that says `allow` can
+      // never soften a target that says `confirm`, which is the same one-way rule as the globs.
+      const destructive = policy.destructive;
+      if (destructive === "deny") {
+        await trace.write({ type: "guardrail", rule: "destructive-denied", tool: entry.tool.name, detail: "destructive tool denied by the target and persona policy" });
         return { type: "tool_result", tool_use_id: block.id, is_error: true, content: `${entry.key} is a destructive action and you have decided never to do destructive things here.` };
       }
-      if (policy === "confirm") {
+      if (destructive === "confirm") {
         const key = stableStringify({ tool: entry.key, args });
         if (!pendingConfirm.has(key)) {
           pendingConfirm.add(key);

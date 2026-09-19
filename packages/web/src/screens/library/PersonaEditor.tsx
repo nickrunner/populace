@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { isToolAllowed, type PersonaSpec, type TraitSpec, type TraitValue } from "@populace/core/isomorphic";
+import { blockedBecause, effectiveToolPolicy, type PersonaSpec, type ToolPolicy as ToolPolicyShape, type TraitSpec, type TraitValue } from "@populace/core/isomorphic";
 import { api, type TargetCheck } from "../../api.js";
 import { q } from "../../queries.js";
 import { useProject } from "../../context.jsx";
@@ -345,6 +345,13 @@ function Traits({ traits, onChange }: { traits: Spec["traits"]; onChange: (trait
   );
 }
 
+/** The destructive setting in the words the two forms use for it, for saying which one wins. */
+const DESTRUCTIVE_WORDS: Record<Spec["tools"]["destructive"], string> = {
+  allow: "let them do it",
+  confirm: "ask them to confirm first",
+  deny: "never",
+};
+
 /** Allow and deny are globs, and a glob is only as good as what it matches. So: show the matches. */
 function ToolPolicy({
   policy,
@@ -353,17 +360,23 @@ function ToolPolicy({
   targetId,
   simulationSlug,
 }: {
-  policy: Spec["tools"];
-  onChange: (policy: Spec["tools"]) => void;
+  policy: ToolPolicyShape;
+  onChange: (policy: ToolPolicyShape) => void;
   projectKey: string;
   targetId: string | null;
   simulationSlug: string | null;
 }) {
   const [checked, setChecked] = useState<TargetCheck | null>(null);
   const preflight = useQuery({ ...q.preflight(projectKey, simulationSlug ?? ""), enabled: simulationSlug !== null });
+  const targets = useQuery(q.targets(projectKey));
   const check = useMutation({ mutationFn: () => api.checkTarget(projectKey, targetId ?? ""), onSuccess: setChecked });
 
   const tools = checked?.tools.map((tool) => tool.name) ?? preflight.data?.target.tools ?? [];
+  // The TARGET's policy is the floor this persona stands on. Matching the globs below on their own
+  // would show a tool as reachable that the target forbids — which is the one thing this panel
+  // exists to be honest about.
+  const targetPolicy = targets.data?.items.find((target) => target.id === targetId)?.tools;
+  const effective = effectiveToolPolicy(...(targetPolicy ? [targetPolicy, policy] : [policy]));
   const asList = (value: string): string[] =>
     value
       .split(/[,\n]/)
@@ -381,7 +394,17 @@ function ToolPolicy({
             <Input value={policy.deny.join(", ")} onChange={(v) => onChange({ ...policy, deny: asList(v) })} placeholder="delete_*" mono />
           </Field>
         </div>
-        <Field label="Tools the target marks destructive">
+        <Field
+          label="Tools the target marks destructive"
+          // The runner takes the STRICTER of the two, so a persona that says "let them do it"
+          // against a target that says "confirm" gets confirm — and a screen that showed the
+          // persona's own word alone would read as if agents will act freely when they will not.
+          hint={
+            effective.destructive === policy.destructive
+              ? "A persona may be stricter than the target, never looser."
+              : `The target says "${DESTRUCTIVE_WORDS[effective.destructive]}", and the stricter of the two is what happens — so this is what they will actually do, whatever is picked here.`
+          }
+        >
           <Select
             value={policy.destructive}
             onChange={(v) => onChange({ ...policy, destructive: v as Spec["tools"]["destructive"] })}
@@ -406,16 +429,16 @@ function ToolPolicy({
             <p className="t-body text-ink-muted italic">No tool list to match against yet. Connect a target, and this fills in.</p>
           ) : (
             <p className="flex flex-wrap gap-x-3 gap-y-1.5">
-              {tools.map((tool) => {
-                const allowed = isToolAllowed(tool, policy.allow, policy.deny);
-                return (
-                  <span key={tool} className={allowed ? "" : "line-through opacity-50"}>
-                    <ToolName name={tool} />
-                  </span>
-                );
-              })}
+              {tools.map((tool) => (
+                <span key={tool} className={blockedBecause(tool, effective) === null ? "" : "line-through opacity-50"}>
+                  <ToolName name={tool} />
+                </span>
+              ))}
             </p>
           )}
+          {targetPolicy && (targetPolicy.allow.length > 0 || targetPolicy.deny.length > 0) ? (
+            <p className="t-meta text-ink-muted mt-2">The target has a policy of its own, and it is applied first: this persona can take more away, never put anything back.</p>
+          ) : null}
         </div>
       </Card>
     </Section>

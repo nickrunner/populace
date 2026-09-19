@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, type StoredTarget, type TargetCheck } from "../../api.js";
+import { api, type FirstContact, type StoredTarget, type TargetCheck } from "../../api.js";
 import { q } from "../../queries.js";
 import { useProject } from "../../context.jsx";
 import type { TargetInput } from "@populace/contract";
-import { Breadcrumb, Button, Card, Chip, Failed, Field, Input, Loading, Mono, Problem, Saved, Section, Select, TextArea, ToolName } from "../../components/ui.jsx";
+import { blockedBecause, effectiveToolPolicy, type ToolPolicy } from "@populace/core/isomorphic";
+import { Breadcrumb, Button, Card, Chip, Failed, Field, Input, Loading, Mono, Payload, Problem, Saved, Section, Select, TextArea, ToolName } from "../../components/ui.jsx";
 import { ms } from "../../format.js";
 
 interface EndpointDraft {
@@ -34,6 +35,8 @@ interface Draft {
   serviceAccountFile: string;
   firebaseProjectId: string;
   exchangeUrl: string;
+  /** What ANYBODY sent here may touch. A persona can narrow this; nothing can widen it. */
+  tools: ToolPolicy;
 }
 
 const EMPTY: Draft = {
@@ -53,6 +56,7 @@ const EMPTY: Draft = {
   serviceAccountFile: "",
   firebaseProjectId: "",
   exchangeUrl: "",
+  tools: { allow: [], deny: [], destructive: "confirm" },
 };
 
 function draftFrom(target: StoredTarget): Draft {
@@ -75,6 +79,7 @@ function draftFrom(target: StoredTarget): Draft {
     serviceAccountFile: identity.strategy === "admin-mint" ? (identity.serviceAccountFile ?? "") : "",
     firebaseProjectId: identity.strategy === "admin-mint" ? (identity.projectId ?? "") : "",
     exchangeUrl: identity.strategy === "admin-mint" ? (identity.exchangeUrl ?? "") : "",
+    tools: target.tools,
   };
 }
 
@@ -118,6 +123,7 @@ function bodyFrom(draft: Draft): TargetInput {
     ...(draft.webBaseUrl ? { webBaseUrl: draft.webBaseUrl } : {}),
     ...(draft.description ? { description: draft.description } : {}),
     identity,
+    tools: draft.tools,
   };
 }
 
@@ -138,6 +144,7 @@ export function Target() {
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [loaded, setLoaded] = useState(false);
   const [check, setCheck] = useState<TargetCheck | null>(null);
+  const [contact, setContact] = useState<FirstContact | null>(null);
 
   useEffect(() => {
     if (loaded || !targets.isSuccess) return;
@@ -181,6 +188,19 @@ export function Target() {
         userIdPath: d.userIdPath || (result.identity.userIdPath ?? ""),
         teardownTool: d.teardownTool || (result.identity.teardownTool ?? ""),
       }));
+    },
+  });
+
+  /**
+   * One person through the front door, for real: an account is provisioned the way the settings
+   * above say, one read-only tool is called with it, and the account is taken back down. It calls
+   * no model, so it costs nothing — which is the point of being able to run it before a run.
+   */
+  const firstContact = useMutation({
+    mutationFn: () => api.firstContact(projectKey, existing?.id ?? ""),
+    onSuccess: async (result) => {
+      setContact(result);
+      await queries.invalidateQueries();
     },
   });
 
@@ -310,6 +330,13 @@ export function Target() {
               </div>
             </>
           )}
+          <FirstContactPanel
+            saved={existing !== undefined}
+            result={contact ?? existing?.firstContact ?? null}
+            running={firstContact.isPending}
+            error={firstContact.error}
+            onRun={() => firstContact.mutate()}
+          />
           {check?.identity.because.length ? (
             <ul className="mt-2 border-t border-rule pt-3">
               {check.identity.because.map((line, i) => (
@@ -379,6 +406,10 @@ export function Target() {
         </Card>
       </Section>
 
+      <Section title="What anyone sent here may touch" sub="the floor; a persona can narrow it, nothing can widen it">
+        <ToolPolicyEditor policy={draft.tools} onChange={(tools) => set("tools", tools)} tools={check?.tools ?? null} />
+      </Section>
+
       {draft.webBaseUrl && existing ? (
         <Section title="What the website promises" sub="its own copy against the tools it exposes">
           <Card className="p-4">
@@ -405,6 +436,164 @@ export function Target() {
           </Card>
         </Section>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Globs are only as good as what they match, so the effect is shown rather than described: every
+ * tool the target actually exposes, marked allowed or blocked under what is typed right now.
+ *
+ * This is the screen where somebody decides what a whole population may touch, and it is the right
+ * altitude for the decision — a tool that is dangerous is dangerous whichever persona reaches for
+ * it. A persona's own policy is merged onto this one, and the merge can only ever narrow it.
+ */
+function ToolPolicyEditor({
+  policy,
+  onChange,
+  tools,
+}: {
+  policy: ToolPolicy;
+  onChange: (policy: ToolPolicy) => void;
+  tools: TargetCheck["tools"] | null;
+}) {
+  const asList = (value: string): string[] =>
+    value
+      .split(/[,\n]/)
+      .map((pattern) => pattern.trim())
+      .filter(Boolean);
+  const effective = effectiveToolPolicy(policy);
+  const blocked = (tools ?? []).filter((tool) => blockedBecause(tool.name, effective) !== null);
+
+  return (
+    <Card className="p-4">
+      <p className="t-body text-ink-soft mb-4 max-w-[68ch]">
+        Everyone who comes here obeys this, whoever they are pretending to be. A persona can take more away; it can never put anything back.
+      </p>
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="Allow" hint="Empty means everything the target exposes.">
+          <Input value={policy.allow.join(", ")} onChange={(v) => onChange({ ...policy, allow: asList(v) })} placeholder="get_*, list_*" mono />
+        </Field>
+        <Field label="Deny" hint="Always wins over allow, on every persona.">
+          <Input value={policy.deny.join(", ")} onChange={(v) => onChange({ ...policy, deny: asList(v) })} placeholder="delete_*, updateOrg*" mono />
+        </Field>
+      </div>
+      <Field label="Tools the target marks destructive" hint="A persona may be stricter than this, never looser.">
+        <Select
+          value={policy.destructive}
+          onChange={(v) => onChange({ ...policy, destructive: v as ToolPolicy["destructive"] })}
+          options={[
+            { value: "confirm", label: "Ask them to confirm first (recommended)" },
+            { value: "allow", label: "Let them do it" },
+            { value: "deny", label: "Never" },
+          ]}
+        />
+      </Field>
+
+      <div className="border-t border-rule pt-3">
+        <div className="flex items-baseline gap-3 mb-2">
+          <span className="t-label text-ink-muted">What that leaves them</span>
+          {tools === null ? null : (
+            <span className="t-meta text-ink-muted">
+              {tools.length - blocked.length} of {tools.length} tools reachable
+            </span>
+          )}
+        </div>
+        {tools === null ? (
+          <p className="t-body text-ink-muted italic">Check the connection above and every tool the target exposes is listed here, marked allowed or blocked.</p>
+        ) : (
+          <ul className="divide-y divide-rule border-t border-rule">
+            {tools.map((tool) => {
+              const why = blockedBecause(tool.name, effective);
+              return (
+                <li key={`${tool.endpoint}/${tool.name}`} className="py-2 flex items-baseline gap-3">
+                  <span className={why === null ? "" : "line-through opacity-50"}>
+                    <ToolName name={tool.name} />
+                  </span>
+                  <span className="t-body text-ink-soft flex-1 truncate">{tool.description}</span>
+                  {tool.destructive ? <Chip tone="bad">destructive</Chip> : null}
+                  {why === null ? <Chip tone="good">allowed</Chip> : <Chip tone="bad">blocked · {why}</Chip>}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * "Does any of this actually work?" — the one thing the forms above cannot tell you.
+ *
+ * It makes ONE account the configured way, calls ONE read-only tool with it and removes the
+ * account again, and then says which of the four things happened: the endpoint never answered, the
+ * account could not be made, the account was made and the target refused its token, or it all
+ * worked. No model is called, so it costs nothing however it ends.
+ */
+function FirstContactPanel({
+  saved,
+  result,
+  running,
+  error,
+  onRun,
+}: {
+  saved: boolean;
+  result: FirstContact | null;
+  running: boolean;
+  error: Error | null;
+  onRun: () => void;
+}) {
+  const tone = result === null ? "neutral" : result.outcome === "accepted" ? "good" : result.outcome === "connected-only" || result.outcome === "tool-failed" ? "neutral" : "bad";
+  const label: Record<FirstContact["outcome"], string> = {
+    accepted: "they can get in",
+    "connected-only": "connected, nothing called",
+    "tool-failed": "got in; the tool failed",
+    rejected: "the target refused the account",
+    "provision-failed": "no account could be made",
+    unreachable: "could not reach it",
+  };
+
+  return (
+    <div className="mt-5 border-t border-rule pt-4">
+      <div className="flex items-baseline gap-3 flex-wrap mb-2">
+        <span className="t-label text-ink-muted">First contact</span>
+        {result === null ? null : <Chip tone={tone}>{label[result.outcome]}</Chip>}
+        <span className="flex-1" />
+        <Button onClick={onRun} disabled={!saved || running}>
+          {running ? "Trying it…" : result === null ? "Try it for real" : "Try it again"}
+        </Button>
+      </div>
+      <p className="t-body text-ink-soft max-w-[68ch]">
+        Makes one account the way you have set it up, calls one read-only tool with it, and removes the account again. It calls no model, so it costs nothing —
+        {saved ? " and it is the only way to find out before a run does." : " save the target first."}
+      </p>
+      {error ? <Problem>{error.message}</Problem> : null}
+      {result === null ? null : (
+        <div className="mt-3 border border-rule rounded-md p-3">
+          <p className="t-body text-ink">{result.summary}</p>
+          {result.detail ? (
+            <div className="mt-2">
+              <Payload>{result.detail}</Payload>
+            </div>
+          ) : null}
+          <p className="t-meta text-ink-muted mt-2 flex flex-wrap gap-x-4 gap-y-1">
+            {result.handle ? <span>account {result.handle}</span> : null}
+            {result.tool ? (
+              <span>
+                answered by <ToolName name={result.tool} />
+              </span>
+            ) : null}
+            {result.latencyMs === null ? null : <span>{ms(result.latencyMs)}</span>}
+            <span>{result.tornDown ? "the account was removed again" : "nothing was removed"}</span>
+          </p>
+          {result.leftBehind ? (
+            <p className="t-body text-medium mt-2">
+              An account was left on the target: {result.leftBehind.handle}. {result.leftBehind.why}
+            </p>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }

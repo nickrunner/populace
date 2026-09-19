@@ -3,6 +3,7 @@ import {
   DaemonConfigSchema,
   EventSchema,
   FirebaseAdminConfigSchema,
+  FirstContactSchema,
   GuardrailsSchema,
   JobSchema,
   ModelConfigSchema,
@@ -12,6 +13,7 @@ import {
   SelfSignupConfigSchema,
   SimulationModeSchema,
   StaticIdentityConfigSchema,
+  ToolPolicySchema,
   VerifierConfigSchema,
 } from "@populace/core/isomorphic";
 import { z } from "zod";
@@ -73,6 +75,12 @@ export const TargetInputSchema = z.object({
   /** "What the marketing says", handed to every person before their first visit. */
   description: z.string().optional(),
   identity: IdentityConfigInputSchema,
+  /**
+   * What anybody sent here may touch. This is the altitude the decision belongs at: a tool that is
+   * dangerous is dangerous whichever persona reaches for it, and a persona's policy is merged onto
+   * this one so it can only ever narrow it. Absent leaves whatever is stored alone.
+   */
+  tools: ToolPolicySchema.optional(),
 });
 export type TargetInput = z.infer<typeof TargetInputSchema>;
 
@@ -84,6 +92,9 @@ export const StoredTargetViewSchema = z.object({
   webBaseUrl: z.string().nullable(),
   description: z.string().nullable(),
   identity: IdentityConfigViewSchema,
+  tools: ToolPolicySchema,
+  /** The last first-contact check, or null when nobody has run one. Never holds a credential. */
+  firstContact: FirstContactSchema.nullable(),
   updatedAt: z.iso.datetime(),
 });
 export type StoredTargetView = z.infer<typeof StoredTargetViewSchema>;
@@ -125,6 +136,14 @@ export const TargetCheckSchema = z.object({
   errors: z.array(z.string()),
 });
 export type TargetCheck = z.infer<typeof TargetCheckSchema>;
+
+/**
+ * The result of one first-contact check, on the wire. It is the core schema unchanged: the shape
+ * is stored on the target row and rendered in the browser, and a second spelling of it would be a
+ * second thing to keep honest about what it does and does not carry.
+ */
+export { FirstContactSchema };
+export type { FirstContact } from "@populace/core/isomorphic";
 
 /**
  * The website's copy against the tool list: a promise with no tool behind it is a coverage gap

@@ -260,7 +260,16 @@ export const PreflightViewSchema = z.object({
   target: z.object({
     id: z.string(),
     name: z.string(),
+    /** The tools the people will actually be offered — what the policy leaves, not what the target exposes. */
     tools: z.array(z.string()),
+    /**
+     * Tools the target exposes that nobody going will be offered, and who they are shut off for.
+     * "What will happen if I run this" has to include what will NOT happen: a tool blocked by a
+     * typo'd glob is otherwise discovered as a silence in the digest a day later.
+     */
+    blocked: z.array(z.object({ name: z.string(), who: z.string(), why: z.string() })),
+    /** What the merged policy does with tools the target marks destructive (ADR-0013). */
+    destructive: z.enum(["allow", "confirm", "deny"]),
     undescribed: z.array(z.string()),
     resets: z.boolean(),
     warnings: z.array(z.string()),
