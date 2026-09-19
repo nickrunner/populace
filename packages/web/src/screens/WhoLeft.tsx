@@ -1,19 +1,27 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api } from "../api.js";
+import { q } from "../queries.js";
+import { useSimulation } from "../context.jsx";
 import { inTheirWords } from "../format.js";
 import { Avatar, Card, Failed, Loading, PageHeader } from "../components/ui.jsx";
 
 /**
- * Who walked away, and whether they said they would come back. The second half is what M3's
- * fix-validation loop runs on: a continuation only brings back the people who said they would
+ * Who walked away, and whether they said they would come back. The second half is what the
+ * fix-validation loop runs on: a carry-forward only brings back the people who said they would
  * return (ADR-0020), so this screen is where that promise is recorded.
+ *
+ * It says their names. The copy here used to read "said she would come back if it were fixed" —
+ * one gendered pronoun standing in for a whole population, which was wrong about most of them
+ * and told the reader nothing. A person who leaves is the one thing worth naming on this screen.
  */
 export function WhoLeft({ runId }: { runId: string }) {
-  const findings = useQuery({ queryKey: ["findings", runId, "abandonment"], queryFn: () => api.findings(runId, "?kind=abandonment") });
-  const participants = useQuery({ queryKey: ["participants", runId], queryFn: () => api.participants(runId) });
+  const { href } = useSimulation();
+  const findings = useQuery(q.findings(runId, "?kind=abandonment"));
+  const participants = useQuery(q.participants(runId));
 
-  if (findings.isError) return <Failed error={findings.error} />;
+  // Both: the roster is a second request, and waiting on one that has already failed shows
+  // "Reading who left…" for ever with nothing to say why.
+  if (findings.isError || participants.isError) return <Failed error={findings.error ?? participants.error} />;
   const findingData = findings.data;
   const participantData = participants.data;
   if (!findingData || !participantData) return <Loading what="who left" />;
@@ -32,8 +40,9 @@ export function WhoLeft({ runId }: { runId: string }) {
       ) : (
         <div className="flex flex-col gap-4">
           {left.map((finding) => {
-            const agent = participantData.items.find((a) => a.id === finding.agentId);
-            const name = agent?.personaName ?? finding.personaId;
+            const person = participantData.items.find((candidate) => candidate.id === finding.agentId);
+            const name = person?.name ?? finding.personaId;
+            const first = name.split(/\s+/)[0] ?? name;
             return (
               <Card key={finding.id} className="p-5">
                 <div className="flex gap-3.5">
@@ -43,20 +52,24 @@ export function WhoLeft({ runId }: { runId: string }) {
                     <p className="t-body text-ink italic mb-3">“{inTheirWords(finding)}”</p>
                     <div className="flex flex-wrap items-center gap-4 t-meta text-ink-muted">
                       <span>
-                        {name} · visit {agent?.visits ?? "—"}
+                        {person === undefined ? (
+                          name
+                        ) : (
+                          <Link to={href(`people/${encodeURIComponent(person.id)}`)} className="text-accent hover:underline">
+                            {name}
+                          </Link>
+                        )}
+                        {person?.cohortName ? ` · ${person.cohortName}` : ""} · visit {person?.visits ?? "—"}
                       </span>
-                      <span className={agent?.wouldReturn === true ? "text-confirmed" : undefined}>
-                        {agent?.wouldReturn === true
-                          ? "said she would come back if it were fixed"
-                          : agent?.wouldReturn === false
-                            ? "said she would not come back"
-                            : "did not say whether she would come back"}
+                      <span className={person?.wouldReturn === true ? "text-confirmed" : undefined}>
+                        {person?.wouldReturn === true
+                          ? `${first} said a fix would bring them back`
+                          : person?.wouldReturn === false
+                            ? `${first} said nothing would bring them back`
+                            : `${first} did not say whether they would come back`}
                       </span>
-                      <Link
-                        to={`/runs/${encodeURIComponent(runId)}/wakes/${encodeURIComponent(finding.wakeId)}`}
-                        className="text-accent hover:underline"
-                      >
-                        watch the visit she left on
+                      <Link to={href(`visits/${encodeURIComponent(finding.wakeId)}`)} className="text-accent hover:underline">
+                        watch the visit they left on
                       </Link>
                     </div>
                   </div>

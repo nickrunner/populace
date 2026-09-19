@@ -1,51 +1,56 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type PopulationView, type Settings } from "../../api.js";
-import { Button, Card, Chip, Failed, Field, Loading, NumberInput, Problem, Saved, Section, Select } from "../../components/ui.jsx";
-import { usd } from "../../format.js";
+import { api, type PopulationView, type Settings as SettingsView } from "../api.js";
+import { q } from "../queries.js";
+import { useProject } from "../context.jsx";
+import { Button, Card, Chip, Failed, Field, Loading, NumberInput, Problem, Saved, Section, Select } from "../components/ui.jsx";
+import { usd } from "../format.js";
 
 const seconds = (ms: number): number => Math.round(ms / 1000);
 const toMs = (s: number): number => Math.max(0, Math.round(s)) * 1000;
 
 /**
- * Limits and spending. Every field here is a guardrail the runner enforces, not a hint to the
- * model (ADR-0009): the ceilings below are what actually stop a run, whatever any estimate says.
+ * Settings: limits and spending, project-scoped. Every field here is a guardrail the runner
+ * enforces, not a hint to the model (ADR-0009): the ceilings below are what actually stop a run,
+ * whatever any estimate says.
  */
-export function Limits() {
+export function Settings() {
+  const { key } = useProject();
   const queries = useQueryClient();
-  const settings = useQuery({ queryKey: ["settings"], queryFn: () => api.settings() });
-  const population = useQuery({ queryKey: ["population"], queryFn: () => api.population() });
-  const spendToday = useQuery({ queryKey: ["setup"], queryFn: () => api.setup() });
+  const settings = useQuery(q.settings(key));
+  const populations = useQuery(q.populations(key));
+  const spendToday = useQuery(q.setup(key));
 
-  const [draft, setDraft] = useState<Settings | null>(null);
+  const [draft, setDraft] = useState<SettingsView | null>(null);
   const [pop, setPop] = useState<PopulationView | null>(null);
+  const population = populations.data?.items[0];
 
   useEffect(() => {
     if (draft === null && settings.data) setDraft(settings.data);
   }, [draft, settings.data]);
   useEffect(() => {
-    if (pop === null && population.data) setPop(population.data);
-  }, [pop, population.data]);
+    if (pop === null && population) setPop(population);
+  }, [pop, population]);
 
   const save = useMutation({
     mutationFn: async () => {
       if (!draft || !pop) return;
-      await api.saveSettings({ model: draft.model, guardrails: draft.guardrails, verifier: draft.verifier, daemon: draft.daemon });
-      await api.savePopulation({ cadence: pop.cadence, maxWakes: pop.maxWakes, seed: pop.seed });
+      await api.saveSettings(key, { model: draft.model, guardrails: draft.guardrails, verifier: draft.verifier, daemon: draft.daemon });
+      await api.savePopulation(key, pop.id, { cadence: pop.cadence, maxWakes: pop.maxWakes, seed: pop.seed });
     },
     onSuccess: async () => {
       await queries.invalidateQueries();
     },
   });
 
-  if (settings.isPending || population.isPending) return <Loading what="your limits" />;
+  if (settings.isPending || populations.isPending) return <Loading what="your limits" />;
   if (settings.isError) return <Failed error={settings.error} />;
-  if (population.isError) return <Failed error={population.error} />;
+  if (populations.isError) return <Failed error={populations.error} />;
   if (!draft || !pop) return <Loading what="your limits" />;
 
   const guard = draft.guardrails;
-  const setGuard = (patch: Partial<Settings["guardrails"]>): void => setDraft({ ...draft, guardrails: { ...guard, ...patch } });
-  const setPerWake = (patch: Partial<Settings["guardrails"]["perWake"]>): void => setGuard({ perWake: { ...guard.perWake, ...patch } });
+  const setGuard = (patch: Partial<SettingsView["guardrails"]>): void => setDraft({ ...draft, guardrails: { ...guard, ...patch } });
+  const setPerWake = (patch: Partial<SettingsView["guardrails"]["perWake"]>): void => setGuard({ perWake: { ...guard.perWake, ...patch } });
 
   const models = [
     { value: "claude-opus-5", label: "Opus 5 — the most capable, and the most expensive" },
@@ -58,7 +63,7 @@ export function Limits() {
     <div>
       <header className="mb-7 flex items-start justify-between gap-6">
         <div>
-          <h1 className="t-title">Limits and spending</h1>
+          <h1 className="t-title">Settings</h1>
           <p className="t-body text-ink-soft mt-2 max-w-[68ch]">
             What a run is allowed to cost, how often the people come back, and which models they and the judge run on. These are enforced while a run is going, not suggested to it.
           </p>
@@ -101,7 +106,7 @@ export function Limits() {
         </Card>
       </Section>
 
-      <Section title="How often they come back">
+      <Section title="How often they come back" sub="the default a new simulation starts from, and applied to the simulations that already run this population">
         <Card className="p-4">
           <div className="grid grid-cols-3 gap-4">
             <Field label="A visit every… (seconds)">
@@ -125,7 +130,7 @@ export function Limits() {
               <Select value={draft.model.model} onChange={(v) => setDraft({ ...draft, model: { ...draft.model, model: v } })} options={models} />
             </Field>
             <Field label="Effort">
-              <Select value={draft.model.effort} onChange={(v) => setDraft({ ...draft, model: { ...draft.model, effort: v as Settings["model"]["effort"] } })} options={efforts} />
+              <Select value={draft.model.effort} onChange={(v) => setDraft({ ...draft, model: { ...draft.model, effort: v as SettingsView["model"]["effort"] } })} options={efforts} />
             </Field>
           </Card>
           <Card className="p-4">
@@ -133,7 +138,7 @@ export function Limits() {
             <Field label="How findings are checked" hint="The judge replays a finding's tool calls against the target and rules on what came back.">
               <Select
                 value={draft.verifier.judge}
-                onChange={(v) => setDraft({ ...draft, verifier: { ...draft.verifier, judge: v as Settings["verifier"]["judge"] } })}
+                onChange={(v) => setDraft({ ...draft, verifier: { ...draft.verifier, judge: v as SettingsView["verifier"]["judge"] } })}
                 options={[
                   { value: "model", label: "Ask a model to judge the replay" },
                   { value: "heuristic", label: "Compare the replay mechanically (free)" },

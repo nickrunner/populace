@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api } from "../api.js";
+import { q } from "../queries.js";
+import { useSimulation } from "../context.jsx";
 import { clock, usd } from "../format.js";
-import { Card, Failed, Loading, Mono, PageHeader } from "../components/ui.jsx";
+import { Bar, Card, Failed, Loading, Mono, PageHeader } from "../components/ui.jsx";
 
 /**
  * Who went, by cohort.
@@ -13,9 +14,10 @@ import { Card, Failed, Loading, Mono, PageHeader } from "../components/ui.jsx";
  * serve the whole page now: the cohort roll-up and the participant list. A person's memory lives
  * on their own page, where asking for it is one request for one person (SPEC §6.2).
  */
-export function Population({ runId }: { runId: string }) {
-  const cohorts = useQuery({ queryKey: ["run-cohorts", runId], queryFn: () => api.runCohorts(runId) });
-  const participants = useQuery({ queryKey: ["participants", runId], queryFn: () => api.participants(runId) });
+export function RunCohorts({ runId }: { runId: string }) {
+  const { href } = useSimulation();
+  const cohorts = useQuery(q.runCohorts(runId));
+  const participants = useQuery(q.participants(runId));
   const [open, setOpen] = useState<string | null>(null);
 
   if (cohorts.isError) return <Failed error={cohorts.error} />;
@@ -23,12 +25,13 @@ export function Population({ runId }: { runId: string }) {
   if (cohorts.isPending || participants.isPending) return <Loading what="the population" />;
 
   const people = participants.data.items;
+  const biggest = Math.max(...cohorts.data.items.map((cohort) => cohort.people), 1);
 
   return (
     <>
       <PageHeader
         title="Population"
-        lede="The people we sent, grouped by cohort. Open one to see who is in it; open a person to see what they are carrying between visits."
+        lede="The people this execution sent, grouped by cohort. Open one to see who is in it; open a person to see what they are carrying between visits."
       />
 
       <div className="flex flex-col gap-4">
@@ -43,7 +46,10 @@ export function Population({ runId }: { runId: string }) {
                   <Mono className="text-[11px] text-ink-muted">{cohort.cohortSlug}</Mono>
                   <span className="ml-auto t-meta text-ink-muted">{cohort.headline}</span>
                 </div>
-                <div className="flex flex-wrap gap-x-5 gap-y-1 t-meta text-ink-muted mt-2">
+                <div className="mt-2 mb-2 max-w-[18rem]">
+                  <Bar value={cohort.people} of={biggest} />
+                </div>
+                <div className="flex flex-wrap gap-x-5 gap-y-1 t-meta text-ink-muted tabular-nums">
                   <span>{cohort.personaName}</span>
                   <span>
                     {cohort.people} {cohort.people === 1 ? "person" : "people"}
@@ -52,8 +58,9 @@ export function Population({ runId }: { runId: string }) {
                     {cohort.visits} {cohort.visits === 1 ? "visit" : "visits"}
                   </span>
                   <span>
-                    {cohort.findings} {cohort.findings === 1 ? "finding" : "findings"}
+                    {cohort.findings} filed, {cohort.confirmed} confirmed
                   </span>
+                  <span className={cohort.gaveUp > 0 ? "text-critical" : undefined}>{cohort.gaveUp} walked away</span>
                   <span>{cohort.stillActive} still coming back</span>
                   <span>{usd(cohort.costUsd)}</span>
                 </div>
@@ -64,9 +71,10 @@ export function Population({ runId }: { runId: string }) {
                   <tbody>
                     {members.map((person) => (
                       <tr key={person.id} className="border-b border-rule last:border-0">
-                        <td className="py-2 pr-4 t-body">{person.name}</td>
                         <td className="py-2 pr-4">
-                          <Mono className="text-[11px] text-ink-muted">{person.id}</Mono>
+                          <Link to={href(`people/${encodeURIComponent(person.id)}`)} className="t-body hover:text-accent">
+                            {person.name}
+                          </Link>
                         </td>
                         <td className="py-2 pr-4 t-meta tabular-nums text-ink-soft">
                           {person.visits} {person.visits === 1 ? "visit" : "visits"}
@@ -75,9 +83,9 @@ export function Population({ runId }: { runId: string }) {
                         <td className="py-2 pr-4 t-meta text-ink-muted">
                           {person.retiredReason === "gave-up" ? `left at visit ${person.visits}` : person.status === "active" ? "still coming back" : "done for now"}
                         </td>
-                        <td className="py-2 pr-4 t-meta text-ink-muted">{clock(person.lastVisitAt)}</td>
+                        <td className="py-2 pr-4 t-meta text-ink-muted tabular-nums">{clock(person.lastVisitAt)}</td>
                         <td className="py-2 text-right">
-                          <Link to={`/runs/${encodeURIComponent(runId)}/wakes?agent=${encodeURIComponent(person.id)}`} className="t-meta text-accent hover:underline">
+                          <Link to={href(`visits?participant=${encodeURIComponent(person.id)}`)} className="t-meta text-accent hover:underline">
                             their visits
                           </Link>
                         </td>
@@ -89,6 +97,7 @@ export function Population({ runId }: { runId: string }) {
             </Card>
           );
         })}
+        {cohorts.data.items.length === 0 ? <Card className="p-4">Nobody went on this execution.</Card> : null}
       </div>
     </>
   );

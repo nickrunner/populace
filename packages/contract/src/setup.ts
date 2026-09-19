@@ -6,6 +6,7 @@ import {
   IdentityConfigSchema,
   JobSchema,
   ModelConfigSchema,
+  PauseReasonSchema,
   PersonaSpecSchema,
   RunStatusSchema,
   SimulationModeSchema,
@@ -301,6 +302,13 @@ export const RunLiveSchema = z.object({
   status: RunStatusSchema,
   /** Which controls the screen offers: Pause for a longitudinal execution, Stop for an ephemeral one. */
   mode: SimulationModeSchema,
+  /**
+   * Why it is not going, when it is not going. `process-ended` is the one a laptop produces and
+   * the one the screen has to say out loud: nothing failed, populace was closed, and the run is
+   * sitting where it was left (SPEC §4.2). Without it on the wire a paused run and an abandoned
+   * one are the same word.
+   */
+  pauseReason: PauseReasonSchema.nullable(),
   startedAt: z.iso.datetime().nullable(),
   endedAt: z.iso.datetime().nullable(),
   /** The cursor a client should resume the event stream from if it renders this snapshot first. */

@@ -207,6 +207,11 @@ export async function setCohortSize(store: Store, projectId: string, persona: St
   else cohort.maxWakes = cap;
   await store.saveCohort(cohort);
   if (!population.cohortIds.includes(cohort.id)) await store.savePopulation({ ...population, cohortIds: [...population.cohortIds, cohort.id], updatedAt: at });
+  // The cast is written where the headcount is decided, not later, on a screen that happens to
+  // read the cohort. `counts.people` is the number of PEOPLE ROWS, and it is what the zero state
+  // gates the way forward on: a starter adopted here with no roster behind it left the project
+  // reading "0 people configured" and the one path into a first run with no end (SPEC §7.5).
+  await ensureRoster(store, cohort.id);
 }
 
 /**

@@ -33,6 +33,14 @@ export type RunTotals = z.infer<typeof RunTotalsSchema>;
 export const RunSummarySchema = z.object({
   id: z.string(),
   label: z.string(),
+  /**
+   * Which simulation this is an execution of, and which project owns it (SPEC §6.1: "a run id is
+   * globally unique and the row carries its project and its simulation"). The browser needs them
+   * to turn a bookmarked `/runs/:id` into the simulation page that replaced it, without walking
+   * every project. Empty on a derived row that predates runs having a row of their own.
+   */
+  projectId: z.string(),
+  simulationId: z.string(),
   populationId: z.string(),
   /**
    * Derived in M1 and therefore coarse: `running` while any agent is still active, `completed`

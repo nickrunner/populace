@@ -93,6 +93,8 @@ export class ReadModel {
     return {
       id: runId,
       label: stored?.label || labelFor(runId, agents, stored?.startedAt ?? derived.startedAt),
+      projectId: stored?.projectId ?? "",
+      simulationId: stored?.simulationId ?? agents[0]?.simulationId ?? "",
       populationId: stored?.populationId || agents[0]?.populationId || wakes[0]?.populationId || "",
       status,
       startedAt: stored?.startedAt ?? derived.startedAt,

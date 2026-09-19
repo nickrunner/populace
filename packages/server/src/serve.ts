@@ -226,7 +226,20 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
       // Runs first: a wake in flight is still writing, and closing under it loses the visit.
       await runs?.shutdown();
       await new Promise<void>((done, failed) => {
-        server.close((err) => (err ? failed(err) : done()));
+        // Every open dashboard holds an event stream, and an event stream never ends by design, so
+        // `server.close()` on its own waits for a callback that can never come: the listener drops
+        // at once — the app the user is looking at starts refusing connections — and the process
+        // sits there until the browser tab is closed. Idle sockets go immediately; anything still
+        // being served gets a moment to finish and then goes too.
+        const grace = setTimeout(() => {
+          if ("closeAllConnections" in server) server.closeAllConnections();
+        }, 500);
+        server.close((err) => {
+          clearTimeout(grace);
+          if (err) failed(err);
+          else done();
+        });
+        if ("closeIdleConnections" in server) server.closeIdleConnections();
       });
       if (lock) await releaseLock(options.store, lock);
     },

@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useParams } from "react-router-dom";
 import { api, type StoredTarget, type TargetCheck } from "../../api.js";
+import { q } from "../../queries.js";
+import { useProject } from "../../context.jsx";
 import type { TargetInput } from "@populace/contract";
-import { Button, Card, Chip, Failed, Field, Input, Loading, Mono, Problem, Saved, Section, Select, TextArea, ToolName } from "../../components/ui.jsx";
+import { Breadcrumb, Button, Card, Chip, Failed, Field, Input, Loading, Mono, Problem, Saved, Section, Select, TextArea, ToolName } from "../../components/ui.jsx";
 import { ms } from "../../format.js";
 
 interface EndpointDraft {
@@ -82,15 +85,18 @@ function bodyFrom(draft: Draft): TargetInput {
 }
 
 /**
- * Connecting a target. The form is one thing and the live connection panel under it is another:
+ * One target. The form is one thing and the live connection panel under it is another:
  * the panel is what the target says about itself right now, and it is what the identity fields
  * are filled in from — the screen says so rather than filling them in silently, because choosing
  * the wrong sign-up tool means every person in the run fails to get through the front door.
  */
-export function Connect() {
+export function Target() {
+  const { key: projectKey, project, href } = useProject();
+  const { t = "new" } = useParams();
+  const navigate = useNavigate();
   const queries = useQueryClient();
-  const targets = useQuery({ queryKey: ["targets"], queryFn: () => api.targets() });
-  const existing = targets.data?.items[0];
+  const targets = useQuery(q.targets(projectKey));
+  const existing = t === "new" ? undefined : targets.data?.items.find((target) => target.id === t);
 
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [loaded, setLoaded] = useState(false);
@@ -102,15 +108,19 @@ export function Connect() {
     setLoaded(true);
   }, [loaded, targets.isSuccess, existing]);
 
+  const usedBy = project.simulations.filter((simulation) => simulation.target.id === existing?.id);
+
   const set = <K extends keyof Draft>(key: K, value: Draft[K]): void => setDraft((d) => ({ ...d, [key]: value }));
   const setEndpoint = (index: number, patch: Partial<EndpointDraft>): void =>
     setDraft((d) => ({ ...d, mcp: d.mcp.map((e, i) => (i === index ? { ...e, ...patch } : e)) }));
 
   const save = useMutation({
-    mutationFn: () => api.saveTarget(existing?.id ?? null, bodyFrom(draft)),
+    mutationFn: () => api.saveTarget(projectKey, existing?.id ?? null, bodyFrom(draft)),
     onSuccess: async (saved) => {
       setDraft(draftFrom(saved));
       await queries.invalidateQueries();
+      // A target that has just been created has an id now, and the URL should say which one it is.
+      if (existing === undefined) void navigate(href(`library/target/${encodeURIComponent(saved.id)}`), { replace: true });
     },
   });
 
@@ -120,7 +130,10 @@ export function Connect() {
    * back to the browser to send up again.
    */
   const connect = useMutation({
-    mutationFn: () => (existing && !save.isPending ? api.checkTarget(existing.id) : api.checkDraftTarget({ mcp: draft.mcp.map((e) => ({ name: e.name, url: e.url, ...(e.bearerToken === "" ? {} : { bearerToken: e.bearerToken }) })) })),
+    mutationFn: () =>
+      existing && !save.isPending
+        ? api.checkTarget(projectKey, existing.id)
+        : api.checkDraftTarget(projectKey, { mcp: draft.mcp.map((e) => ({ name: e.name, url: e.url, ...(e.bearerToken === "" ? {} : { bearerToken: e.bearerToken }) })) }),
     onSuccess: (result) => {
       setCheck(result);
       // Pre-fill only what is still empty. A value already in the form is the user's answer.
@@ -134,7 +147,7 @@ export function Connect() {
     },
   });
 
-  const promises = useQuery({ queryKey: ["promises", existing?.id], queryFn: () => api.promises(existing?.id ?? ""), enabled: existing !== undefined && draft.webBaseUrl !== "" });
+  const promises = useQuery({ ...q.promises(projectKey, existing?.id ?? ""), enabled: existing !== undefined && draft.webBaseUrl !== "" });
 
   if (targets.isPending) return <Loading what="your target" />;
   if (targets.isError) return <Failed error={targets.error} />;
@@ -145,7 +158,8 @@ export function Connect() {
     <div>
       <header className="mb-7 flex items-start justify-between gap-6">
         <div>
-          <h1 className="t-title">The target</h1>
+          <Breadcrumb items={[{ label: "The target", to: href("library/target") }, { label: existing?.name ?? "New target" }]} />
+          <h1 className="t-title mt-1">{existing?.name ?? "Connect a target"}</h1>
           <p className="t-body text-ink-soft mt-2 max-w-[68ch]">
             Where the people go. Everything below is what they are told before their first visit, and what they are allowed to reach when they get there.
           </p>
@@ -159,6 +173,11 @@ export function Connect() {
       </header>
 
       {save.isError ? <Problem>{save.error.message}</Problem> : null}
+      {existing && usedBy.length > 0 ? (
+        <p className="t-meta text-ink-muted mb-4">
+          Used by {usedBy.map((simulation) => simulation.name).join(", ")}. Changing the address here changes where {usedBy.length === 1 ? "it sends" : "they send"} people.
+        </p>
+      ) : null}
 
       <Section title="What it is">
         <Card className="p-4">

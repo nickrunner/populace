@@ -203,4 +203,10 @@ export const routes = {
 
   // ---- live (ADR-0026) -----------------------------------------------------
   events: `${API_BASE}/events`,
+  /**
+   * The same log, paged rather than streamed. An execution's life — started, paused, resumed,
+   * reconfigured, ended — is read from here, because those moments are events and nothing else
+   * records them (SPEC §4.3).
+   */
+  eventsHistory: `${API_BASE}/events/history`,
 } as const;

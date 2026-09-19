@@ -1381,6 +1381,9 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       runId,
       status: stored?.status ?? (agents.some((a) => a.status === "active") ? "running" : "completed"),
       mode: stored?.mode ?? "longitudinal",
+      // A run this process is not driving reads as paused with no reason only when the row says
+      // so; `process-ended` is what `reconcileOrphans` writes, and the screen says it in words.
+      pauseReason: stored?.pauseReason ?? null,
       startedAt: stored?.startedAt ?? wakes[0]?.startedAt ?? null,
       endedAt: stored?.endedAt ?? null,
       cursor,
@@ -1456,7 +1459,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   });
 
   // Paging over the event log, for anything that wants history without a stream.
-  app.get(`${routes.events}/history`, async (c) => {
+  app.get(routes.eventsHistory, async (c) => {
     const q = parseQuery(c, EventStreamQuerySchema);
     if (!q.ok) return q.response;
     const events = await deps.store.listEvents({

@@ -477,6 +477,30 @@ describe("populace serve", () => {
     }
   });
 
+  /**
+   * Ctrl-C with the dashboard open. Every project page holds an event stream, and an event stream
+   * never ends by itself, so `server.close()` alone waits for a callback that cannot come: the
+   * listener drops at once — the dashboard starts refusing connections — and the process sits
+   * there looking busy until the browser tab is closed.
+   */
+  it("lets go of an open event stream when it is closed", async () => {
+    const { store, cfg } = await seed();
+    const server = await startServer({ store, storePath: ":memory:", version: "test", seedConfig: cfg, port: 0 });
+    const stream = await fetch(`${server.url}${routes.events}?project=default`);
+    expect(stream.status).toBe(200);
+
+    const started = Date.now();
+    await server.close();
+    expect(Date.now() - started).toBeLessThan(5_000);
+
+    try {
+      await stream.body?.cancel();
+    } catch {
+      // The socket is already gone, which is the point of the test.
+    }
+    await store.close();
+  });
+
   it("explains itself when no dashboard has been built into the install", async () => {
     const { store, cfg } = await seed();
     const server = await startServer({ store, storePath: ":memory:", version: "test", seedConfig: cfg, port: 0, webRoot: "/nonexistent/public" });

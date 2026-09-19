@@ -1,5 +1,6 @@
-# Example population for the mock target (Tasklet): three personas, short cadence.
-# Copy next to your project as populace.yaml, or run: populace -c examples/tasklet-population.yaml validate
+# Example population for the mock target (Tasklet): three cohorts, a short cadence, one
+# ephemeral simulation. Copy it next to your project as populace.yaml, or run it in place:
+#   populace -c examples/tasklet-population.yaml validate
 version: 2
 
 target:
@@ -9,6 +10,13 @@ target:
       url: http://127.0.0.1:4310/mcp
       # bearerToken: my-gateway-token   # static token for gateways; identities override it. Environment variables can be referenced with ${...} syntax.
   webBaseUrl: http://127.0.0.1:4310
+  # How an ephemeral execution puts the target back before its first visit. Without one, ephemeral
+  # means fresh people, memory and accounts only — the target keeps whatever the last lot left.
+  # reset:
+  #   kind: http                 # none | tool | http
+  #   url: http://127.0.0.1:4310/admin/reset
+  #   method: POST
+  #   headers: { x-admin-token: admin }
   description: >-
     Tasklet keeps your projects and tasks in one place. Create projects, add tasks
     with due dates and priorities, search everything instantly, comment on tasks,
@@ -50,60 +58,79 @@ verifier:
 
 digestDir: digests
 
+# Who exists. A COHORT is N people who share one persona; the population is the cohorts together.
+# There is no scale factor: a cohort's size is the only number that decides how many people exist.
 population:
   id: tasklet-trial
-  seed: populace
-  cadence: { every: 2m, jitter: 30s }
-  maxWakes: 4
-  members:
-    - persona:
-        id: casual-lister
-        name: Casey Morgan
-        role: a hobbyist who keeps grocery and chore lists on their phone
-        backstory: >-
-          Casey has bounced between three list apps this year. They want something calm,
-          fast and free, and they leave the moment an app feels like work.
-        goals:
-          - Keep one grocery list and one chores list going
-          - Find things again quickly by searching
-        constraints:
-          - Will not pay for a list app
-        patience: 2
-        budgetUsd: 0
-        traits:
-          device: { distribution: choice, values: [phone, laptop], weights: [3, 1] }
-      count: 1
-    - persona:
-        id: project-planner
-        name: Priya Desai
-        role: a freelance designer who plans client projects with deadlines
-        backstory: >-
-          Priya runs four or five client projects at once and lives by due dates.
-          She is methodical, reads docs, and expects fields she sets to stick.
-        goals:
-          - Track a client launch with dated tasks
-          - Move deadlines when clients slip
-          - See what is overdue at a glance
-        patience: 4
-        budgetUsd: { distribution: uniform, min: 5, max: 15 }
-      count: 1
-    - persona:
-        id: power-organizer
-        name: Tomás Ruiz
-        role: an operations lead who organises a dozen parallel workstreams
-        backstory: >-
-          Tomás manages many projects and hundreds of tasks. He tests limits early,
-          paginates through everything, and abandons tools that cannot scale with him.
-        goals:
-          - Set up many projects at once
-          - Page through long task lists reliably
-          - Delete tasks that are no longer relevant
-        constraints:
-          - Never deletes a whole project by accident
-        patience: 3
-        budgetUsd: 20
-        # Tomás pushes hardest on scale and paging, so he gets the stronger model.
-        model: { model: claude-opus-5, effort: high }
-        tools:
-          destructive: confirm
-      count: 1
+  name: Everyone
+
+# What to run. A simulation is the population against the target, in one of two modes:
+#   ephemeral    - clean slate every execution, bounded by visitsPerPerson, ends on its own
+#   longitudinal - memory, accounts and visits accumulate; paused and resumed rather than re-run
+simulations:
+  - slug: trial
+    name: Tasklet trial
+    mode: ephemeral
+    visitsPerPerson: 4         # required for ephemeral; omit it for longitudinal
+    cadence: { every: 2m, jitter: 30s }
+    seed: populace
+    autoSweep: true            # delete the accounts this execution created when it ends
+
+cohorts:
+  - slug: casual-listers
+    name: Casual listers
+    size: 1
+    persona:
+      id: casual-lister
+      name: Casual lister
+      role: a hobbyist who keeps grocery and chore lists on their phone
+      backstory: >-
+        They have bounced between three list apps this year. They want something calm,
+        fast and free, and they leave the moment an app feels like work.
+      goals:
+        - Keep one grocery list and one chores list going
+        - Find things again quickly by searching
+      constraints:
+        - Will not pay for a list app
+      patience: 2
+      budgetUsd: 0
+      traits:
+        device: { distribution: choice, values: [phone, laptop], weights: [3, 1] }
+  - slug: project-planners
+    name: Project planners
+    size: 1
+    persona:
+      id: project-planner
+      name: Project planner
+      role: a freelance designer who plans client projects with deadlines
+      backstory: >-
+        They run four or five client projects at once and live by due dates.
+        Methodical, reads docs, and expects fields they set to stick.
+      goals:
+        - Track a client launch with dated tasks
+        - Move deadlines when clients slip
+        - See what is overdue at a glance
+      patience: 4
+      budgetUsd: { distribution: uniform, min: 5, max: 15 }
+  - slug: power-organizers
+    name: Power organizers
+    size: 1
+    persona:
+      id: power-organizer
+      name: Power organizer
+      role: an operations lead who organises a dozen parallel workstreams
+      backstory: >-
+        They manage many projects and hundreds of tasks. They test limits early,
+        paginate through everything, and abandon tools that cannot scale with them.
+      goals:
+        - Set up many projects at once
+        - Page through long task lists reliably
+        - Delete tasks that are no longer relevant
+      constraints:
+        - Never deletes a whole project by accident
+      patience: 3
+      budgetUsd: 20
+      # This cohort pushes hardest on scale and paging, so it gets the stronger model.
+      model: { model: claude-opus-5, effort: high }
+      tools:
+        destructive: confirm

@@ -73,3 +73,28 @@ only discoverable by `listByTag` under the original tag, and re-tagging the row 
 teardown. A continuation therefore points at the parent's identity records, and
 `sweep -r <parent>` removes accounts a continuation is still using. That is arguably right --
 it is the same account -- but it means sweeping a parent invalidates its continuations.
+
+## Amendment (2026-09-18): three ways of going again, and only one of them inherits
+
+This ADR built one mechanism — a child run that inherits memory, identities and visit counts — and
+the restructure (ADR-0029, ADR-0030) put three different user intentions on top of it. They are
+distinguished here so the buttons cannot be confused:
+
+- **Run it again** (ephemeral). A *sibling* execution: new run id, `seq + 1`, `continueFrom` unset,
+  `parentRunId` null. Nothing is inherited, which is the entire implementation of "clean slate" —
+  memory is keyed `(runId, agentId)` and the run id is new, so there is nothing to clear. New tag,
+  new signup emails, new accounts. Offered only for an ephemeral simulation; a longitudinal one
+  offers "start a new one" with the same mechanics and says plainly that it starts over.
+- **Pause and resume** (both modes, the main lifecycle of a longitudinal one). The **same run id**,
+  rebuilt from its frozen snapshot, `reconcile()`d so every agent keeps its runtime state and only
+  agents with no next visit are rescheduled. Memory is still there because the key did not change,
+  and visit numbering continues. This is not a continuation and does not make a child run.
+- **Carry them forward** (both modes, secondary). This ADR's child run, unchanged: `parentRunId`
+  set, memory copied under the new run id, identities and visit counts carried, and only the people
+  who said `wouldReturn` coming back. Still the answer to "I shipped a fix — do they come back?".
+  The route was `POST /runs/:id/continue` and is now `POST /runs/:id/carry-forward`, because
+  "continue" was being read as "resume".
+
+The rule underneath all three is this ADR's and is unchanged: **a new run id means a clean slate,
+and the only things that cross one are the things `continueFrom` copies.** Resume is the case that
+keeps the run id, which is why it is the only one where nothing has to be copied at all.

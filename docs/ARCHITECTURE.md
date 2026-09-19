@@ -20,10 +20,15 @@ the point of the split (ADR-0021 through ADR-0028).
 | --- | --- | --- |
 | **Target** | The app under test: one or more MCP endpoints (Streamable HTTP, bearer auth), optional web base URL, optional product description. | `@populace/core` `TargetSchema` |
 | **IdentityProvider** | Adapter yielding credentials for a persona. Strategies: `self-signup`, `admin-mint`, `static`. All support `teardown` and `listByTag`. | interface in core, implementations in `@populace/adapters/*` |
-| **Persona** | Static description: role, traits, goals, patience, budget, constraints, backstory. | core `PersonaSchema` |
-| **Agent** | A persona instance with an identity, persistent memory and a schedule. | core `AgentSchema`, rows in the store |
-| **Population** | Persona specs with counts and trait distributions, plus a scale factor. Expanded into agents. | core `PopulationSchema`, `expandPopulation()` |
-| **Wake** | One scheduled execution of an agent. A stateless job: load memory, run one session, persist memory/trace/findings/cost, exit. A wake that ends in `give_up` retires the agent. | `@populace/runner` `runWake()` |
+| **Project** | What scopes authoring: targets, personas, cohorts, populations, simulations, settings and triage belong to one and are never shared. | core `ProjectSchema` |
+| **Persona** | Static description: role, traits, goals, patience, budget, constraints, backstory. A template with no headcount. | core `PersonaSchema` |
+| **Cohort** | N people on one persona. Owns the headcount (`size`), the seed, and cadence / visit-cap overrides. There is no scale factor. | core `CohortSchema` |
+| **Person** | A durable individual in a cohort, `cohortSlug#ordinal`, with a stored name, detail line and handle. Written once, never silently overwritten. | core `PersonSchema` |
+| **Population** | Composition and nothing else: an ordered set of cohorts. Its size is the sum of theirs. | core `StoredPopulationSchema`, `expandPopulation()` |
+| **Simulation** | A population, a target and a mode — `ephemeral` (clean slate, bounded) or `longitudinal` (accumulating, unbounded). What a user presses go on. | core `SimulationSchema` |
+| **Run** | One execution of a simulation, carrying `simulationId` and a `seq` counting from 1, plus the config snapshot it froze. | core `RunSchema`, `runs` table |
+| **Agent** | A persona instance with a person's name, an identity, persistent memory and a schedule. **The wire calls it a participant** (ADR-0032). | core `AgentSchema`, rows in the store |
+| **Wake** | One scheduled execution of an agent — **a visit**, on the wire and on every screen. A stateless job: load memory, run one session, persist memory/trace/findings/cost, exit. A wake that ends in `give_up` retires the agent. | `@populace/runner` `runWake()` |
 | **Trace** | Ordered log of one wake: every tool call, model turn, token usage, dollar cost. | core `TraceEventSchema`, `trace_events` table |
 | **Finding** | Structured report item (`bug`, `friction`, `coverage-gap`, `suggestion`, `abandonment`, `praise`) carrying the exact tool calls that led to it. | core `FindingSchema` |
 | **Digest** | Verified, clustered findings over a window, rendered for humans. | `@populace/reports` |

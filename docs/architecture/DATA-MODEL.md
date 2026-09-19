@@ -1,36 +1,76 @@
 # Data model
 
-What populace persists, what it should persist, and when each piece lands. Companion to
+What populace persists and why each piece is keyed the way it is. Companion to
 `WEB-ARCHITECTURE.md`; the vocabulary table in `docs/ARCHITECTURE.md` still defines the terms.
+
+Sections 1, 5, 11 and 12 describe what exists. The rest are kept as the reasoning that got here —
+several were written before the tables they describe were built, and their milestone markers say so.
 
 ---
 
-## 1. What exists today
+## 1. What exists
 
-Six entity tables plus a key-value `control` table, each storing a zod-validated JSON blob with a
-few columns lifted out for indexing (ADR-0011).
+Nineteen tables plus a key-value `control` table, each storing a zod-validated JSON blob with a few
+columns lifted out for indexing (ADR-0011). Everything populace knows is in the database: YAML is an
+import, not the entry point (ADR-0025).
+
+**Authored — what a person edits.**
 
 | Table | Key | Lifted columns |
 | --- | --- | --- |
-| `agents` | `id` | `run_id`, `population_id`, `status`, `next_wake_at` |
+| `projects` | `id` | — |
+| `targets` | `id` | `project_id`, `slug` (unique per project), `name`, `updated_at` |
+| `personas` | `id` | `project_id`, `slug` (unique per project), `origin`, `updated_at` |
+| `cohorts` | `id` | `project_id`, `slug` (unique per project), `persona_id`, `size`, `updated_at` |
+| `people` | `(project_id, id)` | `cohort_id`, `cohort_slug`, `persona_id`, `ordinal`, `archived_at` |
+| `populations` | `id` | `project_id`, `slug` (unique per project), `updated_at` |
+| `simulations` | `id` | `project_id`, `slug` (unique per project), `population_id`, `target_id`, `mode`, `archived` |
+| `settings` | `project_id` | — |
+
+**Frozen — resolved once, immutable thereafter (ADR-0024).**
+
+| Table | Key | Lifted columns |
+| --- | --- | --- |
+| `config_snapshots` | `id` | `hash` (identical snapshots dedupe), `created_at` |
+
+**Produced — what the population generated.**
+
+| Table | Key | Lifted columns |
+| --- | --- | --- |
+| `runs` | `id` | `project_id`, `simulation_id`, `seq`, `population_id`, `status`, `parent_run_id`, `started_at` |
+| `agents` | `(run_id, id)` | `simulation_id`, `population_id`, `cohort_slug`, `person_id`, `status`, `next_wake_at` |
 | `identities` | `id` | `run_id`, `tag`, `agent_id`, `torn_down_at` |
 | `memories` | `(run_id, agent_id)` | — |
 | `wakes` | `id` | `run_id`, `agent_id`, `population_id`, `started_at`, `cost_usd` |
 | `trace_events` | `(wake_id, seq)` | — |
-| `findings` | `id` | `run_id`, `wake_id`, `kind`, `created_at`, `verified` |
-| `control` | `key` | — (kill switch lives here) |
+| `findings` | `id` | `run_id`, `wake_id`, `kind`, `signature`, `created_at`, `verified` |
+| `events` | `seq` (autoincrement) | `at`, `project_id`, `simulation_id`, `run_id`, `wake_id`, `type` |
+| `jobs` | `id` | `kind`, `status`, `project_id`, `run_id`, `created_at`, `cost_usd` |
 
-Everything else populace knows is somewhere other than the database:
+**Judged — what a human decided.**
 
-- **Target, identity strategy, model, guardrails, verifier settings and the whole population**
-  live in `populace.yaml` and are re-parsed on every command.
-- **Runs** have no row at all. `listRunIds()` is `SELECT DISTINCT run_id` unioned across three
-  tables. A run has no name, no status, no start or end time, no record of the config that
-  produced it, and no parent — lineage exists only as `continuedFrom` scattered across agent rows.
-- **Digests and clusters** are computed on demand and rendered to a Markdown file. Nothing is
-  kept, so "what did last week's digest say" is answerable only if someone saved the file.
-- **Human judgement about a finding** has nowhere to go. A finding has a machine verdict
-  (`confirmed` / `not-reproduced` / `inconclusive`) and nothing else.
+| Table | Key | Lifted columns |
+| --- | --- | --- |
+| `triage` | `(project_id, signature)` | `state`, `updated_at` |
+
+Four of those keys are the whole of a design decision and are worth reading twice:
+
+- **`agents` is keyed `(run_id, id)`**, not `id`. Agent ids are deterministic —
+  `populationSlug/cohortSlug#ordinal` — and therefore repeat across executions by design. Keyed on
+  `id` alone, starting a second execution rewrote the first one's participants and its memory joins
+  went nowhere (ADR-0020, ADR-0024 amendment). **Anything keyed by agent id alone leaks between
+  runs; key by run as well.**
+- **`memories` is keyed `(run_id, agent_id)`**, which is what makes a clean slate free: a new run id
+  is a new key and there is nothing to clear (ADR-0030).
+- **`people` is keyed `(project_id, id)`** where the id is `cohortSlug#ordinal`. A person is durable
+  and belongs to a cohort, not to an execution; the same person appears in every execution that
+  sends their cohort (ADR-0031).
+- **`triage` is keyed `(project_id, signature)`**, so a human's judgement survives a re-execution
+  that produces entirely new finding rows (ADR-0028).
+
+Three things are still deliberately not stored: **digests and clusters**, computed per request;
+**a cross-run "issue" entity**, which signature plus triage covers; and **rollup counters**, because
+cached totals on `runs` are enough at local scale (§12).
 
 ## 2. The four layers
 
@@ -116,38 +156,62 @@ are redacted to a reference before storage; the snapshot records *that* an env v
 its value. This matters before M5, because a local database gets copied around and attached to bug
 reports.
 
-## 5. Config as rows (M2)
+## 5. Config as rows
 
-The authored layer, once the database is the source of truth (ADR-0025, decided D3).
+The authored layer, with the database as the source of truth (ADR-0025). The entity model is
+ADR-0029's; what follows is how it is stored.
 
 ```ts
-Project   { id, name, createdAt }                        // "default" exists implicitly until M4
-Target    { id, projectId, name, mcp: McpEndpoint[], webBaseUrl?, description?,
-            identity: IdentityConfig, createdAt, updatedAt }
-Persona   { id, projectId, slug, spec: PersonaSpec,
-            origin: "starter" | "authored" | "imported", createdAt, updatedAt }
-Population{ id, projectId, slug, scale, seed, cadence, maxWakes?,
-            members: { personaId, count, cadence?, maxWakes? }[] }
-Settings  { projectId, model: ModelConfig, guardrails: Guardrails,
-            verifier: VerifierConfig, daemon: DaemonConfig }
+Project    { id, slug, name, description, archived, createdAt, updatedAt }
+Target     { id, projectId, slug, name, mcp: McpEndpoint[], webBaseUrl?, description?,
+             identity: IdentityConfig, reset: TargetReset, createdAt, updatedAt }
+Persona    { id, projectId, slug, spec: PersonaSpec,
+             origin: "starter" | "authored" | "imported", createdAt, updatedAt }
+Cohort     { id, projectId, slug, name, personaId, size, seed,
+             cadence?, maxWakes?, notes, createdAt, updatedAt }
+Person     { projectId, id: `${cohortSlug}#${ordinal}`, cohortId, cohortSlug, personaId, ordinal,
+             name, details, handle, generatedBy: "seeded" | "model" | "authored",
+             archivedAt?, updatedAt }
+Population { id, projectId, slug, name, cohortIds: string[], createdAt, updatedAt }
+Simulation { id, projectId, slug, name, description, populationId, targetId,
+             mode: "ephemeral" | "longitudinal", visitsPerPerson: number | null,
+             cadence, seed, autoSweep, requireFreshTarget, archived, createdAt, updatedAt }
+Settings   { projectId, model: ModelConfig, guardrails: Guardrails,
+             verifier: VerifierConfig, daemon: DaemonConfig, cadence, seed, maxWakes }
+Triage     { projectId, signature, state, note, externalRef, titleAtTriage, updatedAt }
 ```
 
-Three things to get right here:
+Five things to get right here:
 
-**Slugs stay stable.** Agent ids are `populationId/personaId#ordinal` and are deterministic by
-design — that determinism is what lets a continuation run recognise the same person. So a persona
-row keeps an immutable `slug` used for the id, separate from its mutable display name and its
-surrogate row id. Renaming a persona in the editor must never change an agent id.
+**Slugs stay stable, and they are the URL.** A target, persona, cohort, population and simulation
+each carry an immutable `slug`, unique within the project, separate from the mutable display name
+and from the surrogate row id. Agent ids are built from slugs, so renaming a persona in the editor
+must never change one — and the URL space is spelled in slugs, so a rename must not break a
+bookmark either.
 
-**Members reference personas; snapshots inline them.** The authored `Population.members` holds a
-`personaId` reference so one persona can appear in several populations. The snapshot inlines the
-full `PersonaSpec`, because the frozen layer must not depend on a row that can later change.
+**A cohort owns the headcount and the seed; nothing else does.** `size` is the only number that
+decides how many people exist — there is no `scale` — and the seed decides which traits, patience
+and budget each ordinal is sampled with. Putting the seed on the population or the simulation would
+re-cast the same people every time they were run, which destroys comparison across executions
+(ADR-0029).
 
-**The shapes are the existing schemas.** `PersonaSpec`, `Cadence`, `McpEndpoint`,
-`IdentityConfig`, `Guardrails`, `ModelConfig`, `VerifierConfig` are already zod schemas in
-`packages/core/src/schemas/`. The config tables store those objects unchanged. Resolution to a
-`PopulaceConfig` is assembly, not translation — which is why YAML import and export are lossless
-in both directions.
+**A person is a row, not a derivation.** Names are stable because they are stored, not because the
+generator is deterministic: `ensureRoster` fills empty slots only and never overwrites, a shrink
+archives rather than deletes, and changing the seed renames nobody (ADR-0031).
+
+**Cohorts and populations reference; snapshots inline.** `Population.cohortIds` and
+`Cohort.personaId` are references, so one cohort can be in two populations and one persona behind
+two cohorts. The snapshot inlines the full `PersonaSpec` *and the roster* — `member.people[]` with
+each person's id, name, details and handle — because the frozen layer must not depend on a row that
+can later change. That is what lets a three-month-old execution still render the right names after
+its cohort has been re-cast.
+
+**The shapes are the existing schemas.** `PersonaSpec`, `Cadence`, `McpEndpoint`, `IdentityConfig`,
+`Guardrails`, `ModelConfig`, `VerifierConfig` are zod schemas in `packages/core/src/schemas/` and
+the tables store those objects unchanged. Resolution to a `PopulaceConfig` is assembly, not
+translation — and it is **per simulation**, not per project: `resolveSimulationConfig` reads that
+simulation's population, its target and its plan, layered over the project's settings (ADR-0025
+amendment).
 
 ## 6. Evidence stays as it is
 
@@ -245,33 +309,65 @@ workers pull from; the interface does not change.
 
 ## 11. Schema change without a migration framework
 
-The store has none, by design: `CREATE TABLE IF NOT EXISTS`, plus an explicit drop where a shape
-had to change (`memories` losing its run scope is the precedent). That was affordable when the
-only data was a developer's throwaway local runs. It stops being affordable at M2, when a user's
-personas and targets live in the same file.
+The store has none, and as of the projects/simulations/cohorts/people restructure it does not even
+have the beginnings of one: `migrations.ts` is deleted (ADR-0011 amendment). One `SCHEMA` constant
+holds every table, and a `schema_shape` constant baked into the source is written to `control` on a
+fresh file and compared on open. A mismatch drops every table, recreates them, and warns:
 
-The rule from here:
+```
+populace store: the schema changed; this database was rebuilt from scratch and its runs are gone.
+```
 
-- **Produced and derived tables may be dropped and rebuilt.** Traces, events, digests and clusters
-  are reproducible or expendable; an incompatible change drops them with a logged warning.
-- **Authored tables are never dropped.** Projects, targets, personas, populations, settings and
-  triage are the user's work. They get additive columns, defaults, and a `schema_version` row in
-  `control` gating a small ordered list of forward migration steps.
+Earlier revisions of this section planned a real migration runner for M2, on the reasoning that
+authored rows are a user's work and must never be dropped. **That reasoning is right and its timing
+was wrong.** The restructure rewrote nearly every table at once while the only databases in
+existence were developers' throwaway local stores in this repository, and a migration sequence for
+data nobody has is a sequence nobody keeps correct.
+
+**The trigger that ends this regime is named rather than left to judgement: the first database
+outside this repository that holds a target somebody typed.** Once a person has entered an endpoint,
+a bearer token, a persona they wrote or a cohort they cast, a drop is data loss, and the migration
+runner has to exist before the next schema change ships. The rules it will implement are the ones
+this section always stated:
+
+- **Produced and derived tables may be dropped and rebuilt.** Traces, events and jobs are
+  reproducible or expendable.
+- **Authored tables are never dropped.** Projects, targets, personas, cohorts, people, populations,
+  simulations, settings and triage are the user's work. They get additive columns, defaults, and an
+  ordered list of forward steps.
 - **Snapshots are versioned, never migrated.** A snapshot records the `PopulaceConfig` version it
-  was written with and is read through the schema of that version.
+  was written with (`version: 2`) and is read through the schema of that version.
 
-That is a real migration runner, small, and M2 is when it has to exist. It is cheaper to write it
-with two tables in it than with twelve.
+Until the trigger fires, the cost of being wrong is exactly one warned rebuild of a developer's own
+store, which is why the decision is affordable — and why the sentence "authored rows are expendable"
+has an expiry date rather than a rationale.
 
 ## 12. What this model deliberately does not have
 
-- **No target-kind discriminator.** D2 settled that populace is MCP-only. `Target` is an MCP
-  connection concretely — a list of endpoints, a web base URL, a description — with no abstraction
-  layer for a second kind that is not coming. If that reverses, it is a new decision with a new ADR.
-- **No users, accounts or tenancy before M5.** `projectId` exists from M2 as a scoping column so
-  that adding tenancy later is a column and a filter, not a reshaping. Nothing before M5 reads it
-  as anything but `"default"`.
-- **No cross-run "issue" entity.** Cluster signature plus triage covers what M3 needs. A
-  first-class Issue that outlives clusters is a product decision nobody has made.
-- **No separate analytics or rollup tables.** Cached counters on `Run` are enough at local scale.
-  If a screen needs more, that is evidence for a rollup, not a reason to speculate about one now.
+- **No determinism subsystem.** No virtual clock, no seeded id source, no pinned model sampling, no
+  forced concurrency of one, no jitter removal. Two executions of one ephemeral simulation disagree
+  by design, and everything that compares executions compares signatures (ADR-0030).
+- **No semantic signature.** `sig1` is a hash of kind, primary tool and sorted title tokens, and the
+  measured consequence is in ADR-0028's amendment: identical or punctuation-varied wording recurs
+  100% of the time, a complaint reworded from scratch recurs 0% of the time. An embedding, or a
+  judge asked "is this the same problem?", is a later decision.
+- **No target-kind discriminator.** populace is MCP-only. `Target` is an MCP connection concretely,
+  with no abstraction layer for a second kind that is not coming.
+- **No cross-project anything.** A persona cannot be shared between projects; copy it. Signatures
+  roll up within a project. Projects are scoping, not tenancy: one SQLite file, one `serve` lock, no
+  authentication before M5.
+- **No per-person authoring beyond a name and a detail line.** A person cannot carry their own
+  goals, tool policy or budget. The moment they do, the persona stops being a template and the
+  cohort stops meaning anything (ADR-0031).
+- **No cross-run "issue" entity.** Cluster signature plus triage covers what the compare and Known
+  screens need. A first-class Issue that outlives clusters is a product decision nobody has made.
+- **No persisted digests or clusters, and no rollup tables.** Clusters are computed in memory per
+  request. At one project with a handful of simulations that is fine; at thirty simulations of
+  thirty executions it is not, and the answer then is a rollup table built on evidence rather than
+  speculated about now.
+- **No scheduled or unattended runs.** A longitudinal simulation is started by hand, and "runs
+  forever" means "runs as long as `serve` does". `serve --resume` re-arms executions a previous
+  process left paused; there is no cron, no daemonisation and no wake-on-boot.
+- **No YAML export for the new layers.** `populace.yaml` can create cohorts and simulations on first
+  open; it is an import, not a sync, and a cohort cast in the browser is not in anybody's repository
+  yet (ADR-0018 amendment).

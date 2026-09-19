@@ -554,6 +554,14 @@ describe("starting, steering and watching a run", () => {
     await post(h.app, routes.targets(P), { name: "Tasklet", mcp: [{ name: "default", url: target.mcpUrl }], identity });
     await post(h.app, routes.personaStarters(P), { slug: "first-timer", count: 1 });
 
+    // Taking a starter WRITES THE PEOPLE. `counts.people` is the number of person rows, and it is
+    // what the zero state gates the way forward on (SPEC §7.5) — a cohort whose roster is only
+    // materialised when somebody happens to open the cohort's own page left the project reading
+    // "0 people configured" and the one path into a first run with no end.
+    const home = ProjectOverviewViewSchema.parse(await json(await h.app.request(routes.project(P))));
+    expect(home.counts.people).toBe(1);
+    expect(home.counts.cohorts).toBe(1);
+
     const setup = SetupStatusSchema.parse(await json(await h.app.request(routes.projectSetup(P))));
     expect(setup.ready).toBe(true);
     expect(setup.blockers).toEqual([]);
