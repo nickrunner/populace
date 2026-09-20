@@ -82,6 +82,16 @@ export class McpSession {
     return this.tools;
   }
 
+  /**
+   * What the server called itself in the initialize handshake. The connection panel shows it so a
+   * user can tell one endpoint from another; it is whatever the server chose to report, not a
+   * protocol guarantee.
+   */
+  get serverInfo(): { name: string; version: string } | null {
+    const reported = this.client?.getServerVersion();
+    return reported ? { name: reported.name, version: reported.version } : null;
+  }
+
   hasTool(name: string): boolean {
     return this.tools.some((t) => t.name === name);
   }

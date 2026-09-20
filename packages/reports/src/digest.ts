@@ -19,7 +19,7 @@ export async function buildDigest(options: DigestOptions): Promise<Digest> {
   const findings = await options.store.listFindings(query);
   const wakes = await options.store.listWakes(query);
   const kept = options.includeNotReproduced ? findings : findings.filter((f) => f.verification?.verdict !== "not-reproduced");
-  const clusters = clusterFindings(kept, options.clusterThreshold);
+  const clusters = clusterFindings(kept, { threshold: options.clusterThreshold });
   return {
     id: `digest_${now().getTime().toString(36)}`,
     targetName: options.config.target.name,

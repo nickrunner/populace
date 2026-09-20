@@ -1,0 +1,33 @@
+{
+  "name": "@populace/server",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "public"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.15.0",
+    "@populace/adapters": "workspace:*",
+    "@populace/contract": "workspace:*",
+    "@populace/core": "workspace:*",
+    "@populace/reports": "workspace:*",
+    "@populace/runner": "workspace:*",
+    "@populace/store-sqlite": "workspace:*",
+    "hono": "^4.9.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@populace/mock-target": "workspace:*"
+  }
+}

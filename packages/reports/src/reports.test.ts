@@ -1,11 +1,11 @@
 import { SelfSignupProvider } from "@populace/adapters/self-signup";
-import { PopulaceConfigSchema, expandPopulation, newRunId, type Finding, type PopulaceConfig } from "@populace/core";
+import { PopulaceConfigSchema, expandPopulation, newRunId, signatureOf, type Finding, type PopulaceConfig } from "@populace/core";
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
 import { runWake } from "@populace/runner";
 import { ScriptedProvider, byWake, call, field, sequence, type ScriptContext, type ScriptPolicy } from "@populace/runner/testing";
 import { SqliteStore } from "@populace/store-sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildDigest, clusterFindings, heuristicJudge, normalizeResult, renderDigestMarkdown, verifyPending, MarkdownFileExporter } from "./index.js";
+import { buildDigest, clusterFindings, heuristicJudge, normalizeResult, primaryTool, renderDigestMarkdown, signatureHistories, verifyPending, MarkdownFileExporter } from "./index.js";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -203,7 +203,7 @@ describe("reports pipeline against the mock target", () => {
     const identityProvider = new SelfSignupProvider(cfg.identity as never);
     const policies: Record<string, ScriptPolicy> = { searcher, planner, power };
     const provider = new ScriptedProvider((ctx) => (policies[ctx.metadata.personaId] ?? sequence([]))(ctx));
-    const agents = new Map(expandPopulation(cfg.population, runId).map((e) => [e.agent.persona.id, e.agent]));
+    const agents = new Map(expandPopulation(cfg.population, runId, cfg.simulation.id).map((e) => [e.agent.persona.id, e.agent]));
     for (const wakeNumber of [1, 2]) {
       for (const [personaId, agent] of agents) {
         if (personaId === "power" && wakeNumber === 2) continue;
@@ -255,6 +255,93 @@ describe("reports pipeline against the mock target", () => {
     const outDir = mkdtempSync(join(tmpdir(), "populace-digest-"));
     const exported = await new MarkdownFileExporter().export(digest, { outDir });
     expect(readFileSync(exported.location, "utf8")).toBe(markdown);
+
+    // ---- the signature, end to end ----------------------------------------
+    //
+    // Every finding carries one, written by the runner at file time from the same (kind, primary
+    // tool, title tokens) the clusterer groups on. If that ever stopped being true, "this problem,
+    // across every execution" would go back to being a re-clustering instead of a lookup.
+    for (const finding of verified) expect(finding.signature).toBe(signatureOf(finding.kind, primaryTool(finding), finding.title));
+
+    // A signature is a function of the finding's CONTENT, so clustering the same findings twice —
+    // in a different order, which moves every positional `cluster-N` id — produces the same keys.
+    const shuffled = [...verified].reverse();
+    const again = clusterFindings(shuffled);
+    // Distinct first, THEN equal. Two sets are equal if both collapse to one element, so a
+    // `signatureOf` that returned a constant would satisfy the comparison below on its own — and
+    // the property this block claims is per-problem keys, not merely order-independent ones.
+    expect(new Set(again.map((c) => c.signature)).size).toBe(again.length);
+    expect(new Set(digest.clusters.map((c) => c.signature)).size).toBe(digest.clusters.length);
+    expect(new Set(again.map((c) => c.signature))).toEqual(new Set(digest.clusters.map((c) => c.signature)));
+    // And each of the four planted defects is one of those keys, identically in both clusterings.
+    const keyOf = (clusters: { tool?: string; kind: string; signature: string }[], tool: string, kind: string): string | undefined => clusters.find((c) => c.tool === tool && c.kind === kind)?.signature;
+    for (const [tool, kind] of [
+      ["search_tasks", "bug"],
+      ["update_task", "bug"],
+      ["list_tasks", "bug"],
+      ["delete_task", "coverage-gap"],
+    ] as const) {
+      const first = keyOf(digest.clusters, tool, kind);
+      expect(first, `${tool} has no cluster`).toBeDefined();
+      expect(keyOf(again, tool, kind)).toBe(first);
+    }
+
+    // ---- per-cohort incidence ---------------------------------------------
+    //
+    // Agent ids are `populationSlug/cohortSlug#ordinal`, so who was hit is readable from the
+    // findings alone; the census supplies the denominator nobody else knows.
+    const searchCluster = again.find((c) => c.tool === "search_tasks" && c.kind === "bug")!;
+    expect(searchCluster.personIds).toEqual(["planner#1", "searcher#1"]);
+    const census = [
+      { slug: "searcher", name: "Searchers", people: 4 },
+      { slug: "planner", name: "Planners", people: 3 },
+      { slug: "power", name: "Power users", people: 2 },
+    ];
+    const withCensus = clusterFindings(verified, { census }).find((c) => c.tool === "search_tasks" && c.kind === "bug")!;
+    expect(withCensus.cohorts).toEqual([
+      { slug: "searcher", name: "Searchers", peopleHit: 1, peopleTotal: 4, reports: 1 },
+      { slug: "planner", name: "Planners", peopleHit: 1, peopleTotal: 3, reports: 1 },
+      // A cohort that hit nothing still gets a row: "0 of 2" is half of what an incidence bar says.
+      { slug: "power", name: "Power users", peopleHit: 0, peopleTotal: 2, reports: 0 },
+    ]);
+
+    // ---- across executions -------------------------------------------------
+    //
+    // Two executions of one ephemeral simulation: the second one no longer reports the search bug
+    // and reports one thing the first did not.
+    const searchSignature = searchCluster.signature;
+    const invented: Finding = { ...verified[0]!, id: "fnd_new", runId: "run_b", title: "create_project silently truncates a long name", tool: "create_project", signature: signatureOf("bug", "create_project", "create_project silently truncates a long name") };
+    const executionA = { runId: "run_a", seq: 1, visited: true, findings: verified };
+    const executionB = { runId: "run_b", seq: 2, visited: true, findings: [...verified.filter((f) => f.signature !== searchSignature).map((f) => ({ ...f, runId: "run_b" })), invented] };
+
+    const histories = signatureHistories([executionA, executionB]);
+    // Present in A, absent from B: the fix landed.
+    expect(histories.get(searchSignature)?.state).toBe("fixed");
+    expect(histories.get(searchSignature)?.seenIn).toEqual([1]);
+    // The reverse — absent from A, present in B — is NOT a regression, it is new. Executions are
+    // independent and different people do different things, so one absence is not evidence of a
+    // fix and the later presence is not evidence of a relapse (SPEC §4.3).
+    expect(histories.get(invented.signature)?.state).toBe("new");
+    // Present, absent, present again IS a regression, and is the only shape that earns the word.
+    const executionC = { runId: "run_c", seq: 3, visited: true, findings: verified.map((f) => ({ ...f, runId: "run_c" })) };
+    const three = signatureHistories([executionA, executionB, executionC]);
+    expect(three.get(searchSignature)?.state).toBe("regressed");
+    expect(three.get(searchSignature)?.seenIn).toEqual([1, 3]);
+    expect(three.get(invented.signature)?.state).toBe("fixed");
+    // An execution that made no visits is not evidence of an absence; it says nothing either way.
+    const empty = signatureHistories([executionA, { runId: "run_x", seq: 2, visited: false, findings: [] }, executionC]);
+    expect(empty.get(searchSignature)?.state).toBe("open");
+    // And that holds when it is the LATEST execution, which is the case that matters: a run that
+    // has been created and has not visited yet — or one that never got off the ground — would
+    // otherwise be read as an absence and call every open problem fixed.
+    const pending = signatureHistories([executionA, { runId: "run_x", seq: 2, visited: false, findings: [] }]);
+    expect(pending.get(searchSignature)?.state).toBe("new");
+    expect(pending.get(searchSignature)?.inLatest).toBe(true);
+    expect(pending.get(searchSignature)?.seenIn).toEqual([1]);
+    const alsoPending = signatureHistories([executionA, executionB, { runId: "run_y", seq: 3, visited: false, findings: [] }]);
+    expect(alsoPending.get(searchSignature)?.state).toBe("fixed");
+    expect(alsoPending.get(invented.signature)?.state).toBe("new");
+
     await store.close();
   });
 });
@@ -272,6 +359,7 @@ describe("heuristics", () => {
       wakeId: "w",
       agentId: "ag",
       personaId: "p",
+      signature: signatureOf("bug", "search_tasks", "search_tasks is case sensitive"),
       kind: "bug",
       title: "search_tasks is case sensitive",
       description: "",
@@ -305,6 +393,7 @@ describe("heuristics", () => {
       wakeId: "w",
       agentId: "ag",
       personaId: "p",
+      signature: signatureOf("coverage-gap", "delete_task", "No way to delete a task"),
       kind: "coverage-gap",
       title: "No way to delete a task",
       description: "",

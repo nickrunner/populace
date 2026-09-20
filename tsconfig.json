@@ -1,5 +1,10 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": { "composite": false, "noEmit": true, "declaration": false, "declarationMap": false },
-  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "vitest.config.ts", "eslint.config.js"]
+  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "vitest.config.ts", "eslint.config.js"],
+  // `@populace/web` is a browser build and is checked by its own tsconfig, which has the DOM libs
+  // and the JSX settings this one deliberately does not. Checking its files here passed them
+  // against Node's globals, which let a `.tsx` file through unchecked entirely and would have
+  // accepted browser APIs that do not exist. `pnpm typecheck` runs both projects.
+  "exclude": ["packages/web"]
 }

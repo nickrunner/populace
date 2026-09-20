@@ -9,16 +9,26 @@ renders into a digest for a product team.
 
 This document is the map. Each fixed decision has an ADR in `docs/adr/`.
 
+The web product above this — the HTTP API, the dashboard and the data model they need — is mapped
+in `docs/architecture/WEB-ARCHITECTURE.md` and `docs/architecture/DATA-MODEL.md`, against the
+roadmap in `docs/product/ROADMAP.md`. Nothing there changes the wake loop described below; that is
+the point of the split (ADR-0021 through ADR-0028).
+
 ## Vocabulary
 
 | Term | Meaning | Where it lives |
 | --- | --- | --- |
 | **Target** | The app under test: one or more MCP endpoints (Streamable HTTP, bearer auth), optional web base URL, optional product description. | `@populace/core` `TargetSchema` |
 | **IdentityProvider** | Adapter yielding credentials for a persona. Strategies: `self-signup`, `admin-mint`, `static`. All support `teardown` and `listByTag`. | interface in core, implementations in `@populace/adapters/*` |
-| **Persona** | Static description: role, traits, goals, patience, budget, constraints, backstory. | core `PersonaSchema` |
-| **Agent** | A persona instance with an identity, persistent memory and a schedule. | core `AgentSchema`, rows in the store |
-| **Population** | Persona specs with counts and trait distributions, plus a scale factor. Expanded into agents. | core `PopulationSchema`, `expandPopulation()` |
-| **Wake** | One scheduled execution of an agent. A stateless job: load memory, run one session, persist memory/trace/findings/cost, exit. A wake that ends in `give_up` retires the agent. | `@populace/runner` `runWake()` |
+| **Project** | What scopes authoring: targets, personas, cohorts, populations, simulations, settings and triage belong to one and are never shared. | core `ProjectSchema` |
+| **Persona** | Static description: role, traits, goals, patience, budget, constraints, backstory. A template with no headcount. | core `PersonaSchema` |
+| **Cohort** | N people on one persona. Owns the headcount (`size`), the seed, and cadence / visit-cap overrides. There is no scale factor. | core `CohortSchema` |
+| **Person** | A durable individual in a cohort, `cohortSlug#ordinal`, with a stored name, detail line and handle. Written once, never silently overwritten. | core `PersonSchema` |
+| **Population** | Composition and nothing else: an ordered set of cohorts. Its size is the sum of theirs. | core `StoredPopulationSchema`, `expandPopulation()` |
+| **Simulation** | A population, a target and a mode — `ephemeral` (clean slate, bounded) or `longitudinal` (accumulating, unbounded). What a user presses go on. | core `SimulationSchema` |
+| **Run** | One execution of a simulation, carrying `simulationId` and a `seq` counting from 1, plus the config snapshot it froze. | core `RunSchema`, `runs` table |
+| **Agent** | A persona instance with a person's name, an identity, persistent memory and a schedule. **The wire calls it a participant** (ADR-0032). | core `AgentSchema`, rows in the store |
+| **Wake** | One scheduled execution of an agent — **a visit**, on the wire and on every screen. A stateless job: load memory, run one session, persist memory/trace/findings/cost, exit. A wake that ends in `give_up` retires the agent. | `@populace/runner` `runWake()` |
 | **Trace** | Ordered log of one wake: every tool call, model turn, token usage, dollar cost. | core `TraceEventSchema`, `trace_events` table |
 | **Finding** | Structured report item (`bug`, `friction`, `coverage-gap`, `suggestion`, `abandonment`, `praise`) carrying the exact tool calls that led to it. | core `FindingSchema` |
 | **Digest** | Verified, clustered findings over a window, rendered for humans. | `@populace/reports` |
@@ -57,7 +67,7 @@ process; a local daemon and a cloud job both just call `runWake()`.
       |
  connect MCP client (+ bearer if identity) (McpSession)
       |
- list tools -> filter by allow/deny lists  (guardrails)
+ list tools -> target policy + persona policy, merged (guardrails)
       |
  system prompt = persona + behaviour        stable, cached
  tools        = target tools + reporter     stable order, cached
@@ -113,21 +123,78 @@ users who complained about it (ADR-0020).
 
 Guardrails live in the runner, not in the prompt (ADR-0009): per-wake token
 and dollar ceilings, per-population daily dollar ceiling, a global kill switch
-in the store, allow/deny lists of tool names per persona, and a destructive-tool
-policy driven by MCP tool annotations (`destructiveHint`).
+in the store, allow/deny lists of tool names, and a destructive-tool policy driven
+by MCP tool annotations (`destructiveHint`).
+
+A tool policy lives on the TARGET as well as on a persona, and the effective policy for a wake is
+the two merged: deny wins, allow intersects, and the stricter destructive setting applies
+(ADR-0033). A persona can take more away and can never put anything back, so a tool the target
+forbids is unreachable whoever is wearing the costume — and a persona added later inherits the
+target's floor rather than the whole surface. The merge happens in `runWake`, in the one loop that
+decides which target tools reach the model at all.
 
 ### Identity
 
 `IdentityProvider.provision()` runs before the session. For `self-signup` it
 returns nothing and the agent signs up through the target's own tools; the
 interceptor recognises the configured signup tool, extracts the credential from
-its result and reconnects with the bearer token (ADR-0012). `static` reads a
-credentials file. `admin-mint` (Firebase Admin) creates a user with the run tag
-in its custom claims and mints a custom token.
+its result and reconnects with the bearer token (ADR-0012). `static` reads a pool
+of accounts that already exist from a JSON file, preferably keyed by cohort
+(`{ "byCohort": { "<cohortSlug>": [ … ] } }`); person n of a cohort is always
+handed entry n, which is the same in every process and after a restart, and a pool
+too small — or an older persona-keyed pool that would serve two cohorts, which both
+number their people from 1 — is refused when the run starts rather than wrapping
+round and giving two people one login. Those accounts are not populace's, so a
+sweep leaves them where they are and says so. `admin-mint` (Firebase Admin) creates a user with the run tag
+in its custom claims, mints a custom token and exchanges it at Google's identity
+toolkit for the ID token the target will actually accept — a custom token is not
+an ID token, so the exchange is the path, not an extra, and a config with neither
+`identity.apiKey` nor `identity.exchangeUrl` refuses to mint a session rather than
+hand back a token the target will bounce. That refusal is raised where a session
+is minted, not at construction, because `teardown` and `listByTag` go through the
+service account alone: a sweep must still be able to delete the users a
+misconfigured run left behind.
+
+A credential is redeemable, not permanent. `Credential` carries `expiresAt` and a
+`redeemable` (a refresh token, a ticket, a password), and a wake whose bearer is
+expired or within ten minutes of it — a margin sized to a whole wake, not to an
+instant — calls `IdentityProvider.refresh()` before it connects, off the
+tool-dispatch path, so nothing about the renewal enters the transcript. Whether a
+renewal is possible is the provider's question and not the schema's: Firebase can
+mint a fresh session from the uid alone, so an identity whose exchange handed back
+no refresh token is renewed too. When the target refuses a credential anyway —
+at connect, where an HTTP-layer bearer is checked, or on three tool calls in a row
+— the wake ends `auth-failed` rather than spending the rest of its budget on 401s.
+A person whose credential carries no bearer at all ends the same way, because the
+alternative is a session that silently falls back to the operator's own gateway
+token and drives the target with the operator's privileges.
+A redeemable outlives the bearer it mints, so it is treated as `bearerToken` is:
+never on the wire, never in a config snapshot, never in a trace.
+
+None of that is knowable from a form, so **first contact** does it for real before a run
+(ADR-0034): with a target saved, one identity is provisioned through the configured strategy, one
+READ-ONLY tool the target itself annotates `readOnlyHint` is called with it, and the account is
+taken back down. It is a POST because it creates an account on somebody's product; it calls no
+model, so it costs nothing. It distinguishes "could not reach the endpoint" from "could not
+provision" from "provisioned and the target refused the token" from "it worked", and for
+`admin-mint` it says outright that a refusal is the case where the product does not accept this
+issuer's tokens. When the account cannot be removed — a pool populace never owned, a self-signup
+target with no teardown tool — the result names the account that was left. No credential ever
+reaches the result, the log or the stored row. The last result is kept on the target row so
+preflight, which is a GET and must provision nothing, can block a start that would only rediscover
+the same failure.
 
 Every identity, wake and finding carries a run id (`run_...`) and a tag
-(`populace:run_...`). `populace sweep` tears down identities by tag and removes
-everything the run created (ADR-0010).
+(`populace:run_...`). `populace sweep` tears down identities by tag (ADR-0010).
+The run's wakes, traces and findings are KEPT: the evidence is what the run was
+for, and losing it is asked for by name with `--delete-data`. A provider that
+declares `ownsAccounts: false` created none of the accounts it handed out, so
+nothing is torn down and the sweep reports them as pre-existing instead of
+counting a no-op as a removal. A provider that declares `cannotRemove` DID create
+them and has no way to delete them — self-signup on a target with no
+`teardownTool` — so those are counted apart, said in words, and they hold back
+both the `sweptAt` stamp and `--delete-data`: the run's own rows are the only
+remaining record of which accounts were left on the product.
 
 ## Reports
 
