@@ -16,6 +16,14 @@ import { Bar, Breadcrumb, Button, Card, Chip, Failed, Loading, Mono, PageHeader,
  * Cohorts are named here; people are not, except as the three sample names that prove the cast is
  * real before a penny is spent (SPEC §7.6).
  */
+const OVERRIDE_WORDS: Record<string, string> = { spending: "spending limits", verification: "verification settings", model: "model" };
+
+/** "spending limits", or "spending limits and the model", in the words the Settings screen uses. */
+function listOf(blocks: readonly string[]): string {
+  const words = blocks.map((block) => OVERRIDE_WORDS[block] ?? block);
+  return words.length < 2 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
+}
+
 export function Preflight() {
   const { key, href } = useProject();
   const { key: simKey, simulation, href: simHref } = useSimulation();
@@ -68,6 +76,12 @@ export function Preflight() {
         />
         <Stat label="Tools they will meet" value={view.target.tools.length} sub={view.target.resets ? "the target can be put back" : "the target cannot be reset"} />
       </div>
+
+      {view.simulation.overriding.length > 0 ? (
+        <p className="t-body text-medium -mt-6 mb-9">
+          This simulation carries its own {listOf(view.simulation.overriding)}, so what Settings says is not what this run is held to.
+        </p>
+      ) : null}
 
       <Section title="Who is going" sub="by cohort — nobody is picked out until they find something">
         <Card className="divide-y divide-rule">

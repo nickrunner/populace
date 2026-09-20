@@ -558,6 +558,26 @@ describe("authoring config into the database", () => {
     expect(again.guardrails.perWake.maxTurns).toBe(12);
     await h.close();
   });
+
+  /**
+   * A simulation that does carry overrides — a row written before the fix above, or an authoring
+   * screen somebody adds later — is now allowed to say so, because a limit that Settings cannot
+   * move looks identical to one it can until a screen says which it is.
+   */
+  it("says on the pre-flight which of the project's settings a simulation is not taking", async () => {
+    const h = await harness();
+    const simulation = await ensureSimulation(h.store);
+    expect(PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id)))).simulation.overriding).toEqual([]);
+
+    // Exactly the shape a row written before the override schemas were fixed carries.
+    await h.store.saveSimulation({ ...simulation, overrides: { ...simulation.overrides, guardrails: { dailyUsd: 4 }, verifier: { judge: "model" } } });
+    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    expect(view.simulation.overriding).toEqual(["spending", "verification"]);
+    // ...and it is telling the truth: those are the numbers the run is held to.
+    const resolved = (await resolveSimulationConfig(h.store, processConfig, simulation.id)).config;
+    expect(resolved.guardrails.dailyUsd).toBe(4);
+    await h.close();
+  });
 });
 
 describe("what the connect wizard reads off a live target", () => {
