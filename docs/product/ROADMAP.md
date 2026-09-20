@@ -1,336 +1,348 @@
 # Populace product roadmap
 
-**Status:** final — both open decisions settled by Nick on 2026-09-18
-**Date:** 2026-09-18
+**Status:** re-baselined 2026-09-20 against `main` after the projects/simulations/cohorts/people
+restructure (PR #5, `98b1b43`). Supersedes the 2026-09-18 draft.
 **Owner:** product role
 **Input to:** the UX design thread and the architecture/build thread
 
-This is the product roadmap for turning populace from a terminal proof of concept into a
-production web dashboard. It covers who the users are, what they are hiring populace to do,
-and the milestone ladder from "runs locally as a web app" to cloud deployment.
+This is the product roadmap for populace as a web product. It covers who the users are, what
+they are hiring populace to do, what has shipped, and what is left.
 
-Everything here is grounded in what the repository does today. Two decisions that would have
-changed the shape of the product were escalated rather than guessed at; both are now settled
-and recorded in [§7](#7-settled-decisions).
+The 2026-09-18 version of this document was written in the old vocabulary — personas with counts
+inside a population — and against a ladder that assumed none of the web product existed. Both are
+now out of date, for a good reason: the restructure and the web work built most of M1 through M3.
+This version re-baselines on what `main` actually is.
+
+Nick's four decisions from 2026-09-18 stand unchanged and are restated in
+[§8](#8-decisions). Two new decisions are open.
 
 ---
 
 ## 1. What populace is, in one paragraph
 
-Populace deploys a population of persona-seeded AI agents against any app that exposes an MCP
-server. The agents behave like prospective users: they discover the product through its tools,
-sign up, try to get their own errands done, get annoyed, quit, and come back on a schedule.
-They file structured findings — bugs, friction, coverage gaps, suggestions, abandonment, praise —
-each carrying the exact tool calls that produced it. A verifier replays those calls and a judge
-confirms or rejects them; what survives is clustered into a digest.
+Populace sends a population of persona-seeded AI people into an app that exposes an MCP server.
+They behave like prospective users: they discover the product through its tools, sign up, try to
+get their own errands done, get annoyed, quit, and come back on a schedule. They file structured
+findings — bugs, friction, coverage gaps, suggestions, abandonment, praise — each carrying the
+exact tool calls that produced it. A verifier replays those calls and a judge confirms or rejects
+them; what survives is clustered by signature into results a team reads.
 
 It is not a test suite. A test suite asks "does the code do what I wrote down?" Populace asks
 "can a person who does not know my product get their errand done, and if not, where did they
 give up?"
 
-## 2. What exists today (Milestone 0)
+## 2. The vocabulary, as it now stands
 
-The POC is complete and coherent, not a sketch. It has:
+The restructure (ADR-0029) replaced the one noun between "the app" and "an agent" with five, and
+that changes how every screen and every roadmap item is named.
 
-- A stateless wake loop (`runWake()`) that is a pure-ish function of
-  `(agent, memory, identity, target, config)`. No agent process lives between wakes, which is
-  why a local daemon and a future cloud job are the same code (ADR-0003, ADR-0004).
-- Persistent per-agent memory, run-scoped, so a returning user is genuinely different from a
-  first visit (ADR-0008, ADR-0020).
-- Run lineage: `--continue-from` seeds a new run from a parent and brings back the agents who
-  gave up *only if they said they would return*. Both runs stay separately reportable.
-- Evidence by call ref: every tool result is tagged `[c1]`, `[c2]`…, and a finding cites the
-  refs, which the runner resolves into full reproduction steps (ADR-0015).
-- A verifier that mechanically replays those steps and a model judge that rules on the replay
-  (ADR-0014), then clustering and a Markdown digest.
-- Guardrails in the runner rather than the prompt: per-wake token/dollar/turn ceilings, a daily
-  population ceiling, a kill switch, tool allow/deny lists, destructive-tool confirmation
-  (ADR-0009).
-- Identity provisioning including genuine self-signup through the target's own tools, tagged by
-  run so `sweep` can delete every account a run created (ADR-0010, ADR-0012).
-- A reference target, Tasklet, with four deliberately planted defects, and the ability to repair
-  named defects at startup so the fix-validation loop can be tested end to end.
+| Noun | What it owns | What it replaced |
+| --- | --- | --- |
+| **Project** | Scopes authoring: targets, personas, cohorts, populations, simulations, settings, triage. | Nothing; new. |
+| **Target** | The app under test, its MCP endpoints, its identity strategy, **and its tool policy** (ADR-0033). | A `target` block in YAML with no policy of its own. |
+| **Persona** | A template: role, backstory, goals, constraints, traits. **No headcount.** | A persona that also carried its count. |
+| **Cohort** | **N people on one persona.** Owns `size`, the seed, cadence and visit-cap overrides. | The `count` on a population member, and `scale`, both gone. |
+| **Person** | A durable named individual, `cohortSlug#ordinal`, stored once and never silently overwritten (ADR-0031). | Nothing; new, and it is the most product-visible addition. |
+| **Population** | Composition and nothing else: an ordered set of cohorts. | A population that also carried cadence, caps and scale. |
+| **Simulation** | A population, a target and a mode — **ephemeral** or **longitudinal** (ADR-0030). What a user presses go on and what results belong to. | Nothing; new. The thing a user actually has in their head. |
+| **Run** | One execution of a simulation, with a `seq` counting from 1 and a frozen config snapshot. | An unnumbered run id. |
 
-**What does not exist:** any HTTP surface for populace itself, any UI, any notion of a user
-account, project or workspace, any finding state beyond its verification verdict, and any way to
-reach the product except a terminal, a hand-authored YAML file and an `ANTHROPIC_API_KEY` in the
-environment.
+Two translations matter for everything user-facing (ADR-0032): **an agent is a participant, and a
+wake is a visit**, on the wire and on every screen. The rows keep their old names; the product
+does not use them. This document uses the product's words.
 
-### The gap, stated plainly
+### What the restructure got right that the old roadmap missed
 
-Nine commands and a nine-block YAML file stand between a person and their first finding. The
-richest thing populace produces — the trace, with every model turn, tool call and guardrail trip
-in order — is written to SQLite and never shown to anyone. The final output is a Markdown file in
-a folder. A run that costs real money gives no visible signal while it is running except log
-lines scrolling past.
+The old roadmap said "a persona is a form, not a config file". That was true and insufficient.
+The thing that was actually missing was the **cohort** — the layer that lets "twelve first-timers
+who come back every ten minutes" and "eight first-timers on mobile who come back every four" be
+two different groups of the same persona. Without it, a population could hold one member per
+persona and the headcount was the product of two numbers on two screens.
 
-That gap is the product opportunity, and it is bigger than "put the CLI on the web".
+And **people being stored rather than derived** changes the evidence surface more than any screen
+decision could. A finding is now attributable to a named individual who is the same individual
+next execution. "Priya Desai walked away over this, and said a fix would bring her back" is a
+sentence the product can now write, and it could not before.
 
-## 3. Who the users are
+## 3. Where we are (2026-09-20)
 
-**v1 serves two audiences at once: the developer and the product owner.** That is a decision
-(D1), and it is the single most consequential thing in this document, because it means populace
-is not one dashboard with a technical depth setting. It is two surfaces over one body of
-evidence, and both have to be finished.
+Most of the ladder the 2026-09-18 roadmap laid out has been built. Stating that plainly is the
+point of this section, because the remaining work is small, specific, and not what the old
+document said it was.
 
-### The two surfaces
+### Shipped
 
-**The evidence surface — for the product owner.** Clusters, not findings. Coverage gaps and
-abandonment reasons in the persona's own words. What changed since the last run. Whether a
-shipped fix won back the people who left. Nothing on this surface requires knowing what MCP is.
-The unit is *an errand a user could not finish*.
+**The engine (was M0).** Unchanged and still the invariant: `runWake()` is untouched by all of
+the above, which is exactly what ADR-0021 through ADR-0034 were arranged to protect.
 
-**The instrument surface — for the developer.** The wake trace: every model turn, every tool
-call with its arguments and result, every guardrail trip, in sequence. Reproduction steps that
-can be replayed. Token and dollar cost per wake. The unit is *the call that went wrong*.
+**Read-only dashboard (was M1).** `populace serve` runs one process that owns the store
+(ADR-0022), serves a REST API under a zod contract (ADR-0023) and hosts a React dashboard. Both
+surfaces exist: results, gaps, who walked away, a person's history, and the visit trace viewer.
 
-They are views over the same data, not two products. The fix-validation loop (§4.2) is
-deliberately the place they meet: the product owner sees "Priya came back and she is satisfied",
-the developer sees the replayed tool calls that prove it.
+**Control and authoring (was M2).** Runs are first-class with frozen config snapshots
+(ADR-0024). The store is the source of truth for configuration and YAML is an import
+(ADR-0025) — which is D3, decided and now implemented. Live updates run over SSE on a persisted,
+resumable event log (ADR-0026). Long operations are persisted jobs (ADR-0027). The library
+screens author targets, personas, cohorts, people and populations. Cost is estimated before a run
+starts, and `preflight` says who is going, what they will meet and what it will cost.
 
-### The segments
+**Most of the loop (was M3).** Findings carry a content-derived `signature`; triage is keyed by
+`(project, signature)` so a human's judgement survives a re-execution that produces entirely new
+finding rows (ADR-0028). Run comparison exists. Carry-forward exists on the API. Problems marked
+fixed collapse into a "Known" section, and one marked fixed that returns is flagged `regressed`.
 
-**A. The MCP server builder — v1, served today.** A developer shipping an MCP server who does
-not know whether an agent can accomplish anything through it. Owns the target, runs things
-locally, has an API key. Blocked today by config authoring, zero visibility during a run, and a
-result they cannot share with anyone who lacks the repo checked out.
+**Projects (was M4), early.** Projects are real rows and the API is project-scoped, ahead of the
+old ladder's sequencing.
 
-**B. The product owner — v1, not served at all today.** Cares about the digest, the coverage
-gaps and the abandonment reasons; will never author YAML or run a daemon. Blocked today by
-everything that happens before the digest exists. Making them a real user in v1 is what pulls
-setup and authoring forward in the ladder below.
+### Two things the restructure added that the old roadmap never scoped
 
-**C. The release engineer — from M4.** Wants populace in CI: run before each release, gate on
-new confirmed bugs, diff this run against the last. Cheap to serve once run-over-run comparison
-exists, which M3 builds anyway.
+**A tool policy that belongs to the target (ADR-0033).** Policy used to live only on a persona,
+which is the wrong altitude: a user pointing populace at their own deployed product found that
+keeping the population away from `updateOrgClaimStatus`, `getUsers` and `getTransactions` meant
+writing identical deny globs on every persona — and a persona added next month inherited the
+whole surface silently. A policy that fails open as the population grows is not a policy. Now the
+target owns it and a persona may only narrow it.
 
-**D. The platform reviewer — after cloud.** An organisation certifying third-party MCP servers
-at scale: one standard population against every submitted server, scored. A strong wedge but a
-different product shape — multi-tenant, many targets, scores rather than digests. Explicitly out
-of scope until cloud has landed.
+This is a product capability, not a detail: **it is what makes populace safe to point at a real
+product** rather than only at a toy. The old roadmap did not have it anywhere.
 
-### The risk this creates, and how the ladder answers it
+**First contact (ADR-0034).** One account, one read-only call, before a run. It answers "is my
+identity configuration actually right?" for zero model spend, and it distinguishes *unreachable*
+from *provision-failed* from *rejected* from *accepted* from *connected-only* — which is the
+whole value, because a user cannot infer any of that from a 401. The old roadmap's "connect
+wizard" implied this and never named it.
 
-Serving two audiences in v1 is more work per milestone, and the failure mode is real: each rung
-lands half a developer surface and half a product-owner surface, and neither audience has
-anything they can use. The ladder below is cut to prevent that. **Every rung must land a
-complete slice for both roles** — not a finished feature for one and a stub for the other. Where
-that is not affordable within a rung, the rung is split rather than half-delivered.
+### Not shipped
 
-## 4. Core use cases
+- **The returning verdict.** See §5 — this is the gap that matters most.
+- **Export to an issue tracker.** No GitHub export exists.
+- **A shareable digest.** Markdown export exists from the CLI; there is no shareable result.
+- **Persisted digests and clusters.** Computed per request, deliberately, and fine at local scale.
+- **Scheduled or unattended runs.** A longitudinal simulation runs only as long as `serve` does.
+  There is no cron, no daemonisation, no wake-on-boot. See D6.
+- **A CI mode.** Nothing consumes the API non-interactively.
+- **A migration framework.** Deliberately deleted, with a named trigger for its return. See D5.
+- **Cloud.** Nothing started, by design.
 
-Ranked by how much value a real user gets, not by how easy they are to build. The surface each
-one primarily lands on is noted.
+## 4. Who the users are
 
-### 4.1 Pre-launch readiness — "can anyone actually use this?" *(both surfaces)*
+Nick's D1 stands: **v1 serves the developer and the product owner together.** The two-surface
+framing survives the restructure and is strengthened by it, because the new nouns split cleanly
+along the same seam.
 
-Point populace at an MCP server, run a small population, read the digest. The output is bugs with
-reproductions, the tools people wished existed, and the points where people gave up.
+**The evidence surface — for the product owner.** A simulation's results: problems clustered by
+signature, how many people hit each one, which cohorts, coverage gaps, who walked away and over
+what, in their own words with their own names. Nothing here requires knowing what MCP is. The
+unit is *an errand a person could not finish*.
 
-This is the use case the repository already proves: a healthy population finds all four of
-Tasklet's planted defects, and the reports tests assert exactly that. It is the demo, and it
-should be the first thing the web app makes effortless.
+**The instrument surface — for the developer.** The visit trace: every model turn, every tool
+call with arguments and result, every guardrail trip, in sequence. Reproduction steps that
+replay. Token and dollar cost per visit. First contact's failure modes. The unit is *the call
+that went wrong*.
 
-### 4.2 Fix validation — "I fixed it; do the users who quit come back?" *(both surfaces, together)*
+The architecture enforces the seam rather than leaving it to screen discipline: the project
+overview and simulation results payloads **carry no person names at all**, and a name first
+appears on a cluster detail as the author of a quote, asserted by a test that reads the raw
+response bodies (ADR-0032, WEB-ARCHITECTURE §5). That is a better mechanism than the old
+roadmap's rule, and it should stay.
 
-Ship a fix, then `--continue-from` the run that complained. The agents who abandoned return only
-if they said they would, carrying their memory of what annoyed them, and are told the product has
-changed. Their verdict is the answer.
+### The rule about complete slices, revisited
 
-**This is populace's differentiated feature.** Nothing else in the synthetic-testing space models
-a user who left, remembers why, and can be asked whether the fix won them back. It has already
-been validated end to end in this repo: the project-planner persona abandoned over `update_task`
-silently dropping `dueDate`, said she would return if that specific bug were fixed, and a
-continuation against a repaired target confirmed it.
+The old roadmap required every rung to land a complete slice for both roles, because the failure
+mode was landing half a surface each. **That rule did its job and should now be retired**, for a
+specific reason: the remaining work is genuinely lopsided and pretending otherwise would force
+artificial pairing. Export and CI mode are developer-surface. A shareable result is
+product-owner-surface. The returning verdict is both. Cloud is both.
 
-In the web app this should not be a flag on a command. It should be a button on a finding that
-reads, in effect, *re-run the people who complained about this*. It is also the one screen where
-both audiences are looking at the same thing for different reasons, which makes it the screen the
-design thread should spend the most care on.
+The rule that replaces it is narrower and still true: **no remaining item may leave one surface
+unable to complete a job it can do today.** That is a regression test, not a pairing requirement.
 
-### 4.3 Coverage gaps — "what should my MCP server expose?" *(evidence surface)*
+## 5. The gap that matters most: the returning verdict
+
+Fix validation is populace's differentiated feature, and after the restructure **its first half
+is built and its second half does not exist.**
+
+What exists: the "Who walked away" screen names each person who left, quotes what it was over,
+and records whether they said a fix would bring them back — `Priya Desai · said a fix would bring
+them back`. That is the promise, captured.
+
+What does not exist: anything that acts on it. There is no button on that screen, or on a
+problem, that carries those people forward. `POST /runs/:id/carry-forward` and
+`carryForwardFrom` exist on the API and in the web client's `api.ts`, and **no screen drives
+them.** And there is no screen that shows the result: *you carried Priya forward, she came back,
+and here is what she said about the thing she left over.*
+
+The old roadmap named this exactly right and it did not get built:
+
+> It should be a button on a finding that reads, in effect, *re-run the people who complained
+> about this*.
+
+### Why this is now more important than it was
+
+The comparison screen was measured during the restructure and the number is a cliff, not a curve
+(ADR-0028 amendment): a complaint whose wording is identical recurs 100% of the time, and **a
+complaint the model rewords from scratch recurs 0% of the time**, because a signature is a hash
+of an exact token set. The screen handles this honestly — it reports an absence as an absence and
+never says "you fixed this".
+
+That is correct, and it means the set-difference between two executions is **the weak evidence**.
+A problem that vanished may have been fixed, or may have been described differently by somebody
+who hit it just as hard.
+
+The strong evidence is the thing populace alone can produce: a **named person who left over a
+specific problem, was brought back carrying their memory of it, and passed judgement**. That is
+not a hash comparison. It is a first-person statement from a returning user, and `wouldReturn`,
+run lineage and per-run memory already make it available.
+
+So the recommendation is not "build the missing button". It is: **the fix-validation screen
+should lead with the returning person's verdict and treat the signature diff as supporting
+context** — the reverse of how the product currently presents it, because compare is a screen and
+the verdict is nothing.
+
+**This is the next rung.** It is a small amount of work on top of machinery that all exists, and
+it finishes the one thing no competitor can copy.
+
+## 6. Core use cases
+
+Ranked by value to a real user. The surface each lands on is noted.
+
+### 6.1 Pre-launch readiness — "can anyone actually use this?" *(both)*
+
+Point a simulation at an MCP server, send a cohort, read the results. The repository still proves
+it: a healthy population finds all four of Tasklet's planted defects and the reports tests assert
+exactly that.
+
+### 6.2 Fix validation — "do the people who quit come back?" *(both, together)*
+
+Covered in §5. Ephemeral and longitudinal now make the two halves of this precise in a way the
+old roadmap could not:
+
+- An **ephemeral** re-run is a *sibling execution with nothing inherited* — fresh people, memory
+  and accounts. It answers "is it good now?", not "did my fix land".
+- A **carry-forward** brings the parent's people, memory and accounts onto a new execution. It is
+  the only path that can produce a returning verdict.
+
+The old roadmap conflated these. They are different questions and the product should never offer
+one as an answer to the other.
+
+### 6.3 Safe targeting — "can I point this at my real product?" *(both)* — new
+
+Between the target's tool policy (ADR-0033), destructive-tool confirmation, and first contact
+(ADR-0034), populace can now be aimed at a deployed product with dangerous and privacy-sensitive
+tools without writing a deny glob six times. This is a use case, not plumbing: it is the
+difference between a tool you try on a demo app and one you run against the thing that pays your
+salary.
+
+### 6.4 Coverage gaps — "what should my MCP server expose?" *(evidence)*
 
 Agents file `coverage-gap` findings naming the tool they wished existed. Tasklet's missing
-`delete_task` is the planted example: the product copy promises it, no tool delivers it.
+`delete_task` is the planted example. This now has its own screen.
 
-This is roadmap input rather than QA output, and it is the most product-owner-facing thing
-populace produces. It is currently buried in a Markdown section. It deserves its own view.
+### 6.5 First-run and onboarding friction *(evidence)*
 
-### 4.4 First-run and onboarding friction *(evidence surface)*
+Self-signup is real, so visit 1 is a genuine first-impression test measured by somebody who has
+never seen the product.
 
-Because self-signup is real — the agent signs up through the target's own tools and the runner
-captures the credential — wake 1 is a genuine first-impression test. Where a persona stalls
-before their first successful errand is the onboarding funnel, measured by someone who has never
-seen the product.
+### 6.6 Release regression *(instrument)* and 6.7 pricing signal *(evidence)*
 
-### 4.5 Release regression *(instrument surface)*
+Regression needs the CI mode that does not exist yet. Pricing signal comes free: people carry a
+real budget and constraints, so a paywall produces friction or abandonment rather than a bug.
 
-Run the same population each release, compare digests, gate on new confirmed bugs. Needs
-run-over-run comparison, which M3 builds for fix validation anyway.
+## 7. What is left
 
-### 4.6 Pricing and packaging signal *(evidence surface)*
+Rungs, in recommended order. Every one of them is small next to what has already landed.
 
-Personas carry a `budgetUsd` and real constraints ("will not pay for a list app"). When Tasklet's
-free plan caps projects at three, the persona with a dozen workstreams hits the wall and files
-friction or abandonment rather than a bug. That is a packaging experiment nobody else can run
-cheaply. Secondary, but it comes free with the data already collected.
+### R1 — The returning verdict *(recommended next)*
 
-## 5. What the web app must do that the CLI cannot
+Carry-forward as an action a person can take from where the promise is recorded, and a screen
+that shows what the returning people said. Lead with the verdict; keep the signature diff as
+supporting context. §5 is the whole argument.
 
-Four things, each of which is a design brief:
+*Done when:* break Tasklet, find it, fix it, press one control, and read Priya's own words about
+whether it is fixed — without composing a CLI command or reasoning about a set difference.
 
-1. **Make a run legible while it happens.** The trace already records every model turn, tool
-   call, guardrail trip, memory write and finding in sequence. Watching Casey sign up, hit the
-   case-sensitive search, try three more spellings and file a bug is the product's most
-   persuasive moment, and today it is invisible. This is the centrepiece of the instrument
-   surface.
-2. **Make personas authorable without YAML.** A persona is a name, a role, a backstory, goals,
-   constraints, a patience dial and a budget. That is a form, not a config file. A starter
-   library of personas is what gets a new user from zero to a run — and for the product owner it
-   is the *only* way in.
-3. **Make findings actionable.** A finding today has a verification verdict and nothing else.
-   It needs human state — triaged, accepted, fixed, won't fix, duplicate — and a route out to
-   wherever the team actually works.
-4. **Make cost visible before it is spent.** Live runs cost real money. Guardrails exist but are
-   invisible until they trip. An estimate before you press go, and a live spend meter after, are
-   table stakes for a product people will run on their own key — and a product owner will not
-   press go on an unpriced button at all.
+### R2 — Results that leave the building
 
-## 6. Milestone ladder
+Export a problem to a GitHub issue, carrying its reproduction steps and its evidence. A shareable
+result a product owner can send to somebody who does not run `serve`.
 
-Local-first throughout. Each milestone ends in something demonstrable against the mock target,
-and each is a gate Nick approves before the next starts.
+*Done when:* a problem becomes a filed issue with its reproduction intact, and a result can be
+read by somebody with no populace install.
 
-**Both audiences in v1 re-cut this ladder.** Setup and authoring can no longer sit at M3: a
-product owner who cannot start a run is not a user of the product. So the old "drive it" and
-"set it up" milestones merge into a single M2, which is now the heaviest rung on the ladder and
-the one where the two-audience decision is paid for. Everything after it shifts up by one.
+### R3 — Unattended running
 
-### M1 — See it locally *(read-only, both surfaces)*
+Today "comes back on a schedule" is true only while `serve` is open, which is a gap against the
+product's own pitch. Whether this is a local service or waits for cloud is **D6**.
 
-A local HTTP API over the existing `Store`, and a read-only web dashboard served alongside it.
-`populace serve` starts both. No new persisted data model, no accounts, no auth — it reads what
-the SQLite store already holds.
+### R4 — CI mode
 
-- *Evidence surface:* the digest as a screen rather than a file — clusters, severity, which
-  personas hit each one, coverage gaps and abandonment in the persona's words.
-- *Instrument surface:* runs, agents, wakes, spend, and the **wake trace viewer** — the sequence
-  of model turns and tool calls with guardrail events in line, and reproduction steps per finding.
+A non-interactive client over the existing API that gates a build on newly confirmed problems.
+Cheap, because the API and signatures already exist.
 
-*Done when:* run the mock target and a population from the terminal, then, in the browser,
-(a) a product owner can read what is wrong with Tasklet without being shown a tool call, and
-(b) a developer can replay the trace of the wake that found each of the four planted defects.
+### R5 — Cloud
 
-### M2 — Run it from the browser *(control plane + authoring; the product owner becomes a user)*
+Postgres behind `Store`, an external scheduler behind `Scheduler`, hosted runners pulling the
+existing jobs table, accounts and tenancy in `server`, secrets out of the config rows. The runner
+is untouched; if it is not, something earlier went wrong.
 
-The rung that makes v1 real for both audiences, and the largest. Two halves that ship together
-because neither is sufficient alone:
+### The gate that is not a rung: the migration trigger
 
-- *Control:* start and stop a run, scale the population, engage and release the kill switch,
-  trigger a digest or a single wake. Live updates while a run is in flight, so the trace viewer
-  fills in as it happens rather than after.
-- *Setup:* the target connect wizard — paste an MCP URL, see the tool list, detect the signup
-  tool, run the equivalent of `validate` in the UI. A persona editor with a starter library.
-  Guardrail and budget controls as form fields with an estimated cost before you press go.
+The store has no migration framework and `migrations.ts` was deleted. A schema change drops every
+table and warns. That was affordable because the only databases in existence are developers'
+throwaway stores in this repository.
 
-YAML becomes an export and an import, not the entry point.
+The trigger that ends it is named rather than left to judgement: **the first database outside
+this repository that holds a target somebody typed.** After that, a drop is data loss — an
+endpoint, a bearer token, a persona somebody wrote, a cohort somebody cast. This is a release
+gate on the whole product, not an item inside a rung, and it is **D5**.
 
-*Done when:* someone who has never read the README gets from an MCP URL to their first finding in
-under ten minutes, entirely in the browser — and a developer runs the same population without
-touching the terminal after `populace serve`.
+## 8. Decisions
 
-*Note on size:* this rung is roughly twice any other. If it has to be split, split it by surface
-depth (a working wizard with a small persona library first, the full editor second), never by
-audience — shipping control without setup leaves the product owner exactly where they are today.
+### Settled, and unchanged
 
-### M3 — Act on the findings *(the fix-validation loop)*
+**D1 — Who is v1 for? Both the developer and the product owner.** *Nick, 2026-09-18.* Still the
+organising principle. The two-surface split now has an architectural enforcement mechanism
+(§4) that is better than the process rule it replaces.
 
-Finding triage state and a cluster-first findings view. Run comparison: this run against that
-one, what is new, what is gone. **"Re-run the people who complained"** as a first-class action
-built on `--continue-from`. Export a finding to a GitHub issue. A shareable digest.
+**D2 — Does populace stay MCP-only? Yes.** *Nick, 2026-09-18.* Implemented as decided: the data
+model carries no target-kind discriminator, and `Target` is an MCP connection concretely
+(DATA-MODEL §12).
 
-*Done when:* break Tasklet, find it, fix it with `--fix`, and confirm the fix from one screen,
-with the returning persona's verdict shown against the original complaint — the product owner
-reading the verdict, the developer reading the replay, on the same screen.
+**D3 — Where does configuration live? The database, with YAML as import.** Decided as an assumed
+default; now implemented as ADR-0025. YAML can create cohorts and simulations on first open; it
+is an import, not a sync.
 
-### M4 — More than one target, still local *(teams and CI)*
+**D4 — Who pays for model calls in the cloud? Bring your own key.** Unchanged, and still only
+binds at R5.
 
-Projects or workspaces holding multiple targets and their populations. A target library.
-Scheduled runs. A non-interactive CI mode that exits non-zero on new confirmed bugs.
+### Open
 
-*Done when:* one local install drives three different targets, and a CI job fails a build on a
-newly confirmed bug.
+**D5 — When does the migration framework have to exist?**
 
-### M5 — Cloud
+The named trigger is the first database outside this repository holding a target somebody typed.
+Only Nick knows when that is. If anyone is going to run populace against their own product before
+cloud — and ADR-0033 suggests somebody already has — the migration runner is a release gate
+before the next schema change, not an R5 item.
 
-Postgres store and an external scheduler behind the interfaces ADR-0004 already defined. Hosted
-runners. Accounts, authentication, multi-tenancy. Secrets management for target credentials and
-API keys. Billing, on whichever model §7 settles.
+*Recommendation:* treat the trigger as already imminent and schedule the migration runner before
+R2, because authored rows are the user's work and the cost of being wrong is somebody's typed
+credentials and cast cohorts.
 
-The runner itself should not change. If M5 requires touching `runWake()`, something earlier went
-wrong.
+**D6 — Does unattended running come before cloud?**
 
-*Done when:* a team member who has never installed anything logs in, connects a target and reads
-a digest.
+A longitudinal simulation is the product's answer to "what happens to people who use this for a
+fortnight", and today it stops when `serve` stops. Either populace grows a local always-on mode
+before cloud, or longitudinal simulations stay a supervised activity until R5.
 
-### Sequencing notes
+*Recommendation:* let it wait for cloud. A local always-on service is a different support surface
+— process management, restarts, log rotation — for a product that is still local-first, and R5
+solves it properly. But this is a real limitation against the pitch and should be a deliberate
+choice rather than an accident of sequencing.
 
-- M1 stays read-only and deliberately cheap. It is the early gate where Nick sees both surfaces
-  and can redirect before control-plane and authoring work is spent.
-- M2 is where the audience actually widens and is therefore the milestone most worth
-  over-investing in design.
-- M3 is where populace stops being a testing tool and becomes a product loop.
-- Nothing before M5 requires a network service, an account or a hosted anything.
+## 9. What happens next
 
-## 7. Settled decisions
-
-### D1 — Who is v1 for? **Settled: both the developer and the product owner.**
-
-*Decided by Nick, 2026-09-18.* The alternative on the table was developer-first, widening to the
-product owner at M3, on the argument that the developer is the only segment the current code can
-serve and that building for both at once makes the persona editor and the trace viewer compete
-for the same design effort early.
-
-The decision is both. Its consequences are folded through this document: §3 splits the product
-into an evidence surface and an instrument surface, setup and authoring move from M3 into M2,
-and every rung is required to land a complete slice for both roles rather than half of each.
-The cost is concentrated in M2, which is now the biggest milestone on the ladder.
-
-### D2 — Does populace stay MCP-only? **Settled: yes, MCP-only.**
-
-*Decided by Nick, 2026-09-18.* Populace tests apps that expose an MCP server. No browser-driving
-or HTTP-driving target type is planned, at any milestone.
-
-This is a scope decision, and it simplifies the architecture thread's work: `Target` can be
-modelled as an MCP connection directly, without a speculative abstraction layer for a second
-target kind that is not coming. It also sharpens the positioning — populace is the tool for MCP
-surfaces, and the product can say so plainly rather than hedging.
-
-### D3 — Where does configuration live once the UI can author it? **Assumed: the database, from M2.**
-
-The database becomes the source of truth and YAML becomes import/export. A UI that edits a YAML
-file on disk cannot survive the cloud milestone, and doing it twice is worse than doing it once.
-Import/export preserves every CLI workflow and the examples in the repo.
-
-Note that D1 moved authoring from M3 to M2, so this decision binds a milestone earlier than
-originally scoped. It is still reversible before M2 starts. Raised for awareness rather than
-re-opened.
-
-### D4 — Who pays for model calls in the cloud? **Assumed: bring your own API key.**
-
-It removes billing from the first cloud release entirely and matches how the tool works locally
-today. Only binds at M5 and can be revisited then.
-
-## 8. What happens next
-
-1. The **UX design thread** takes §3, §4, §5 and the M1–M3 screens and produces the dashboard
-   layouts and screen flows as an editable design canvas. Its central problem is the one D1
-   created: **two surfaces over one body of evidence**, which must feel like one product rather
-   than a dashboard with a hidden expert mode. The wake trace viewer (§5.1) and the
-   fix-validation loop (§4.2) are the two screens to get right, and the second is where the
-   surfaces meet.
-2. The **architecture and build thread** takes this plus the designs, settles the data model and
-   the stack, and dispatches engineering milestone by milestone against the repo. D2 means
-   `Target` is an MCP connection, concretely. D3 means the store, not the YAML file, is the
-   source of truth from M2 — which is earlier than first scoped, and worth confirming before M2
-   design work is spent.
+1. The **architecture and build thread** takes R1 as the recommended next rung, and answers D5
+   and D6 to Nick.
+2. The **UX design thread** has one screen to design that does not exist: the returning verdict
+   (§5). It is the payoff screen for the feature the whole product is differentiated by, and it
+   is the only significant screen still missing.
