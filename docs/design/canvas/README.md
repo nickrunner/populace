@@ -1,8 +1,8 @@
 # The dashboard design canvas
 
 The artboards behind the published canvas at
-<https://claude.ai/artifact/UDwjUzi4tsyK4W9iFXZ4kP>. Thirteen screens on two pages: M1, the
-read-only local dashboard, and M2, setting populace up and driving it from the browser.
+<https://claude.ai/artifact/UDwjUzi4tsyK4W9iFXZ4kP>. Eighteen screens on three pages: M1, the read-only local dashboard; M2, setting populace up and
+driving it from the browser; and R1, the returning verdict — the fix-validation loop.
 
 ## The rule the screens encode
 
@@ -36,14 +36,24 @@ python3 screens.py    # Evidence, Cluster, Gaps, Population, Wakes
 python3 flowgen.py    # Flow
 python3 m2.py         # Connect, Personas, NewRun, LiveRun
 python3 tracegen.py   # Trace
+python3 r1.py         # Returned, LeftWithAction, FindingWithAction, CarryForward, ReturnFlow
 ```
 
 `build.py` holds the shared M1 app shell (228px sidebar, 56px top bar) and the token values;
 `m2.py` holds the M2 shell, which adds a "Start a run" button and a "Set up" nav group.
 
+`r1.py` is different from both: pages 1 and 2 were drawn before the product existed, so they
+invent their own shell, while page 3 is drawn **on the app as built**. Its components are
+`packages/web/src/components/ui.tsx` and `Sidebar.tsx` transcribed as inline-styled HTML, and its
+tokens are `packages/web/src/theme.css` rather than the older palette below — Tailwind's alpha
+borders (`border-critical/40`) resolved to literal hexes, because an artboard carries no
+stylesheet. Change a token in `theme.css` and page 3 is the page that goes stale.
+
 ## Tokens
 
 Literal values, used inline so the canvas editor can edit them by hand.
+
+M1 and M2 (pages 1 and 2):
 
 ```
 ink #1a1510   soft #57514c   muted #857f79
@@ -52,6 +62,17 @@ rule #e1ded7   rule strong #cecac2
 accent #236292   accent wash #dbeefe
 evidence #864e18   evidence wash #fde9d4
 critical #d03b3b   high #ec835a   medium #fab219   low #857f79   good #0ca30c
+```
+
+R1 (page 3), from `theme.css` on main:
+
+```
+ink #1a1510   ink-soft #57514c   ink-muted #857f79
+paper #f9f6f2   card #fefdfb   well #f3f0ea
+rule #e1ded7   rule-strong #cecac2
+accent #236292   accent-wash #dbeefe
+evidence #864e18   evidence-wash #fde9d4
+critical #a3242f   high #b4551b   medium #8a6d1f   low #6b6560   confirmed #2f6b3c
 ```
 
 Severity and verdict always carry their word; colour never carries meaning alone.
@@ -67,3 +88,13 @@ and republish it to the same artifact URL. Editing the seeded output file direct
 The mockups use the repository's own material — Tasklet, the three example personas in
 `examples/tasklet-population.yaml`, and the four planted defects in `packages/mock-target` — so a
 screen can be checked against rows the store actually holds.
+
+## What page 3 proposes
+
+One new rail item, `Who came back`, directly after `Who walked away`; the pair is promise and
+verdict. It would appear only when the latest execution carries a parent.
+
+Everything else on the page is drawn on the API as it stands. `StartExecutionBodySchema` takes a
+parent run id, an optional label and an optional free-text `reason` and nothing else — no
+subsetting — so the carry-forward control says plainly that everybody goes, and `reason` is the
+"what you changed" field the verdict screen shows as the claim under test.

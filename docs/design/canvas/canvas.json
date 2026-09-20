@@ -2,11 +2,15 @@
   "pages": [
     {
       "id": "page-1",
-      "name": "M1 — see it locally"
+      "name": "M1 \u2014 see it locally"
     },
     {
       "id": "page-2",
-      "name": "M2 — run it from the browser"
+      "name": "M2 \u2014 run it from the browser"
+    },
+    {
+      "id": "page-3",
+      "name": "R1 \u2014 the returning verdict"
     }
   ],
   "artboards": [
@@ -25,7 +29,7 @@
       "y": 0,
       "w": 1440,
       "h": 900,
-      "title": "M1 · Overview",
+      "title": "M1 \u00b7 Overview",
       "page": "page-1"
     },
     {
@@ -34,7 +38,7 @@
       "y": 0,
       "w": 1440,
       "h": 980,
-      "title": "M1 · Watch a visit",
+      "title": "M1 \u00b7 Watch a visit",
       "is_interactive": true,
       "page": "page-1"
     },
@@ -53,7 +57,7 @@
       "y": 1560,
       "w": 1440,
       "h": 1300,
-      "title": "M1 · Findings",
+      "title": "M1 \u00b7 Findings",
       "page": "page-1"
     },
     {
@@ -62,7 +66,7 @@
       "y": 1560,
       "w": 1440,
       "h": 980,
-      "title": "M1 · A finding in full",
+      "title": "M1 \u00b7 A finding in full",
       "page": "page-1"
     },
     {
@@ -71,7 +75,7 @@
       "y": 1560,
       "w": 1440,
       "h": 1040,
-      "title": "M1 · Coverage gaps",
+      "title": "M1 \u00b7 Coverage gaps",
       "page": "page-1"
     },
     {
@@ -80,7 +84,7 @@
       "y": 3020,
       "w": 1440,
       "h": 980,
-      "title": "M1 · Population",
+      "title": "M1 \u00b7 Population",
       "page": "page-1"
     },
     {
@@ -89,7 +93,7 @@
       "y": 3020,
       "w": 1440,
       "h": 900,
-      "title": "M1 · Wakes",
+      "title": "M1 \u00b7 Wakes",
       "page": "page-1"
     },
     {
@@ -98,7 +102,7 @@
       "y": 0,
       "w": 1440,
       "h": 1120,
-      "title": "M2 · The target",
+      "title": "M2 \u00b7 The target",
       "page": "page-2"
     },
     {
@@ -107,7 +111,7 @@
       "y": 0,
       "w": 1440,
       "h": 1120,
-      "title": "M2 · The people",
+      "title": "M2 \u00b7 The people",
       "page": "page-2"
     },
     {
@@ -116,7 +120,7 @@
       "y": 0,
       "w": 1440,
       "h": 1200,
-      "title": "M2 · Start a run",
+      "title": "M2 \u00b7 Start a run",
       "page": "page-2"
     },
     {
@@ -125,8 +129,53 @@
       "y": 1360,
       "w": 1440,
       "h": 980,
-      "title": "M2 · While it runs",
+      "title": "M2 \u00b7 While it runs",
       "page": "page-2"
+    },
+    {
+      "file": "ReturnFlow.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 660,
+      "title": "R1 \u00b7 How the loop closes",
+      "page": "page-3"
+    },
+    {
+      "file": "Returned.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1740,
+      "title": "R1 \u00b7 Who came back",
+      "page": "page-3"
+    },
+    {
+      "file": "LeftWithAction.dc.html",
+      "x": 3120,
+      "y": 0,
+      "w": 1440,
+      "h": 770,
+      "title": "R1 \u00b7 Who walked away, with the way out",
+      "page": "page-3"
+    },
+    {
+      "file": "FindingWithAction.dc.html",
+      "x": 0,
+      "y": 2060,
+      "w": 1440,
+      "h": 1330,
+      "title": "R1 \u00b7 A problem in full, with the check",
+      "page": "page-3"
+    },
+    {
+      "file": "CarryForward.dc.html",
+      "x": 1560,
+      "y": 2060,
+      "w": 1440,
+      "h": 900,
+      "title": "R1 \u00b7 Send them back?",
+      "page": "page-3"
     }
   ],
   "annotations": [
@@ -144,7 +193,7 @@
       "y": -210,
       "w": 620,
       "page": "page-1",
-      "text": "The trace viewer is live on the canvas — click any step in the left column and the right pane follows it.\n\nThe band at the top is the thing nothing else in this category has: what she walked back in remembering."
+      "text": "The trace viewer is live on the canvas \u2014 click any step in the left column and the right pane follows it.\n\nThe band at the top is the thing nothing else in this category has: what she walked back in remembering."
     },
     {
       "id": "seam-note",
@@ -168,7 +217,7 @@
       "y": -250,
       "w": 700,
       "page": "page-2",
-      "text": "Settled: authored config — targets, personas, populations, guardrails — lives in the database from M2, because this is where people will be setting it up anyway. YAML becomes import and export.\n\nThat is what these three screens are drawn for: a saved record with a saved-at time, a persona that knows which populations use it, and a rename that cannot break an agent id."
+      "text": "Settled: authored config \u2014 targets, personas, populations, guardrails \u2014 lives in the database from M2, because this is where people will be setting it up anyway. YAML becomes import and export.\n\nThat is what these three screens are drawn for: a saved record with a saved-at time, a persona that knows which populations use it, and a rename that cannot break an agent id."
     },
     {
       "id": "m2-live",
@@ -185,10 +234,50 @@
       "w": 620,
       "page": "page-2",
       "text": "The estimate is the thing that makes a product owner willing to press the button at all. It is worked out from the average cost of a visit on the last run, so it is honest about being a range."
+    },
+    {
+      "id": "r1-rule",
+      "x": 0,
+      "y": -300,
+      "w": 700,
+      "page": "page-3",
+      "text": "R1 closes the loop: you change something, you send the same people back, and they tell you whether it worked.\n\nThese are drawn on main as of 98b1b43 \u2014 cohorts, simulations, named people \u2014 in the rail and the components Nick wrote, with one addition: a 'Who came back' item after 'Who walked away'. That pair is promise and verdict.\n\nStart here, then read 'Who came back'."
+    },
+    {
+      "id": "r1-verdict",
+      "x": 1560,
+      "y": -300,
+      "w": 660,
+      "page": "page-3",
+      "text": "The screen this slice is for. A named person's own account of whether the fix won them back leads; the signature diff is demoted to a panel at the foot, under the caveat Compare.tsx already carries.\n\nTom\u00e1s is the reason for that order. The signature he filed this time keys differently from the one he filed last time, so the comparison counts the old one as gone and his new one as new \u2014 while he is plainly describing one problem. Read as machine output it says fixed; read as a person it says not fixed. He is right."
+    },
+    {
+      "id": "r1-left",
+      "x": 3120,
+      "y": -300,
+      "w": 620,
+      "page": "page-3",
+      "text": "Entry one. The promise \u2014 'Priya said a fix would bring them back' \u2014 is already on this screen on main and nothing acts on it. The band under her is the act.\n\nIt says plainly that everybody goes, because the API cannot carry back a subset (StartExecutionBodySchema takes a parent id and nothing else)."
+    },
+    {
+      "id": "r1-finding",
+      "x": 0,
+      "y": 1840,
+      "w": 620,
+      "page": "page-3",
+      "text": "Entry two, and it is at the FOOT of the page on purpose. The offer to check a fix follows the evidence and the triage decision rather than competing with them: you read what happened, you mark it fixed, and then the page asks whether you want to find out.\n\nThe free-text box is the existing `reason` field on the start body. Nothing new is needed on the API for any of this."
+    },
+    {
+      "id": "r1-confirm",
+      "x": 1560,
+      "y": 1840,
+      "w": 620,
+      "page": "page-3",
+      "text": "The only place in the product where the difference between carrying forward and running again can actually be read, so it is spelled out here rather than in a tooltip: a clean execution asks whether a stranger hits the problem, carrying forward asks whether the person who left is satisfied.\n\nWho goes, what they keep, what it will cost, and what is left on today's ceiling."
     }
   ],
   "launch": {
     "view": "canvas",
-    "page": "page-2"
+    "page": "page-3"
   }
 }
