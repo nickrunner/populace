@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { initials, verdictWords } from "../format.js";
 
 /** Severity always carries its word; the colour never carries it alone (Foundations). */
@@ -94,12 +95,28 @@ export function Loading({ what }: { what: string }) {
   return <p className="t-body text-ink-muted">Reading {what}…</p>;
 }
 
-export function Failed({ error }: { error: Error }) {
-  const message = error.message;
+export function Failed({ error }: { error: Error | null }) {
+  // Nullable, because a screen reading two things reports whichever of them failed, and the
+  // compiler cannot see that one of them did.
+  const message = error?.message ?? "Something did not answer.";
   return (
     <Card className="p-4 border-critical/30">
       <p className="t-body text-critical">Could not read that.</p>
       <p className="t-meta text-ink-muted mt-1 font-mono">{message}</p>
+    </Card>
+  );
+}
+
+/**
+ * What a 404 actually is: the thing named in the URL is not here. It is said in words, with a way
+ * back, because a mistyped address and a bookmark to a problem a later execution stopped reporting
+ * are both ordinary — neither is a failure, and "Could not read that" tells the reader nothing.
+ */
+export function Gone({ what, children }: { what: string; children?: ReactNode }) {
+  return (
+    <Card className="p-4">
+      <p className="t-body text-ink">{what}</p>
+      {children === undefined ? null : <div className="t-meta text-ink-muted mt-1.5">{children}</div>}
     </Card>
   );
 }
@@ -219,4 +236,111 @@ export function Saved({ at }: { at: string | null }) {
 /** What went wrong with something the reader just did, said next to the thing they did it to. */
 export function Problem({ children }: { children: ReactNode }) {
   return <p className="t-body text-critical mt-2">{children}</p>;
+}
+
+/**
+ * One row of filters over a list, as chips that carry their own counts. Duplicated inline on the
+ * findings and the visits screens before this existed; a count next to each is what makes a chip
+ * worth clicking, so it is part of the primitive rather than an option.
+ */
+export function FilterChips<T extends string>({
+  options,
+  value,
+  onChange,
+  all = "Everything",
+  allCount,
+  trail,
+}: {
+  options: { value: T; label: string; count: number }[];
+  value: T | null;
+  onChange: (value: T | null) => void;
+  all?: string;
+  allCount?: number;
+  trail?: ReactNode;
+}) {
+  const chip = (active: boolean): string =>
+    `t-meta rounded-full border px-3 py-1 ${active ? "bg-accent-wash border-accent/30 text-accent" : "bg-card border-rule text-ink-soft hover:border-rule-strong"}`;
+  return (
+    <div className="flex flex-wrap items-center gap-2 mb-5">
+      <button type="button" onClick={() => onChange(null)} className={chip(value === null)}>
+        {all}
+        {allCount === undefined ? null : <span className="tabular-nums text-ink-muted"> {allCount}</span>}
+      </button>
+      {options
+        .filter((option) => option.count > 0)
+        .map((option) => (
+          <button key={option.value} type="button" onClick={() => onChange(value === option.value ? null : option.value)} className={chip(value === option.value)}>
+            {option.label} <span className="tabular-nums text-ink-muted">{option.count}</span>
+          </button>
+        ))}
+      {trail === undefined ? null : <span className="t-meta text-ink-muted ml-auto">{trail}</span>}
+    </div>
+  );
+}
+
+export interface Column<T> {
+  header: ReactNode;
+  /** Numbers right, words left. A column of figures that is not `tabular-nums` is a bug. */
+  align?: "left" | "right";
+  width?: string;
+  cell: (row: T) => ReactNode;
+}
+
+/** The table shape the gaps and visits screens each hand-rolled, with one set of rules. */
+export function DataTable<T>({ columns, rows, keyOf, empty }: { columns: Column<T>[]; rows: T[]; keyOf: (row: T) => string; empty: string }) {
+  return (
+    <Card className="overflow-hidden">
+      <table className="w-full">
+        <thead>
+          <tr className="t-label text-ink-muted border-b border-rule">
+            {columns.map((column, i) => (
+              <th key={i} className={`font-semibold px-4 py-2.5 ${column.align === "right" ? "text-right" : "text-left"} ${column.width ?? ""}`}>
+                {column.header}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={keyOf(row)} className="border-b border-rule last:border-0 hover:bg-well">
+              {columns.map((column, i) => (
+                <td key={i} className={`px-4 py-3 ${column.align === "right" ? "text-right tabular-nums" : ""}`}>
+                  {column.cell(row)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length === 0 ? <p className="t-body text-ink-muted italic p-4">{empty}</p> : null}
+    </Card>
+  );
+}
+
+/** Where you are, in the words of the levels above you. The last crumb is where you are and is not a link. */
+export function Breadcrumb({ items }: { items: { label: string; to?: string }[] }) {
+  return (
+    <nav className="t-meta text-ink-muted flex items-center gap-1.5 flex-wrap">
+      {items.map((item, i) => (
+        <span key={i} className="flex items-center gap-1.5">
+          {i > 0 ? <span aria-hidden="true">›</span> : null}
+          {item.to === undefined ? <span className="text-ink-soft">{item.label}</span> : <Link to={item.to} className="text-accent hover:underline">{item.label}</Link>}
+        </span>
+      ))}
+    </nav>
+  );
+}
+
+/**
+ * How much of something, as a length. Every proportion in the product is drawn this way — the
+ * cohort bars, the spend meter — so they read as one measurement rather than four charts.
+ */
+export function Bar({ value, of, tone = "accent" }: { value: number; of: number; tone?: "accent" | "evidence" | "quiet" }) {
+  const proportion = of > 0 ? Math.min(1, Math.max(0, value / of)) : 0;
+  const ink = { accent: "bg-accent", evidence: "bg-evidence", quiet: "bg-rule-strong" }[tone];
+  return (
+    <span className="block h-1 rounded bg-well overflow-hidden" role="presentation">
+      <span className={`block h-full ${ink}`} style={{ width: `${(proportion * 100).toFixed(1)}%` }} />
+    </span>
+  );
 }

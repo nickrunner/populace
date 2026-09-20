@@ -3,7 +3,7 @@ import { PopulaceConfigSchema, expandPopulation, newRunId, type Agent, type Popu
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
 import { SqliteStore } from "@populace/store-sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ScriptedProvider, byWake, call, field, sequence, type ScriptPolicy } from "./testing/index.js";
+import { ScriptedProvider, byWake, call, field, sequence, type ScriptContext, type ScriptPolicy } from "./testing/index.js";
 import { runWake } from "./wake.js";
 
 let target: RunningMockTarget;
@@ -18,7 +18,20 @@ afterAll(async () => {
   await target.close();
 });
 
-function makeConfig(overrides: Partial<PopulaceConfig["guardrails"]["perWake"]> = {}, persona: Partial<PopulaceConfig["population"]["members"][number]["persona"]> = {}): PopulaceConfig {
+/** The frozen cast a resolved config carries, as `PopulaceConfigSchema` takes it. */
+interface PersonInput {
+  ordinal: number;
+  id: string;
+  name: string;
+  details: string;
+  handle: string;
+}
+
+function makeConfig(
+  overrides: Partial<PopulaceConfig["guardrails"]["perWake"]> = {},
+  persona: Partial<PopulaceConfig["population"]["members"][number]["persona"]> = {},
+  people: PersonInput[] = [],
+): PopulaceConfig {
   return PopulaceConfigSchema.parse({
     target: { name: "Tasklet", mcp: [{ url: target.mcpUrl }], webBaseUrl: target.url, description: "A calm task list." },
     identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", teardownTool: "delete_account" },
@@ -26,18 +39,20 @@ function makeConfig(overrides: Partial<PopulaceConfig["guardrails"]["perWake"]> 
     population: {
       id: "test",
       cadence: { every: "1s" },
-      members: [{ persona: { id: "casual", name: "Casey", role: "a hobbyist", backstory: "Has too many lists.", goals: ["keep a grocery list"], ...persona } }],
+      // The persona has a ROLE LABEL, not a human name: a persona is a kind of person. The human
+      // name belongs to the generated person and is what the prompt and the signup email carry.
+      members: [{ persona: { id: "casual", name: "Casual lister", role: "a hobbyist", backstory: "Has too many lists.", goals: ["keep a grocery list"], ...persona }, people }],
     },
   });
 }
 
 function firstAgent(config: PopulaceConfig, runId = newRunId()): Agent {
-  const [expanded] = expandPopulation(config.population, runId);
+  const [expanded] = expandPopulation(config.population, runId, config.simulation.id);
   if (!expanded) throw new Error("no agent");
   return expanded.agent;
 }
 
-/** Casey's first visit: discover, sign up, hit the case-sensitive search bug, report it, remember, leave. */
+/** The first visit: discover, sign up, hit the case-sensitive search bug, report it, remember, leave. */
 const firstVisit: ScriptPolicy = sequence([
   () => ({ text: "Let me see what this is.", calls: [call("get_product_info"), call("fetch_page", { path: "/" })] }),
   (ctx) => {
@@ -77,7 +92,8 @@ describe("runWake against the mock target", () => {
     const store = new SqliteStore(":memory:");
     const config = makeConfig();
     const agent = firstAgent(config);
-    const result = await runWake({ agent, config }, { store, provider: new ScriptedProvider(firstVisit), identityProvider: new SelfSignupProvider(config.identity as never) });
+    const provider = new ScriptedProvider(firstVisit);
+    const result = await runWake({ agent, config }, { store, provider, identityProvider: new SelfSignupProvider(config.identity as never) });
 
     expect(result.wake.status).toBe("done");
     expect(result.wake.turns).toBe(8);
@@ -100,6 +116,30 @@ describe("runWake against the mock target", () => {
     expect(toolCalls.map((e) => e.tool)).toEqual(["get_product_info", "fetch_page", "sign_up", "create_project", "create_task", "search_tasks", "search_tasks"]);
     expect(ofType(trace, "identity").map((e) => e.event)).toEqual(["missing", "captured", "reconnected"]);
     expect(ofType(trace, "model.call").some((e) => e.costUsd > 0)).toBe(true);
+
+    // The model is told who it is by the PERSON's generated name, never by the persona's label —
+    // asserted against the system prompt the provider was actually handed, not against a fresh
+    // call to `personaSystemPrompt`, which would only prove that the formatter formats.
+    const modelCalls = ofType(trace, "model.call");
+    expect(agent.name).not.toBe(agent.persona.name);
+    expect(modelCalls[0]!.request.lastUserContent).toContain(agent.name);
+    const sent = provider.requests.filter((r) => r.wakeId === result.wake.id);
+    expect(sent).toHaveLength(8);
+    expect(sent[0]!.system.split("\n")[0]).toBe(`You are ${agent.name}, ${agent.persona.role}.`);
+    expect(sent[0]!.system).not.toContain(agent.persona.name);
+
+    // ADR-0006, checked rather than assumed. `ScriptedProvider` reports a cache read only when the
+    // stable prefix it was handed serialises to what the previous turn's did, so a PER-REQUEST
+    // varying value in the system prompt — the regression CLAUDE.md calls silent — turns the last
+    // three of these red. The breakpoints are asserted structurally: one on the system block, one
+    // on the LAST tool, and one rolling onto the last message every turn. Without that rolling one
+    // the whole transcript is re-sent at full price each turn, which was ~70% of a wake's bill.
+    expect(sent.every((r) => r.systemBreakpoints === 1)).toBe(true);
+    expect(sent.every((r) => r.toolBreakpointIndex === r.toolCount - 1)).toBe(true);
+    expect(sent.map((r) => r.messageBreakpoints)).toEqual(sent.map((r) => [r.messageCount - 1]));
+    expect(sent.map((r) => r.cacheHit)).toEqual([false, ...sent.slice(1).map(() => true)]);
+    expect(modelCalls[0]!.usage.cacheReadInputTokens).toBe(0);
+    expect(modelCalls[1]!.usage.cacheReadInputTokens).toBeGreaterThan(0);
     const fetched = toolCalls.find((e) => e.tool === "fetch_page");
     expect(fetched?.result.text).toContain("Delete tasks you no longer need");
 
@@ -119,6 +159,25 @@ describe("runWake against the mock target", () => {
     expect(memory?.done.map((d) => d.text)).toEqual(["Signed up and created project Home with a groceries task."]);
     expect(memory?.annoyances).toHaveLength(1);
     expect(result.wake.findingCount).toBe(1);
+    await store.close();
+  });
+
+  it("puts the person's own name and details in the cached system prefix, and the persona's label nowhere", async () => {
+    const store = new SqliteStore(":memory:");
+    const details = "On a cracked phone, trying to plan one weekend before the shops shut.";
+    const config = makeConfig({}, {}, [{ ordinal: 0, id: "casual#1", name: "Ines Okonkwo", details, handle: "ines-okonkwo-casual-1" }]);
+    const agent = firstAgent(config);
+    expect(agent.name).toBe("Ines Okonkwo");
+    const provider = new ScriptedProvider(sequence([]));
+    await runWake({ agent, config }, { store, provider, identityProvider: new SelfSignupProvider(config.identity as never) });
+
+    const [first] = provider.requests;
+    expect(first).toBeDefined();
+    // SPEC §5.3: line 1 is the person, the individuating line sits under the backstory, and the
+    // persona's display label never reaches the model at all.
+    expect(first!.system.split("\n")[0]).toBe(`You are Ines Okonkwo, ${agent.persona.role}.`);
+    expect(first!.system).toContain(details);
+    expect(first!.system).not.toContain(agent.persona.name);
     await store.close();
   });
 
@@ -280,6 +339,109 @@ describe("runWake against the mock target", () => {
     expect(result.agent.nextWakeAt).toBeNull();
     const [stored] = await store.listAgents({ runId: result.agent.runId });
     expect(stored?.status).toBe("retired");
+    await store.close();
+  });
+});
+
+/**
+ * The target's policy is the floor. These assert the INTERCEPTOR's decision — what reached the
+ * model, what the trace says was refused, what actually ran against the target — rather than the
+ * merged object, because a merge that is correct and applied in the wrong place is still a hole.
+ */
+describe("the target's tool policy, merged with the persona's", () => {
+  /** The same config, with a policy on the TARGET rather than on the persona. */
+  const withTargetPolicy = (config: PopulaceConfig, tools: PopulaceConfig["target"]["tools"]): PopulaceConfig => ({ ...config, target: { ...config.target, tools } });
+
+  const signUpFirst = (ctx: ScriptContext): { name: string; input: Record<string, string> }[] => {
+    const s = /email (\S+), display name "([^"]+)", password (\S+)/.exec(ctx.wakeContext)!;
+    return [{ name: "sign_up", input: { email: s[1]!, displayName: s[2]!, password: s[3]! } }];
+  };
+
+  it("refuses a tool the target denies however permissive the persona is, and keeps the target's destructive setting", async () => {
+    const store = new SqliteStore(":memory:");
+    // The persona is as open as a persona can be: everything allowed, nothing denied, destructive
+    // work waved through. None of that may loosen what the target said.
+    const config = withTargetPolicy(makeConfig({}, { tools: { allow: ["*"], deny: [], destructive: "allow" } }), { allow: [], deny: ["upgrade_plan"], destructive: "confirm" });
+    const agent = firstAgent(config);
+    const policy = sequence([
+      (ctx) => ({ calls: signUpFirst(ctx) }),
+      () => ({ calls: [{ name: "create_project", input: { name: "Temp" } }] }),
+      (ctx) => ({ calls: [{ name: "delete_project", input: { projectId: field(ctx.lastResults[0], "id") } }] }),
+      () => ({ calls: [{ name: "upgrade_plan", input: {} }] }),
+    ]);
+    const result = await runWake({ agent, config }, { store, provider: new ScriptedProvider(policy), identityProvider: new SelfSignupProvider(config.identity as never) });
+    const trace = await store.getTrace(result.wake.id);
+    const guardrails = ofType(trace, "guardrail").map((e) => e.rule);
+
+    // The target says confirm; the persona says allow; the stricter one wins, so the first
+    // delete_project came back as a confirmation prompt instead of deleting anything.
+    expect(guardrails).toContain("destructive-confirm");
+    expect(ofType(trace, "tool.call").filter((e) => e.tool === "delete_project")).toHaveLength(0);
+    // The target denies upgrade_plan, so it was never offered and the call was refused.
+    expect(guardrails).toContain("tool-denied");
+    expect(ofType(trace, "tool.call").some((e) => e.tool === "upgrade_plan")).toBe(false);
+    await store.close();
+  });
+
+  it("intersects the allowlists: a persona cannot add back a tool the target's allowlist leaves out", async () => {
+    const store = new SqliteStore(":memory:");
+    const config = withTargetPolicy(makeConfig({}, { tools: { allow: ["get_*", "create_*", "sign_up"], deny: [], destructive: "confirm" } }), {
+      allow: ["get_*", "list_*", "sign_up"],
+      deny: [],
+      destructive: "confirm",
+    });
+    const agent = firstAgent(config);
+    let offered: string[] = [];
+    const policy = sequence([
+      (ctx) => {
+        offered = ctx.toolNames;
+        return { calls: signUpFirst(ctx) };
+      },
+      // Allowed by the persona, not by the target.
+      () => ({ calls: [{ name: "create_project", input: { name: "Temp" } }] }),
+      // Allowed by the target, not by the persona.
+      () => ({ calls: [{ name: "list_projects", input: {} }] }),
+      // In both.
+      () => ({ calls: [{ name: "get_me", input: {} }] }),
+    ]);
+    const result = await runWake({ agent, config }, { store, provider: new ScriptedProvider(policy), identityProvider: new SelfSignupProvider(config.identity as never) });
+    const trace = await store.getTrace(result.wake.id);
+    const ran = ofType(trace, "tool.call").map((e) => e.tool);
+
+    expect(offered).toContain("get_me");
+    expect(offered).not.toContain("create_project");
+    expect(offered).not.toContain("list_projects");
+    expect(ran).toContain("get_me");
+    expect(ran).not.toContain("create_project");
+    expect(ran).not.toContain("list_projects");
+    expect(ofType(trace, "guardrail").filter((e) => e.rule === "tool-denied").map((e) => e.tool)).toEqual(["create_project", "list_projects"]);
+    await store.close();
+  });
+
+  it("blocks a tool the target denies for every persona in the population", async () => {
+    const store = new SqliteStore(":memory:");
+    const base = makeConfig();
+    const config: PopulaceConfig = {
+      ...base,
+      target: { ...base.target, tools: { allow: [], deny: ["upgrade_plan"], destructive: "confirm" } },
+      population: {
+        ...base.population,
+        members: [
+          { ...base.population.members[0]!, cohort: "open", persona: { ...base.population.members[0]!.persona, id: "open", tools: { allow: ["*"], deny: [], destructive: "allow" } } },
+          { ...base.population.members[0]!, cohort: "plain", persona: { ...base.population.members[0]!.persona, id: "plain", tools: { allow: [], deny: [], destructive: "confirm" } } },
+        ],
+      },
+    };
+    const agents = expandPopulation(config.population, newRunId(), config.simulation.id).map((e) => e.agent);
+    expect(agents).toHaveLength(2);
+
+    const policy = sequence([(ctx) => ({ calls: signUpFirst(ctx) }), () => ({ calls: [{ name: "upgrade_plan", input: {} }] })]);
+    for (const agent of agents) {
+      const result = await runWake({ agent, config }, { store, provider: new ScriptedProvider(policy), identityProvider: new SelfSignupProvider(config.identity as never) });
+      const trace = await store.getTrace(result.wake.id);
+      expect(ofType(trace, "guardrail").filter((e) => e.rule === "tool-denied").map((e) => e.tool), `${agent.persona.id} reached upgrade_plan`).toEqual(["upgrade_plan"]);
+      expect(ofType(trace, "tool.call").some((e) => e.tool === "upgrade_plan")).toBe(false);
+    }
     await store.close();
   });
 });

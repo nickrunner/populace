@@ -5,7 +5,7 @@ import { StaticIdentityProvider } from "./static/index.js";
 
 export { SelfSignupProvider } from "./self-signup/index.js";
 export { StaticIdentityProvider } from "./static/index.js";
-export { FirebaseAdminProvider, type FirebaseAuthLike } from "./firebase-admin/index.js";
+export { FirebaseAdminProvider, type FetchLike, type FirebaseAuthLike } from "./firebase-admin/index.js";
 
 export function identityProviderFor(config: IdentityConfig): IdentityProvider {
   switch (config.strategy) {

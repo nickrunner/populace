@@ -1,11 +1,14 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
-import { api } from "../api.js";
+import { api, isMissing } from "../api.js";
+import { keys, q, WATCHING } from "../queries.js";
+import { useSimulation } from "../context.jsx";
 import type { JsonObject, JsonValue } from "@populace/core/isomorphic";
 import type { Finding, TraceEvent } from "../api.js";
 import { clock, ms, usd4, wakeOutcome } from "../format.js";
-import { Avatar, CallRef, Card, Failed, Loading, Mono, Payload } from "../components/ui.jsx";
+import type { Participant } from "../api.js";
+import { Avatar, Breadcrumb, CallRef, Card, Failed, Gone, Loading, Mono, Payload } from "../components/ui.jsx";
 
 /**
  * The trace already records every model turn, tool call, guardrail trip, memory write and finding
@@ -36,6 +39,9 @@ const FILES: Record<string, string> = {
 };
 
 const truncate = (value: string, max: number): string => (value.length > max ? `${value.slice(0, max)}…` : value);
+
+/** Who made this visit. A wake carries the participant id; the roster carries the name. */
+const participantsFor = (people: Participant[], agentId: string): Participant | undefined => people.find((person) => person.id === agentId);
 
 interface Row {
   seq: number;
@@ -101,7 +107,7 @@ const KIND_INK: Record<string, string> = {
   identity: "text-accent",
 };
 
-function Detail({ event, findings, runId }: { event: TraceEvent; findings: Finding[]; runId: string }) {
+function Detail({ event, findings, href }: { event: TraceEvent; findings: Finding[]; href: (path?: string) => string }) {
   if (event.type === "tool.call") {
     const cited = findings.filter((f) => f.reproduction.some((step) => step.ref === event.ref));
     return (
@@ -128,18 +134,20 @@ function Detail({ event, findings, runId }: { event: TraceEvent; findings: Findi
         {cited.length > 0 ? (
           <div className="mt-6 border-t border-rule pt-4">
             <div className="t-label text-ink-muted mb-2">Cited as evidence</div>
+            {/* Each cited finding links to ITS OWN page. One shared link pointed at a `findings`
+                route that stopped existing when problems became signatures, so the reader who had
+                just found the JSON that was wrong was bounced to the results index (ADR-0028). */}
             {cited.map((finding) => (
               <div key={finding.id} className="mb-2">
-                <p className="t-body">{finding.title}</p>
+                <Link to={href(`f/${encodeURIComponent(finding.signature)}`)} className="t-body text-accent hover:underline">
+                  {finding.title}
+                </Link>
                 <div className="t-meta text-ink-muted mt-0.5">
                   step {finding.reproduction.findIndex((s) => s.ref === event.ref) + 1} of {finding.reproduction.length} ·{" "}
                   {finding.reproduction.map((s) => s.ref).join(" ")}
                 </div>
               </div>
             ))}
-            <Link to={`/runs/${encodeURIComponent(runId)}/findings`} className="t-meta text-accent hover:underline">
-              see it in full
-            </Link>
           </div>
         ) : null}
       </>
@@ -174,26 +182,50 @@ function Detail({ event, findings, runId }: { event: TraceEvent; findings: Findi
   );
 }
 
-export function WatchAVisit({ runId }: { runId: string }) {
+export function WatchAVisit() {
   const { wakeId } = useParams();
   const id = wakeId ?? "";
   const [selected, setSelected] = useState<number | null>(null);
 
-  const wake = useQuery({ queryKey: ["wake", id], queryFn: () => api.wake(id) });
-  const trace = useQuery({ queryKey: ["trace", id], queryFn: () => api.trace(id) });
-  const findings = useQuery({ queryKey: ["findings", runId], queryFn: () => api.findings(runId) });
+  const { href } = useSimulation();
+  // A visit still going only says so once. Until it ends, the trace is asked for again at watching
+  // rate — the common way into this screen is a person who is "here now" on the live screen, and
+  // what they were showing was a frozen snapshot until the reader reloaded the page.
+  const wake = useQuery({ ...q.wake(id), refetchInterval: (query) => (query.state.data?.status === "running" ? WATCHING : false) });
+  const running = wake.data?.status === "running";
+  const trace = useQuery({ ...q.trace(id), refetchInterval: running ? WATCHING : false });
+  // THE WAKE'S OWN RUN, not the simulation's latest. A problem the latest execution did not report
+  // opens onto the execution that did, and agent ids are deterministic across executions — so the
+  // memory panel read from the shell's run answered with somebody's notes from a DIFFERENT one,
+  // and the citations came back empty because that run's findings were not in this one's.
+  const runId = wake.data?.runId ?? "";
+  // The person, not the persona: a wake row knows which persona it ran, and two cohorts may share
+  // one. The name at the top of a visit is the name of whoever made it (Decision A).
+  const participants = useQuery({ ...q.participants(runId), enabled: runId !== "" });
+  const findings = useQuery({ ...q.findings(runId), enabled: runId !== "" });
   const memory = useQuery({
-    queryKey: ["memory", runId, wake.data?.agentId],
+    queryKey: keys.memory(runId, wake.data?.agentId ?? ""),
     queryFn: () => api.memory(runId, wake.data?.agentId ?? ""),
     enabled: wake.data !== undefined,
   });
 
-  if (wake.isError) return <Failed error={wake.error} />;
+  if (wake.isError)
+    return isMissing(wake.error) ? (
+      <Gone what="There is no visit by that name. A swept execution keeps what its people filed and loses their visits.">
+        <Link to={href("visits")} className="text-accent hover:underline">
+          Back to the visits
+        </Link>
+      </Gone>
+    ) : (
+      <Failed error={wake.error} />
+    );
   const wakeData = wake.data;
   const traceData = trace.data;
   if (!wakeData || !traceData) return <Loading what="this visit" />;
 
   const events = traceData.items;
+  const person = participantsFor(participants.data?.items ?? [], wakeData.agentId);
+  const name = person?.name ?? wakeData.personaName;
   // The first interesting step, so the pane is never empty on arrival.
   const fallback = events.find((e) => e.type === "tool.call") ?? events[0];
   const current = events.find((e) => e.seq === selected) ?? fallback;
@@ -211,18 +243,23 @@ export function WatchAVisit({ runId }: { runId: string }) {
 
   return (
     <>
-      <div className="t-meta text-ink-muted mb-2">
-        <Link to={`/runs/${encodeURIComponent(runId)}/wakes`} className="text-accent hover:underline">
-          Wakes
-        </Link>
-      </div>
+      <Breadcrumb
+        items={[
+          { label: "Visits", to: href("visits") },
+          ...(person === undefined ? [] : [{ label: person.name, to: href(`people/${encodeURIComponent(person.id)}?execution=${encodeURIComponent(wakeData.runId)}`) }]),
+          { label: `Visit ${wakeData.wakeNumber}` },
+        ]}
+      />
 
-      <div className="flex items-center gap-3 mb-1">
-        <Avatar name={wakeData.personaName} />
+      <div className="flex items-center gap-3 mb-1 mt-2">
+        <Avatar name={name} />
         <h1 className="t-title">
-          {wakeData.personaName}, visit {wakeData.wakeNumber}
+          {name}, visit {wakeData.wakeNumber}
         </h1>
-        <span className="t-meta text-ink-muted">{wakeOutcome(wakeData.status)}</span>
+        <span className="t-meta text-ink-muted">
+          {person === undefined ? "" : `${person.cohortName || person.cohortSlug} · `}
+          {wakeOutcome(wakeData.status)}
+        </span>
       </div>
       <Mono className="text-[11px] text-ink-muted block mb-5">{wakeData.id}</Mono>
 
@@ -285,7 +322,7 @@ export function WatchAVisit({ runId }: { runId: string }) {
         </div>
 
         <Card className="p-5 sticky top-9">
-          {current ? <Detail event={current} findings={mine} runId={runId} /> : <p className="t-body text-ink-muted">This visit recorded no steps.</p>}
+          {current ? <Detail event={current} findings={mine} href={href} /> : <p className="t-body text-ink-muted">This visit recorded no steps.</p>}
         </Card>
       </div>
     </>

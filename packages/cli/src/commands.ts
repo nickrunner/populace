@@ -1,9 +1,10 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { EffortSchema, ModelConfigSchema, expandPopulation, parseDuration, tagForRun, type Agent } from "@populace/core";
+import { identityProviderFor } from "@populace/adapters";
+import { EffortSchema, ModelConfigSchema, effectiveToolPolicy, expandPopulation, isToolPermitted, parseDuration, tagForRun, type Agent } from "@populace/core";
 import { AnthropicProvider, LocalDaemon, McpSession, runWake, type ModelProvider, type WakeResult } from "@populace/runner";
 import { buildDigest, exporterNamed, renderDigestMarkdown, verifyPending } from "@populace/reports";
-import { parseDocument } from "yaml";
+import { isCollection, parseDocument } from "yaml";
 import { DEFAULT_STORE_PATH, loadConfig, loadConfigIfPresent, storePath } from "./config.js";
 import { SqliteStore } from "@populace/store-sqlite";
 import { openContext, type CliContext } from "./context.js";
@@ -43,9 +44,24 @@ export async function validate(options: GlobalOptions & { connect?: boolean }): 
   lines.push(`target ${config.target.name}: ${config.target.mcp.length} MCP endpoint(s)${config.target.webBaseUrl ? `, web ${config.target.webBaseUrl}` : ""}`);
   lines.push(`identity: ${config.identity.strategy}`);
   lines.push(`model: ${config.model.model} effort=${config.model.effort} fallbacks=${config.model.fallbacks ? "on" : "off"}`);
-  const agents = expandPopulation(config.population, "run_0_000000");
-  lines.push(`population ${config.population.id}: ${config.population.members.length} persona(s) -> ${agents.length} agent(s) at scale ${config.population.scale}, cadence every ${config.population.cadence.every / 1000}s`);
-  for (const { agent } of agents) lines.push(`  - ${agent.id} (${agent.persona.name}, patience ${agent.persona.patience}, budget $${agent.persona.budgetUsd})`);
+  const agents = expandPopulation(config.population, "run_0_000000", config.simulation.id);
+  lines.push(
+    `simulation ${config.simulation.slug}: ${config.simulation.mode}${config.simulation.visitsPerPerson === null ? " (no visit cap; it runs until you stop it)" : `, ${config.simulation.visitsPerPerson} visit(s) each`}`,
+  );
+  lines.push(`population ${config.population.id}: ${config.population.members.length} cohort(s) -> ${agents.length} agent(s), cadence every ${config.population.cadence.every / 1000}s`);
+  for (const { agent } of agents) lines.push(`  - ${agent.id} (${agent.name}, ${agent.persona.role}, patience ${agent.persona.patience}, budget $${agent.persona.budgetUsd})`);
+  // "Every person gets their own account" is a property of the whole cast, so it is checked where
+  // the cast is visible. A run refuses to start on it; `validate` is where the user finds out
+  // without starting one.
+  try {
+    for (const problem of identityProviderFor(config.identity).checkPopulation?.(agents.map((a) => a.agent)) ?? []) {
+      ok = false;
+      lines.push(`  ERROR ${problem}`);
+    }
+  } catch (err) {
+    ok = false;
+    lines.push(`identity ${config.identity.strategy}: ERROR ${err instanceof Error ? err.message : String(err)}`);
+  }
   if (options.connect !== false) {
     for (const endpoint of config.target.mcp) {
       const session = new McpSession(endpoint, undefined);
@@ -60,8 +76,14 @@ export async function validate(options: GlobalOptions & { connect?: boolean }): 
           }
           if (config.identity.teardownTool && !session.hasTool(config.identity.teardownTool)) lines.push(`  WARNING teardown tool ${config.identity.teardownTool} not found; sweep will only forget identities`);
         }
+        // The same merge the runner applies: the target's policy is the floor, and a persona can
+        // only narrow it. Reporting the persona's alone told a user their population could reach
+        // tools the target forbids.
+        const blockedForEveryone = tools.filter((t) => !isToolPermitted(t.name, effectiveToolPolicy(config.target.tools))).map((t) => t.name);
+        if (blockedForEveryone.length) lines.push(`  the target's tool policy blocks: ${blockedForEveryone.join(", ")}`);
         for (const { agent } of agents) {
-          const denied = tools.filter((t) => !isAllowed(t.name, agent.persona.tools.allow, agent.persona.tools.deny)).map((t) => t.name);
+          const policy = effectiveToolPolicy(config.target.tools, agent.persona.tools);
+          const denied = tools.filter((t) => !isToolPermitted(t.name, policy)).map((t) => t.name);
           if (denied.length) lines.push(`  ${agent.id} cannot use: ${denied.join(", ")}`);
         }
       } catch (err) {
@@ -74,12 +96,6 @@ export async function validate(options: GlobalOptions & { connect?: boolean }): 
   }
   if (!process.env.ANTHROPIC_API_KEY && !config.model.apiKey) lines.push("note: ANTHROPIC_API_KEY is not set; wake and run will fail until it is");
   return { ok, lines };
-}
-
-function isAllowed(name: string, allow: string[], deny: string[]): boolean {
-  const glob = (p: string): RegExp => new RegExp(`^${p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`);
-  if (deny.some((p) => glob(p).test(name))) return false;
-  return allow.length === 0 || allow.some((p) => glob(p).test(name));
 }
 
 // ---- wake ------------------------------------------------------------------
@@ -149,19 +165,31 @@ export async function run(options: GlobalOptions & { newRun?: boolean; maxWakes?
 
 // ---- scale -----------------------------------------------------------------
 
+/**
+ * Multiplies every cohort's headcount and writes the numbers back. There is no `scale` field any
+ * more: a cohort's `count` is the only number that decides how many people exist, so scaling is a
+ * edit to those numbers rather than a second multiplier nobody can see in the file.
+ */
 export async function scale(factor: string, options: GlobalOptions): Promise<Agent[]> {
   const value = Number(factor);
   if (!Number.isFinite(value) || value <= 0) throw new Error(`scale factor must be a positive number, got ${factor}`);
   const loaded = loadConfig(options.config ?? "populace.yaml");
   const { readFileSync } = await import("node:fs");
   const doc = parseDocument(readFileSync(loaded.path, "utf8"));
-  doc.setIn(["population", "scale"], value);
+  // Headcount lives on the cohort now. A file still written as `population.members` is scaled the
+  // same way, because a member IS a cohort; `loadConfig` concatenates the two in this order.
+  const scaled = (count: number): number => Math.max(1, Math.ceil(count * value));
+  const written = doc.getIn(["population", "members"]);
+  const legacy = isCollection(written) ? written.items.length : 0;
+  const members = loaded.config.population.members;
+  members.slice(0, legacy).forEach((member, index) => doc.setIn(["population", "members", index, "count"], scaled(member.count)));
+  members.slice(legacy).forEach((member, index) => doc.setIn(["cohorts", index, "size"], scaled(member.count)));
   writeFileSync(loaded.path, doc.toString());
   const ctx = openContext(options);
   try {
     const daemon = new LocalDaemon({ config: ctx.loaded.config, runId: ctx.runId }, deps(ctx));
     const agents = await daemon.reconcile();
-    ctx.log(`population ${ctx.loaded.config.population.id} scale=${value}: ${agents.length} active agent(s) in run ${ctx.runId}`);
+    ctx.log(`population ${ctx.loaded.config.population.id} scaled by ${value}: ${agents.length} active agent(s) in run ${ctx.runId}`);
     return agents;
   } finally {
     await ctx.close();
@@ -193,7 +221,7 @@ export async function digest(options: DigestOptions): Promise<{ markdown: string
     const runIds = options.allRuns ? undefined : [ctx.runId];
     if (options.verify !== false) {
       const verified = await verifyPending(
-        { store: ctx.store, config, ...(config.verifier.judge === "model" ? { provider: ctx.provider() } : {}), log: (line) => ctx.log(line) },
+        { store: ctx.store, config, identityProvider: ctx.identityProvider, ...(config.verifier.judge === "model" ? { provider: ctx.provider() } : {}), log: (line) => ctx.log(line) },
         { ...(runIds ? { runIds } : {}), since, until },
       );
       ctx.log(`verified ${verified.length} finding(s) with the ${config.verifier.judge} judge`);
@@ -218,20 +246,43 @@ export async function digest(options: DigestOptions): Promise<{ markdown: string
 
 // ---- sweep -----------------------------------------------------------------
 
-export async function sweep(options: GlobalOptions & { dryRun?: boolean; keepData?: boolean; allRuns?: boolean }): Promise<{ identities: number; failures: number }> {
+/**
+ * `--delete-data` is the only way to lose the evidence.
+ *
+ * `--keep-data` used to be the flag and keeping the data the exception, so a bare `populace sweep`
+ * deleted the wakes, traces and findings the run had paid a model to produce — while the dashboard,
+ * calling the same function, defaulted the opposite way and kept them. Two defaults pointing in
+ * opposite directions, with the destructive one on the bare command. Keeping is now the default on
+ * both paths; `--keep-data` is still accepted so existing scripts and muscle memory keep working,
+ * and it now says what already happens.
+ *
+ * Asked for BOTH, the safe one wins. `--keep-data` reads as a guarantee, and a wrapper script that
+ * appends it defensively to a user-supplied argument list is worthless if the destructive flag
+ * quietly outranks it — the whole point of the change is that losing the evidence has to be asked
+ * for unambiguously.
+ */
+export async function sweep(options: GlobalOptions & { dryRun?: boolean; keepData?: boolean; deleteData?: boolean; allRuns?: boolean }): Promise<{ identities: number; removed: number; preExisting: number; stranded: number; failures: number }> {
   const ctx = openContext(options);
   const { sweepRun } = await import("@populace/server");
   try {
     const runIds = options.allRuns ? await ctx.store.listRunIds() : [ctx.runId];
+    const keepData = options.keepData === true || options.deleteData !== true;
+    if (options.keepData === true && options.deleteData === true) ctx.log("--keep-data and --delete-data ask for opposite things; keeping this run's wakes, traces and findings");
     let identities = 0;
+    let removed = 0;
+    let preExisting = 0;
+    let stranded = 0;
     let failures = 0;
     for (const runId of runIds) {
-      const result = await sweepRun(ctx.store, ctx.loaded.config, runId, { dryRun: options.dryRun === true, keepData: options.keepData === true });
+      const result = await sweepRun(ctx.store, ctx.loaded.config, runId, { dryRun: options.dryRun === true, keepData });
       for (const line of result.lines) ctx.log(line);
       identities += result.identities;
+      removed += result.removed;
+      preExisting += result.preExisting;
+      stranded += result.stranded;
       failures += result.failures;
     }
-    return { identities, failures };
+    return { identities, removed, preExisting, stranded, failures };
   } finally {
     await ctx.close();
   }
@@ -282,7 +333,7 @@ export async function status(options: GlobalOptions): Promise<string[]> {
  * already writes (ADR-0024). From M2 this process also hosts the daemon and takes the store
  * lock (ADR-0022), at which point `serve` and `run` stop being safe to use at the same time.
  */
-export async function serve(options: GlobalOptions & { port?: number; host?: string; readOnly?: boolean; force?: boolean }): Promise<{ url: string; close: () => Promise<void> }> {
+export async function serve(options: GlobalOptions & { port?: number; host?: string; project?: string; resume?: boolean; readOnly?: boolean; force?: boolean }): Promise<{ url: string; close: () => Promise<void> }> {
   // `serve` is the one command that works without a config file: from M2 the database is the
   // source of truth, and a new user's first act is to set a target up in the browser (ADR-0025).
   const loaded = loadConfigIfPresent(options.config ?? "populace.yaml");
@@ -301,7 +352,14 @@ export async function serve(options: GlobalOptions & { port?: number; host?: str
       processConfig: { store: loaded?.config.store ?? { kind: "sqlite", path }, digestDir: loaded?.config.digestDir ?? "digests" },
       // Import, not sync: the file seeds an empty project once and is an export target after that.
       ...(loaded ? { seedConfig: loaded.config } : {}),
+      ...(loaded && loaded.simulations.length > 0 ? { seedSimulations: loaded.simulations } : {}),
       ...(apiKey ? { provider: () => (provider ??= new AnthropicProvider(loaded?.config.model ?? ModelConfigSchema.parse({}))) } : {}),
+      // The API is project-scoped from M3 on: this only says which project the file is imported
+      // into and which one a fresh store is created with. The server holds as many as the store does.
+      ...(options.project ? { projectId: options.project } : {}),
+      // The other half of "a run whose process died is paused, not failed": without this a soak
+      // the user was told to leave running never comes back after the laptop closes.
+      ...(options.resume ? { resume: true } : {}),
       ...(options.readOnly ? { readOnly: true } : {}),
       ...(options.force ? { force: true } : {}),
       ...(options.port !== undefined ? { port: options.port } : {}),

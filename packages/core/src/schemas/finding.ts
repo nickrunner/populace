@@ -32,6 +32,13 @@ export const FindingSchema = z.object({
   agentId: z.string().min(1),
   personaId: z.string().min(1),
   kind: FindingKindSchema,
+  /**
+   * `sig1:<12 hex>` over (kind, primary tool, sorted title tokens) — ADR-0028's key. Stable across
+   * executions, so "this problem, everywhere it has been seen" is one lookup rather than a
+   * re-clustering. The `sig1:` prefix is a version: a clustering change bumps it, which detaches
+   * triage loudly instead of silently.
+   */
+  signature: z.string().min(1),
   title: z.string().min(1),
   /** What happened, in the persona's words. */
   description: z.string(),

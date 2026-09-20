@@ -1,11 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { PersonaSpecSchema, PopulaceConfigSchema, type PopulaceConfig } from "@populace/core";
+import { CadenceSchema, PersonaSpecSchema, PopulaceConfigSchema, type PersonaSpec, type PopulaceConfig } from "@populace/core";
+import type { SimulationPlan } from "@populace/server";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
 export interface LoadedConfig {
   config: PopulaceConfig;
+  /**
+   * The file's `simulations:` block, for the import that turns a file into rows. The FIRST one is
+   * the plan `config` carries, because a CLI command runs one simulation; the rest are created as
+   * rows by `populace serve` and picked in the browser.
+   */
+  simulations: SimulationPlan[];
   path: string;
   dir: string;
 }
@@ -21,8 +28,45 @@ export function substituteEnv(text: string, env: NodeJS.ProcessEnv = process.env
   return { text: out, missing: [...new Set(missing)] };
 }
 
-const RawMemberSchema = z.looseObject({ persona: z.union([z.string(), z.record(z.string(), z.json())]) });
-const RawConfigSchema = z.looseObject({ population: z.looseObject({ members: z.array(RawMemberSchema) }) });
+/** A persona written inline, or the path of a file holding one. */
+const RawPersonaSchema = z.union([z.string(), z.record(z.string(), z.json())]);
+
+const RawMemberSchema = z.looseObject({ persona: RawPersonaSchema });
+
+/**
+ * A cohort as the file writes it: "N people on this persona". This is the shape that replaced
+ * `population.members`, and both are accepted — a member list IS a list of cohorts, and always was.
+ */
+const RawCohortSchema = z.object({
+  slug: z.string().optional(),
+  name: z.string().optional(),
+  /** How many people. There is no `scale`; this is the only number that decides headcount. */
+  size: z.number().int().positive().optional(),
+  seed: z.string().optional(),
+  cadence: z.record(z.string(), z.json()).optional(),
+  maxWakes: z.number().int().positive().optional(),
+  persona: RawPersonaSchema,
+});
+
+/** A simulation as the file writes it: the population against the target, in one of two modes. */
+const RawSimulationSchema = z.object({
+  slug: z.string().optional(),
+  name: z.string().optional(),
+  description: z.string().optional(),
+  mode: z.enum(["ephemeral", "longitudinal"]).optional(),
+  /** Required for `ephemeral` (it is what makes the execution end), absent for `longitudinal`. */
+  visitsPerPerson: z.number().int().positive().nullable().optional(),
+  cadence: z.record(z.string(), z.json()).optional(),
+  seed: z.string().optional(),
+  autoSweep: z.boolean().optional(),
+  requireFreshTarget: z.boolean().optional(),
+});
+
+const RawConfigSchema = z.looseObject({
+  population: z.looseObject({ members: z.array(RawMemberSchema).optional() }).optional(),
+  cohorts: z.array(RawCohortSchema).optional(),
+  simulations: z.array(RawSimulationSchema).optional(),
+});
 
 /** Loads YAML, substitutes env, resolves `persona: file.yaml` references and validates. */
 export function loadConfig(path = "populace.yaml"): LoadedConfig {
@@ -33,15 +77,75 @@ export function loadConfig(path = "populace.yaml"): LoadedConfig {
   if (missing.length) console.warn(`warning: environment variables not set: ${missing.join(", ")}`);
   // eslint-disable-next-line no-restricted-syntax -- YAML boundary, validated with zod below.
   const raw = RawConfigSchema.parse(parseYaml(text) as unknown);
-  const members = raw.population.members.map((member) => {
-    if (typeof member.persona !== "string") return member;
-    const personaPath = resolve(dir, member.persona);
+
+  type RawPersona = z.infer<typeof RawPersonaSchema>;
+  const personaOf = (ref: RawPersona): PersonaSpec | Exclude<RawPersona, string> => {
+    if (typeof ref !== "string") return ref;
     // eslint-disable-next-line no-restricted-syntax -- YAML boundary, validated with zod.
-    const persona = PersonaSpecSchema.parse(parseYaml(readFileSync(personaPath, "utf8")) as unknown);
-    return { ...member, persona };
+    return PersonaSpecSchema.parse(parseYaml(readFileSync(resolve(dir, ref), "utf8")) as unknown);
+  };
+
+  const members = [
+    ...(raw.population?.members ?? []).map((member) => ({ ...member, persona: personaOf(member.persona) })),
+    // A cohort and a member are the same thing said two ways, so they land in one list.
+    ...(raw.cohorts ?? []).map((cohort) => ({
+      ...(cohort.slug === undefined ? {} : { cohort: cohort.slug }),
+      ...(cohort.name === undefined ? {} : { cohortName: cohort.name }),
+      persona: personaOf(cohort.persona),
+      ...(cohort.size === undefined ? {} : { count: cohort.size }),
+      ...(cohort.seed === undefined ? {} : { seed: cohort.seed }),
+      ...(cohort.cadence === undefined ? {} : { cadence: cohort.cadence }),
+      ...(cohort.maxWakes === undefined ? {} : { maxWakes: cohort.maxWakes }),
+    })),
+  ];
+
+  const simulations = (raw.simulations ?? []).map(planOf);
+  const first = simulations[0];
+  // The execution plan belongs to the simulation now. A file with no `simulations:` block keeps
+  // saying it on the population, and the cap it names there is what decides the mode on import.
+  const population = {
+    ...raw.population,
+    members,
+    ...(first === undefined ? {} : { cadence: first.cadence, maxWakes: first.visitsPerPerson, seed: first.seed }),
+  };
+  const config = PopulaceConfigSchema.parse({
+    ...raw,
+    ...(first === undefined
+      ? {}
+      : {
+          simulation: {
+            slug: first.slug,
+            name: first.name,
+            mode: first.visitsPerPerson === null ? "longitudinal" : "ephemeral",
+            visitsPerPerson: first.visitsPerPerson,
+            ...(first.autoSweep === undefined ? {} : { autoSweep: first.autoSweep }),
+          },
+        }),
+    population,
   });
-  const config = PopulaceConfigSchema.parse({ ...raw, population: { ...raw.population, members } });
-  return { config, path: absolute, dir };
+  return { config, simulations, path: absolute, dir };
+}
+
+/**
+ * One `simulations:` entry as a plan the importer can write as a row. `mode` and `visitsPerPerson`
+ * are bound to each other — an ephemeral simulation has to end, a longitudinal one does not — so a
+ * file that sets one and not the other is refused here rather than half-applied.
+ */
+function planOf(raw: z.infer<typeof RawSimulationSchema>, index: number): SimulationPlan {
+  const slug = raw.slug ?? `simulation-${index + 1}`;
+  const visitsPerPerson = raw.visitsPerPerson ?? null;
+  if (raw.mode === "ephemeral" && visitsPerPerson === null) throw new Error(`simulation ${slug}: an ephemeral simulation has to end — give it visitsPerPerson`);
+  if (raw.mode === "longitudinal" && visitsPerPerson !== null) throw new Error(`simulation ${slug}: a longitudinal simulation does not end — remove visitsPerPerson`);
+  return {
+    slug,
+    name: raw.name ?? slug,
+    ...(raw.description === undefined ? {} : { description: raw.description }),
+    visitsPerPerson,
+    cadence: CadenceSchema.parse(raw.cadence ?? {}),
+    seed: raw.seed ?? "populace",
+    ...(raw.autoSweep === undefined ? {} : { autoSweep: raw.autoSweep }),
+    ...(raw.requireFreshTarget === undefined ? {} : { requireFreshTarget: raw.requireFreshTarget }),
+  };
 }
 
 /**

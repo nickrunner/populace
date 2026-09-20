@@ -6,10 +6,16 @@ import type { JobRunner } from "./jobs.js";
 import type { RunController } from "./runs.js";
 import type { SweepOptions, SweepResult } from "./sweep.js";
 
-/** What the M2 routes need in order to author config and drive runs. */
+/**
+ * What the control routes need in order to author config and drive runs.
+ *
+ * There is no `projectId` here any more. It used to be closed over once per process, which is the
+ * shape that encoded "there is exactly one project": every authoring handler now reads `:p` out of
+ * the path, so one `serve` holds as many projects as the store does and a handler cannot answer
+ * for the wrong one (SPEC §6).
+ */
 export interface ControlDeps {
   store: Store;
-  projectId?: string;
   /** Where the database and the digest directory live — process facts, never project rows. */
   processConfig: ProcessConfig;
   /** Whether this process can call the model at all. Without a key, a run is not startable. */
@@ -31,10 +37,12 @@ export interface ServerDeps {
   storePath: string;
   version: string;
   /**
-   * Resolves the config the read routes render. In M2 this assembles the authored rows; a test or
-   * a CLI command that already holds a `PopulaceConfig` passes one back directly.
+   * The config ONE RUN executed, for the read routes that cannot be rendered without one: the
+   * tool list a coverage-gaps screen measures against, and the guardrail a spend view is read
+   * against. It is per run, from that run's snapshot — the process-wide `config()` thunk it
+   * replaces was the last place a singleton project was assumed.
    */
-  config: () => Promise<PopulaceConfig>;
+  configForRun?: (runId: string) => Promise<PopulaceConfig | undefined>;
   /** Model provider for the verifier. Absent means a `model` judge cannot run; a heuristic one can. */
   verifier?: ModelProvider;
   /** Present once the process can drive runs. Absent leaves the API read-only, exactly as M1 was. */

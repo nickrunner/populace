@@ -13,7 +13,17 @@ import { newJobId, type Job, type JobKind, type Store } from "@populace/core";
 export interface JobOutcome {
   runId?: string;
 }
-export type JobHandler = (job: Job, report: (progress: Partial<Job["progress"]>) => Promise<void>) => Promise<JobOutcome | undefined>;
+/**
+ * Records dollars this job spent on the model OUTSIDE a wake, cumulatively, onto the row.
+ *
+ * It is a callback rather than something the handler returns because the number has to survive the
+ * handler NOT returning: a `people.generate` job that stops between batches because the kill
+ * switch went on has still spent what it spent, and a bill that is only written on success is a
+ * bill that hides exactly the runs somebody wanted to know the cost of (SPEC §5.4).
+ */
+export type JobSpend = (costUsd: number) => Promise<void>;
+export type JobReport = (progress: Partial<Job["progress"]>) => Promise<void>;
+export type JobHandler = (job: Job, report: JobReport, spend: JobSpend) => Promise<JobOutcome | undefined>;
 
 export class JobRunner {
   private readonly queue: { job: Job; handler: JobHandler }[] = [];
@@ -25,12 +35,14 @@ export class JobRunner {
   ) {}
 
   /** Enqueues and returns immediately: the caller answers with the job id, not with the outcome. */
-  async enqueue(kind: JobKind, handler: JobHandler, options: { runId?: string; label?: string } = {}): Promise<Job> {
+  async enqueue(kind: JobKind, handler: JobHandler, options: { runId?: string; projectId?: string; label?: string } = {}): Promise<Job> {
     const job: Job = {
       id: newJobId(),
       kind,
       status: "queued",
+      projectId: options.projectId ?? null,
       runId: options.runId ?? null,
+      costUsd: 0,
       progress: { done: 0, total: null, label: options.label ?? "" },
       error: null,
       createdAt: new Date().toISOString(),
@@ -47,7 +59,18 @@ export class JobRunner {
     await this.store.saveJob(job);
     // Progress reaches the browser over the event stream rather than by polling `GET /jobs/:id`,
     // which is what lets one SSE subscription carry the whole run screen.
-    await this.store.appendEvent({ runId: job.runId, wakeId: null, type: "job.updated", payload: { jobId: job.id, kind: job.kind, status: job.status, progress: job.progress, error: job.error } });
+    //
+    // The project is passed explicitly because the recording store can only derive one FROM A RUN,
+    // and an authoring job (`people.generate`, `target.reset`) has no run at all — nor does
+    // `run.start` until the row it is creating exists. Without this a project's stream carries no
+    // job progress for the project's own jobs.
+    await this.store.appendEvent({
+      runId: job.runId,
+      wakeId: null,
+      ...(job.projectId === null ? {} : { projectId: job.projectId }),
+      type: "job.updated",
+      payload: { jobId: job.id, kind: job.kind, status: job.status, progress: job.progress, error: job.error },
+    });
   }
 
   private async drain(): Promise<void> {
@@ -69,8 +92,13 @@ export class JobRunner {
           job = { ...job, progress: { ...job.progress, ...progress } };
           await this.save(job);
         };
+        const spend: JobSpend = async (costUsd: number): Promise<void> => {
+          if (settled || costUsd <= 0) return;
+          job = { ...job, costUsd: Number((job.costUsd + costUsd).toFixed(8)) };
+          await this.save(job);
+        };
         try {
-          const result = await next.handler(job, report);
+          const result = await next.handler(job, report, spend);
           job = { ...job, status: "succeeded", endedAt: new Date().toISOString(), ...(result?.runId ? { runId: result.runId } : {}) };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

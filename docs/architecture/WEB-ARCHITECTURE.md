@@ -109,30 +109,76 @@ above the seam knows.
 
 ## 5. The API
 
-`/api/v1`, REST-shaped, JSON, one zod schema per payload in `contract`.
+`/api/v1`, REST-shaped, JSON, one zod schema per payload in `contract`, one route table
+(`packages/contract/src/api.ts`) that the client and the server both spell paths from.
 
-Not tRPC: it couples the client build to the server build and leaves M4's non-interactive CI mode
+Not tRPC: it couples the client build to the server build and leaves a non-interactive CI mode
 without a plain HTTP surface. Not GraphQL: the query shapes here are few and known.
 
+Two rules run through all of it.
+
+**Authoring is project-scoped, and the project is a path segment.** It is not something the process
+closed over at startup: one `serve` holds several projects, and a handler that reads `:p` cannot
+answer for the wrong one. Run reads stay flat, because a run id is globally unique and the row
+carries its project and its simulation (`?project=`, `?simulation=` filter them).
+
+**The wire speaks the user's words** (ADR-0032). A participant is an `Agent` row translated at this
+boundary: `wakeCount` becomes `visits`, `maxWakes` becomes `maxVisits`, and the word "agent" appears
+in no path, field or query parameter. The rows underneath keep their names.
+
 ```
-GET    /runs                        run summaries, newest first
-GET    /runs/:id                    one run, with lineage (parent and children)
-GET    /runs/:id/agents             agents with wake counts, status, last wake
-GET    /runs/:id/wakes              wake rows, filterable by agent
-GET    /wakes/:id                   one wake
-GET    /wakes/:id/trace             the full ordered trace
-GET    /runs/:id/findings           findings, filterable by kind/severity/verdict
-GET    /findings/:id                one finding, with reproduction and verification
-GET    /runs/:id/digest             the digest read model: clusters, totals, coverage gaps
-GET    /runs/:id/spend              cost rollups by agent, persona and day
-GET    /target                      the configured target and its tool list
-GET    /health                      version, store path, lock holder, kill-switch state
+GET    /projects                                 project cards: counts, live dot, 7-day spend
+POST   /projects                                 201
+GET    /projects/:p                              the project home screen, in one request
+GET    /projects/:p/setup                        blockers, counts, kill switch
+
+GET|POST       /projects/:p/targets              GET|PUT|DELETE  …/targets/:t
+POST           …/targets/check                   a draft the wizard has not saved
+POST           …/targets/:t/check                …/targets/:t/promises   …/targets/:t/reset
+GET|POST       /projects/:p/personas             GET|PUT|DELETE  …/personas/:x
+GET|POST       …/personas/starters               POST …/personas/:x/preview
+GET|POST       /projects/:p/cohorts              GET|PUT|DELETE  …/cohorts/:c
+GET|POST       …/cohorts/:c/people               POST …/cohorts/:c/people/regenerate
+PATCH          …/cohorts/:c/people/:ordinal      rename or re-blurb one person
+GET|POST       /projects/:p/populations          GET|PUT|DELETE  …/populations/:pop
+GET|PUT        /projects/:p/settings             GET|PUT /projects/:p/triage
+
+GET|POST       /projects/:p/simulations          GET|PUT|DELETE  …/simulations/:s
+POST           …/simulations/:s/estimate         arithmetic over history; spends nothing
+GET            …/simulations/:s/preflight        who is going, what they will meet, what it costs
+POST|GET       …/simulations/:s/runs             start an execution / list them
+GET            …/simulations/:s/results          THE RESULTS SCREEN, in one request
+GET            …/simulations/:s/results/:sig     one problem in full, by signature
+GET            …/simulations/:s/compare?a=&b=    two executions side by side
+POST           …/simulations/:s/apply            re-resolve a live longitudinal execution
+
+GET    /runs                                     ?project= ?simulation=
+GET    /runs/:id                                 /runs/:id/participants[/:pid][/memory]
+GET    /runs/:id/cohorts   /runs/:id/wakes   /runs/:id/findings   /runs/:id/digest
+GET    /runs/:id/spend     /runs/:id/tools   /runs/:id/live
+GET    /wakes/:id          /wakes/:id/trace  /findings/:id
+POST   /runs/:id/stop | round | pause | resume | carry-forward | sweep | digest/job
+POST   /kill-switch        GET /jobs/:id
+GET    /events             GET /events/history   ?project= ?simulation= ?run= &after=
+GET    /health
 ```
 
-M1 is exactly the above and is read-only. M2 adds `POST /runs`, `POST /runs/:id/stop`,
-`POST /runs/:id/wakes`, `POST /kill-switch`, `POST /jobs/digest`, the persona and target
-authoring routes, and `POST /targets/:id/validate`. M3 adds `PATCH /clusters/:signature/triage`,
-`GET /runs/:a/compare/:b` and `POST /runs/:id/revalidate`.
+### One screen, one request
+
+The two heaviest screens are each **one request in a bounded number of queries**, and that is
+asserted rather than assumed: `control.test.ts` wraps the store in a counting decorator and checks
+that `GET …/results` and `GET …/participants/:pid` cost the same number of queries for one person as
+for six. Both shapes exist because of a specific N+1 that shipped: the old population screen fired
+one memory read per participant on a five-second poll.
+
+### Names are a level, not a field
+
+`ProjectOverviewView` and `SimulationResultsView` carry **no person names at all** — headcounts,
+cohort slugs and person ids, and nowhere to put a name (SPEC §7.1). A name first appears on
+`ClusterDetailView`, as the author of a quote. The rule is enforced by the payload shapes rather
+than by screen discipline, so a screen that wants to break it has to add a request to do it; a test
+in `control.test.ts` reads the raw response bodies of both views and asserts that none of the run's
+real names appear in either.
 
 ### Binding and access
 
@@ -150,9 +196,10 @@ same query with a different starting point.
 
 ## 6. Live updates
 
-One SSE endpoint, `/api/v1/events?after=<cursor>&run=<runId>`, carrying a discriminated union of
-event types declared in `contract`: `run.*`, `wake.*`, `trace.*`, `finding.*`, `job.*`,
-`guardrail.*`.
+One SSE endpoint, `/api/v1/events?after=<cursor>` scoped by `&project=`, `&simulation=` or `&run=`,
+carrying a discriminated union of event types declared in `contract`: `run.*`, `wake.*`, `trace.*`,
+`finding.*`, `job.*`, `guardrail.*`. A project page follows every simulation in it on ONE connection
+rather than opening one per execution, which is what the `events.project_id` column is for.
 
 The cursor is a store-level monotonic sequence over an append-only `events` table (ADR-0025).
 Because it is persisted rather than in-memory:
