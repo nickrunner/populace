@@ -229,7 +229,19 @@ reaches neither the live stream nor the replay.
 
 ## 8. Build order
 
-Per milestone, what lands where. Milestone content is the roadmap's; this is only the layering.
+What lands where. The content of a rung is the roadmap's (`docs/product/ROADMAP.md`); this is only
+the layering.
+
+**The ladder was renumbered on 2026-09-20.** M1 through M3 and the projects part of M4 are built,
+so the roadmap retired the M rungs and re-cut what is left as R1 (the returning verdict), R2
+(results that leave the building), R3 (unattended running), R4 (CI mode) and R5 (cloud). The M rows
+below are kept because they record what actually landed in what order and why the layering is what
+it is; read them as history, and read the roadmap for what is next.
+
+One layering note carries onto the new ladder: R5 is still the only rung that replaces an
+implementation behind `Store` or `Scheduler`, and R1 through R4 add screens, routes and clients
+over what exists. Anything that proposes to change `runWake()` for R1–R4 has gone wrong somewhere
+earlier.
 
 **M1 — read-only.** `contract` + `server` with the read routes above, `web` with the run list,
 run overview, digest screen, findings list, finding detail and the wake trace viewer. Core made
@@ -264,9 +276,9 @@ finding rows (ADR-0028), run comparison, "re-run the people who complained" as a
 **M4 — many targets.** Projects become real, targets get a library, runs get schedules, and a
 non-interactive CI mode consumes the same API.
 
-Scheduled runs make the scoping gap in §9 urgent rather than creating it: a schedule that fired
-into an engaged kill switch would skip its run and say nothing, which is worse than waiting. The CI
-mode needs the same answer.
+Scheduled runs — now R3 and R4 — make the scoping gap in §9 urgent rather than creating it: a
+schedule that fired into an engaged kill switch would skip its run and say nothing, which is worse
+than waiting. The CI mode needs the same answer.
 
 **M5 — cloud.** `@populace/store-postgres` behind the existing `Store` interface, an external
 scheduler behind `Scheduler`, hosted runners pulling jobs, accounts and tenancy in `server`,
@@ -281,9 +293,9 @@ gathered here so nobody has to find them by reading every ADR. Checked against `
 - **Replay contaminates the target it verifies against.** A finding filed with no evidence calls is
   replayed on the visit's last five tool calls (`callLog.slice(-5)`), writes included, and each
   replay changes what the next one sees. Fix validation is built on verdicts, so a verdict that
-  depended on what an earlier replay wrote is not evidence that a fix worked. This has to be
-  settled before M3 rather than during it. Options and reasoning: ADR-0014, amendment of
-  2026-09-18.
+  depended on what an earlier replay wrote is not evidence that a fix worked. **R1 is the rung
+  that puts a verdict in front of a user as the answer, so this has to be settled before R1 rather
+  than during it.** Options and reasoning: ADR-0014, amendment of 2026-09-18.
 
 - **The stop is global while executions are not.** Starting is scoped — one execution per
   simulation, because an ephemeral start resets the target — but "Stop everything now" engages the
@@ -295,9 +307,9 @@ gathered here so nobody has to find them by reading every ADR. Checked against `
 - **YAML export and import, and config history, are missing from `main`.** See the M2 row above:
   either they are rebuilt on the new entity model or ADR-0025 is amended to match the code.
 
-- **`docs/product/ROADMAP.md` is not on `main`.** Every milestone above cites roadmap acceptance
-  clauses that live only on a branch, so the criteria a rung is judged against are not in the
-  repository. It is not brought across in this pass because it predates the restructure and is
-  written entirely in personas and populations — it names no simulation and no cohort — so landing
-  it as it stands would put a stale document beside a current one. It should be re-baselined on the
-  new entity model and then land alongside these documents.
+- **The migration trigger cannot be observed, so it cannot be relied on as a gate.** The store
+  empties a database whose recorded `SCHEMA_SHAPE` is not this build's, with one line of warning
+  and nobody's consent, and the named trigger for ending that regime — the first database outside
+  this repository holding a target somebody typed — is a fact nothing in the system can see. The
+  cheap half of the fix is to make the rebuild refuse instead of proceed when the database holds
+  authored rows, which turns silent data loss into a startup that stops and says why. Roadmap D5.
