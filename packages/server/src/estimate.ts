@@ -43,21 +43,29 @@ function median(values: number[]): number | null {
  * rather than a total — a number that says "this does not stop on its own" is more use than a
  * large one that pretends it does.
  */
-export function plannedVisits(config: PopulaceConfig, assumed: number): { agents: number; visits: number; bounded: boolean; perAgent: { personaId: string; agents: number; visits: number; capped: boolean }[] } {
-  const perAgent: { personaId: string; agents: number; visits: number; capped: boolean }[] = [];
+export function plannedVisits(
+  config: PopulaceConfig,
+  assumed: number,
+): { agents: number; visits: number; bounded: boolean; perCohort: { cohort: string; personaId: string; agents: number; visits: number; capped: boolean }[] } {
+  const perCohort: { cohort: string; personaId: string; agents: number; visits: number; capped: boolean }[] = [];
   let agents = 0;
   let visits = 0;
-  let bounded = true;
+  // Bounded exactly when every cohort has a visit cap — which for an ephemeral simulation is
+  // always, because `visitsPerPerson` resolves onto `population.maxWakes`.
+  // An EPHEMERAL simulation is bounded by definition: `visitsPerPerson` resolves onto
+  // `population.maxWakes`, so every cohort carries a cap and the run ends when the last
+  // participant hits it. A longitudinal one is bounded only if every cohort caps itself.
+  let bounded = config.simulation.mode === "ephemeral";
   for (const member of config.population.members) {
-    const count = Math.ceil(member.count * config.population.scale);
+    const count = member.count;
     const cap = member.maxWakes ?? config.population.maxWakes;
     const each = cap ?? assumed;
-    if (cap === undefined) bounded = false;
+    if (cap === null || cap === undefined) bounded = false;
     agents += count;
     visits += count * each;
-    perAgent.push({ personaId: member.persona.id, agents: count, visits: count * each, capped: cap !== undefined });
+    perCohort.push({ cohort: member.cohort, personaId: member.persona.id, agents: count, visits: count * each, capped: cap !== null && cap !== undefined });
   }
-  return { agents, visits, bounded, perAgent };
+  return { agents, visits, bounded, perCohort };
 }
 
 export async function estimateRun(store: Store, input: EstimateInput): Promise<RunEstimate> {
@@ -88,7 +96,7 @@ export async function estimateRun(store: Store, input: EstimateInput): Promise<R
     lowUsd: Number(Math.max(0, central * (1 - spread)).toFixed(2)),
     expectedUsd: Number(central.toFixed(2)),
     highUsd: Number((central * (1 + spread)).toFixed(2)),
-    perPersona: plan.perAgent.map((p) => ({ personaId: p.personaId, agents: p.agents, visits: p.visits, capped: p.capped, expectedUsd: Number((p.visits * perWake).toFixed(2)) })),
+    perCohort: plan.perCohort.map((p) => ({ cohort: p.cohort, personaId: p.personaId, agents: p.agents, visits: p.visits, capped: p.capped, expectedUsd: Number((p.visits * perWake).toFixed(2)) })),
     model: model.model,
     effort: model.effort,
     /** The ceilings that will actually stop it, whatever this estimate says (ADR-0009). */
@@ -96,7 +104,7 @@ export async function estimateRun(store: Store, input: EstimateInput): Promise<R
       perWakeUsd: input.config.guardrails.perWake.maxUsd,
       perWakeTurns: input.config.guardrails.perWake.maxTurns,
       dailyUsd: input.config.guardrails.dailyUsd,
-      maxWakesPerAgent: input.config.population.maxWakes ?? null,
+      maxWakesPerAgent: input.config.population.maxWakes,
     },
   };
 }

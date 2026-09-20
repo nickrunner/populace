@@ -2,12 +2,18 @@ import {
   CadenceSchema,
   DaemonConfigSchema,
   EventSchema,
+  FirebaseAdminConfigSchema,
+  FirstContactSchema,
   GuardrailsSchema,
-  IdentityConfigSchema,
   JobSchema,
   ModelConfigSchema,
+  PauseReasonSchema,
   PersonaSpecSchema,
   RunStatusSchema,
+  SelfSignupConfigSchema,
+  SimulationModeSchema,
+  StaticIdentityConfigSchema,
+  ToolPolicySchema,
   VerifierConfigSchema,
 } from "@populace/core/isomorphic";
 import { z } from "zod";
@@ -38,13 +44,43 @@ export const EndpointInputSchema = z.object({
   bearerToken: z.string().optional(),
 });
 
+/**
+ * The identity block as the browser may see it. admin-mint's `apiKey` mints and renews sessions,
+ * so it obeys the same rule as a bearer token: it goes up when a user types one and never comes
+ * back down. `apiKeySet` is how the form knows one is already stored.
+ */
+export const IdentityConfigViewSchema = z.discriminatedUnion("strategy", [
+  SelfSignupConfigSchema,
+  StaticIdentityConfigSchema,
+  FirebaseAdminConfigSchema.omit({ apiKey: true }).extend({ apiKeySet: z.boolean() }),
+]);
+export type IdentityConfigView = z.infer<typeof IdentityConfigViewSchema>;
+
+/**
+ * The identity block on the way up. admin-mint's `apiKey` follows `EndpointInputSchema.bearerToken`
+ * exactly — absent leaves the stored key alone, the empty string clears it — which is why this is
+ * the core schema with that one field relaxed rather than the core schema itself.
+ */
+export const IdentityConfigInputSchema = z.discriminatedUnion("strategy", [
+  SelfSignupConfigSchema,
+  StaticIdentityConfigSchema,
+  FirebaseAdminConfigSchema.extend({ apiKey: z.string().optional() }),
+]);
+export type IdentityConfigInput = z.infer<typeof IdentityConfigInputSchema>;
+
 export const TargetInputSchema = z.object({
   name: z.string().min(1),
   mcp: z.array(EndpointInputSchema).min(1),
   webBaseUrl: z.url().optional(),
   /** "What the marketing says", handed to every person before their first visit. */
   description: z.string().optional(),
-  identity: IdentityConfigSchema,
+  identity: IdentityConfigInputSchema,
+  /**
+   * What anybody sent here may touch. This is the altitude the decision belongs at: a tool that is
+   * dangerous is dangerous whichever persona reaches for it, and a persona's policy is merged onto
+   * this one so it can only ever narrow it. Absent leaves whatever is stored alone.
+   */
+  tools: ToolPolicySchema.optional(),
 });
 export type TargetInput = z.infer<typeof TargetInputSchema>;
 
@@ -55,7 +91,10 @@ export const StoredTargetViewSchema = z.object({
   mcp: z.array(EndpointViewSchema),
   webBaseUrl: z.string().nullable(),
   description: z.string().nullable(),
-  identity: IdentityConfigSchema,
+  identity: IdentityConfigViewSchema,
+  tools: ToolPolicySchema,
+  /** The last first-contact check, or null when nobody has run one. Never holds a credential. */
+  firstContact: FirstContactSchema.nullable(),
   updatedAt: z.iso.datetime(),
 });
 export type StoredTargetView = z.infer<typeof StoredTargetViewSchema>;
@@ -97,6 +136,14 @@ export const TargetCheckSchema = z.object({
   errors: z.array(z.string()),
 });
 export type TargetCheck = z.infer<typeof TargetCheckSchema>;
+
+/**
+ * The result of one first-contact check, on the wire. It is the core schema unchanged: the shape
+ * is stored on the target row and rendered in the browser, and a second spelling of it would be a
+ * second thing to keep honest about what it does and does not carry.
+ */
+export { FirstContactSchema };
+export type { FirstContact } from "@populace/core/isomorphic";
 
 /**
  * The website's copy against the tool list: a promise with no tool behind it is a coverage gap
@@ -145,19 +192,34 @@ export const AddStarterBodySchema = z.object({ slug: z.string().min(1), count: z
 
 // ---- population and settings ---------------------------------------------
 
+/**
+ * A population is composition now: an ordered set of cohorts, where a cohort is "N people on one
+ * persona". `scale` is gone — two numbers deciding how many people exist (count × scale) is
+ * exactly the ambiguity the restructure removes.
+ */
 export const PopulationViewSchema = z.object({
   id: z.string(),
   slug: z.string(),
-  scale: z.number().positive(),
+  name: z.string(),
   seed: z.string(),
   cadence: CadenceSchema,
   maxWakes: z.number().int().positive().nullable(),
-  members: z.array(z.object({ personaId: z.string(), slug: z.string(), name: z.string(), count: z.number().int().nonnegative(), maxWakes: z.number().int().positive().nullable() })),
+  members: z.array(
+    z.object({
+      cohortId: z.string(),
+      cohort: z.string(),
+      cohortName: z.string(),
+      personaId: z.string(),
+      slug: z.string(),
+      name: z.string(),
+      count: z.number().int().nonnegative(),
+      maxWakes: z.number().int().positive().nullable(),
+    }),
+  ),
 });
 export type PopulationView = z.infer<typeof PopulationViewSchema>;
 
 export const PopulationInputSchema = z.object({
-  scale: z.number().positive().optional(),
   seed: z.string().optional(),
   cadence: CadenceSchema.partial().optional(),
   maxWakes: z.number().int().positive().nullable().optional(),
@@ -191,10 +253,13 @@ export const SetupStatusSchema = z.object({
   blockers: z.array(z.string()),
   targetId: z.string().nullable(),
   personaCount: z.number().int().nonnegative(),
-  agentCount: z.number().int().nonnegative(),
+  /** How many PEOPLE the population holds. The wire does not say "agent" (Decision A). */
+  peopleCount: z.number().int().nonnegative(),
   hasApiKey: z.boolean(),
   killSwitch: z.object({ engaged: z.boolean(), reason: z.string().nullable(), at: z.string().nullable() }),
   runningRunIds: z.array(z.string()),
+  /** The simulations this project holds, so a caller can name one without a second request. */
+  simulationIds: z.array(z.object({ id: z.string(), slug: z.string(), name: z.string() })),
 });
 export type SetupStatus = z.infer<typeof SetupStatusSchema>;
 
@@ -213,7 +278,8 @@ export const RunEstimateSchema = z.object({
   lowUsd: z.number().nonnegative(),
   expectedUsd: z.number().nonnegative(),
   highUsd: z.number().nonnegative(),
-  perPersona: z.array(z.object({ personaId: z.string(), agents: z.number().int(), visits: z.number().int(), capped: z.boolean(), expectedUsd: z.number().nonnegative() })),
+  /** One row per COHORT. Two cohorts may share a persona, so `cohort` is what tells the rows apart. */
+  perCohort: z.array(z.object({ cohort: z.string(), personaId: z.string(), agents: z.number().int(), visits: z.number().int(), capped: z.boolean(), expectedUsd: z.number().nonnegative() })),
   model: z.string(),
   effort: z.string(),
   /** The guardrails that will actually stop it, whatever the arithmetic above says (ADR-0009). */
@@ -225,14 +291,6 @@ export const RunEstimateSchema = z.object({
   }),
 });
 export type RunEstimate = z.infer<typeof RunEstimateSchema>;
-
-export const StartRunBodySchema = z.object({
-  label: z.string().optional(),
-  /** Carry a previous run's agents, memory and accounts forward (ADR-0020). */
-  continueFrom: z.string().optional(),
-  continuationReason: z.string().optional(),
-});
-export type StartRunBody = z.infer<typeof StartRunBodySchema>;
 
 export const StopRunBodySchema = z.object({
   /** `drain` lets the visits in flight finish; `now` engages the kill switch mid-visit. */
@@ -259,29 +317,43 @@ export type JobView = z.infer<typeof JobViewSchema>;
 export { EventSchema };
 
 /**
- * A card on `Where everyone is`: who is mid-visit, who is away, and when they come back. Derived
- * from agent and wake rows rather than stored, so it is correct after a reload with no live
- * connection at all.
+ * A card on the live screen: who is mid-visit, who is away, and when they come back. Derived from
+ * agent and wake rows rather than stored, so it is correct after a reload with no live connection
+ * at all.
+ *
+ * The wire speaks the user's words (Decision A): a card is labelled by the PERSON and their
+ * cohort, and the id it carries is `participantId`.
  */
-export const AgentLiveSchema = z.object({
-  agentId: z.string(),
-  personaId: z.string(),
+export const ParticipantLiveSchema = z.object({
+  participantId: z.string(),
+  personId: z.string(),
+  name: z.string(),
+  cohortSlug: z.string(),
   personaName: z.string(),
   status: z.enum(["here", "away", "retired"]),
   wakeId: z.string().nullable(),
-  wakeNumber: z.number().int().nonnegative(),
-  maxWakes: z.number().int().positive().nullable(),
+  visitNumber: z.number().int().nonnegative(),
+  maxVisits: z.number().int().positive().nullable(),
   turn: z.number().int().nonnegative(),
   lastCall: z.string().nullable(),
-  nextWakeAt: z.iso.datetime().nullable(),
+  nextVisitAt: z.iso.datetime().nullable(),
   costUsd: z.number().nonnegative(),
-  findingCount: z.number().int().nonnegative(),
+  findings: z.number().int().nonnegative(),
 });
-export type AgentLive = z.infer<typeof AgentLiveSchema>;
+export type ParticipantLive = z.infer<typeof ParticipantLiveSchema>;
 
 export const RunLiveSchema = z.object({
   runId: z.string(),
   status: RunStatusSchema,
+  /** Which controls the screen offers: Pause for a longitudinal execution, Stop for an ephemeral one. */
+  mode: SimulationModeSchema,
+  /**
+   * Why it is not going, when it is not going. `process-ended` is the one a laptop produces and
+   * the one the screen has to say out loud: nothing failed, populace was closed, and the run is
+   * sitting where it was left (SPEC §4.2). Without it on the wire a paused run and an abandoned
+   * one are the same word.
+   */
+  pauseReason: PauseReasonSchema.nullable(),
   startedAt: z.iso.datetime().nullable(),
   endedAt: z.iso.datetime().nullable(),
   /** The cursor a client should resume the event stream from if it renders this snapshot first. */
@@ -290,6 +362,10 @@ export const RunLiveSchema = z.object({
   visitsPlanned: z.number().int().nonnegative(),
   costUsd: z.number().nonnegative(),
   findings: z.number().int().nonnegative(),
-  agents: z.array(AgentLiveSchema),
+  participants: z.array(ParticipantLiveSchema),
 });
 export type RunLive = z.infer<typeof RunLiveSchema>;
+
+/** Creating a population: composition starts empty and cohorts are put into it afterwards. */
+export const PopulationCreateSchema = z.object({ name: z.string().min(1), slug: z.string().regex(/^[a-z0-9][a-z0-9-]*$/).optional() });
+export type PopulationCreate = z.infer<typeof PopulationCreateSchema>;

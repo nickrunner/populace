@@ -109,53 +109,76 @@ above the seam knows.
 
 ## 5. The API
 
-`/api/v1`, REST-shaped, JSON, one zod schema per payload in `contract`.
+`/api/v1`, REST-shaped, JSON, one zod schema per payload in `contract`, one route table
+(`packages/contract/src/api.ts`) that the client and the server both spell paths from.
 
-Not tRPC: it couples the client build to the server build and leaves M4's non-interactive CI mode
+Not tRPC: it couples the client build to the server build and leaves a non-interactive CI mode
 without a plain HTTP surface. Not GraphQL: the query shapes here are few and known.
 
-```
-GET    /runs                        run summaries, newest first
-GET    /runs/:id                    one run, with lineage (parent and children)
-GET    /runs/:id/agents             agents with wake counts, status, last wake
-GET    /runs/:id/wakes              wake rows, filterable by agent
-GET    /wakes/:id                   one wake
-GET    /wakes/:id/trace             the full ordered trace
-GET    /runs/:id/findings           findings, filterable by kind/severity/verdict
-GET    /findings/:id                one finding, with reproduction and verification
-GET    /runs/:id/digest             the digest read model: clusters, totals, coverage gaps
-GET    /runs/:id/spend              cost rollups by agent, persona and day
-GET    /target                      the configured target and its tool list
-GET    /health                      version, store path, lock holder, kill-switch state
-```
+Two rules run through all of it.
 
-M1 is exactly the above and is read-only. M2's first slice added these, and the route table in
-`contract/src/api.ts` is the authority on all of them:
+**Authoring is project-scoped, and the project is a path segment.** It is not something the process
+closed over at startup: one `serve` holds several projects, and a handler that reads `:p` cannot
+answer for the wrong one. Run reads stay flat, because a run id is globally unique and the row
+carries its project and its simulation (`?project=`, `?simulation=` filter them).
+
+**The wire speaks the user's words** (ADR-0032). A participant is an `Agent` row translated at this
+boundary: `wakeCount` becomes `visits`, `maxWakes` becomes `maxVisits`, and the word "agent" appears
+in no path, field or query parameter. The rows underneath keep their names.
 
 ```
-GET    /setup                       what still stands between the user and a run
-GET    /targets  POST /targets      the authored target rows
-GET/PUT/DELETE /targets/:id         a bearer token goes up and never comes back down
-POST   /targets/:id/check           connect, list tools, guess the identity tools
-GET    /targets/:id/promises        product copy against the tool list
-GET/POST /personas  GET/PUT/DELETE /personas/:id
-GET    /personas/starters           the six-persona library
-GET/PUT /population  GET/PUT /settings
-POST   /runs/estimate               arithmetic over history; spends nothing
-POST   /runs                        start; answers with a run id and a job id
-POST   /runs/:id/stop               mode: drain | now
-POST   /runs/:id/round              bring every active agent's next visit forward
-POST   /runs/:id/continue           a continuation from this run (ADR-0020)
-POST   /runs/:id/sweep              remove the accounts this run created
-POST   /runs/:id/digest/job         verify and cluster, as a job
-GET    /runs/:id/live               everything the live screen needs, from rows
-GET    /jobs/:id                    one job
-POST   /kill-switch                 engage or release
-GET    /events                      SSE; also /events/history for paging
+GET    /projects                                 project cards: counts, live dot, 7-day spend
+POST   /projects                                 201
+GET    /projects/:p                              the project home screen, in one request
+GET    /projects/:p/setup                        blockers, counts, kill switch
+
+GET|POST       /projects/:p/targets              GET|PUT|DELETE  …/targets/:t
+POST           …/targets/check                   a draft the wizard has not saved
+POST           …/targets/:t/check                …/targets/:t/promises   …/targets/:t/reset
+GET|POST       /projects/:p/personas             GET|PUT|DELETE  …/personas/:x
+GET|POST       …/personas/starters               POST …/personas/:x/preview
+GET|POST       /projects/:p/cohorts              GET|PUT|DELETE  …/cohorts/:c
+GET|POST       …/cohorts/:c/people               POST …/cohorts/:c/people/regenerate
+PATCH          …/cohorts/:c/people/:ordinal      rename or re-blurb one person
+GET|POST       /projects/:p/populations          GET|PUT|DELETE  …/populations/:pop
+GET|PUT        /projects/:p/settings             GET|PUT /projects/:p/triage
+
+GET|POST       /projects/:p/simulations          GET|PUT|DELETE  …/simulations/:s
+POST           …/simulations/:s/estimate         arithmetic over history; spends nothing
+GET            …/simulations/:s/preflight        who is going, what they will meet, what it costs
+POST|GET       …/simulations/:s/runs             start an execution / list them
+GET            …/simulations/:s/results          THE RESULTS SCREEN, in one request
+GET            …/simulations/:s/results/:sig     one problem in full, by signature
+GET            …/simulations/:s/compare?a=&b=    two executions side by side
+POST           …/simulations/:s/apply            re-resolve a live longitudinal execution
+
+GET    /runs                                     ?project= ?simulation=
+GET    /runs/:id                                 /runs/:id/participants[/:pid][/memory]
+GET    /runs/:id/cohorts   /runs/:id/wakes   /runs/:id/findings   /runs/:id/digest
+GET    /runs/:id/spend     /runs/:id/tools   /runs/:id/live
+GET    /wakes/:id          /wakes/:id/trace  /findings/:id
+POST   /runs/:id/stop | round | pause | resume | carry-forward | sweep | digest/job
+POST   /kill-switch        GET /jobs/:id
+GET    /events             GET /events/history   ?project= ?simulation= ?run= &after=
+GET    /health
 ```
 
-M3 adds `PATCH /clusters/:signature/triage`, `GET /runs/:a/compare/:b` and
-`POST /runs/:id/revalidate`.
+### One screen, one request
+
+The two heaviest screens are each **one request in a bounded number of queries**, and that is
+asserted rather than assumed: `control.test.ts` wraps the store in a counting decorator and checks
+that `GET …/results` and `GET …/participants/:pid` cost the same number of queries for one person as
+for six. Both shapes exist because of a specific N+1 that shipped: the old population screen fired
+one memory read per participant on a five-second poll.
+
+### Names are a level, not a field
+
+`ProjectOverviewView` and `SimulationResultsView` carry **no person names at all** — headcounts,
+cohort slugs and person ids, and nowhere to put a name (SPEC §7.1). A name first appears on
+`ClusterDetailView`, as the author of a quote. The rule is enforced by the payload shapes rather
+than by screen discipline, so a screen that wants to break it has to add a request to do it; a test
+in `control.test.ts` reads the raw response bodies of both views and asserts that none of the run's
+real names appear in either.
 
 ### Binding and access
 
@@ -173,9 +196,10 @@ same query with a different starting point.
 
 ## 6. Live updates
 
-One SSE endpoint, `/api/v1/events?after=<cursor>&run=<runId>`, carrying a discriminated union of
-event types declared in `contract`: `run.*`, `wake.*`, `trace.*`, `finding.*`, `job.*`,
-`guardrail.*`.
+One SSE endpoint, `/api/v1/events?after=<cursor>` scoped by `&project=`, `&simulation=` or `&run=`,
+carrying a discriminated union of event types declared in `contract`: `run.*`, `wake.*`, `trace.*`,
+`finding.*`, `job.*`, `guardrail.*`. A project page follows every simulation in it on ONE connection
+rather than opening one per execution, which is what the `events.project_id` column is for.
 
 The cursor is a store-level monotonic sequence over an append-only `events` table (ADR-0026).
 Because it is persisted rather than in-memory:
@@ -218,11 +242,20 @@ decided D3). The target wizard, persona editor and starter library. Cost estimat
 run starts. This rung is roughly twice any other and is split by surface depth if it must
 split, never by audience.
 
-*First slice shipped 2026-09-18.* The control plane (migration gate, config rows, run rows with
+*Where M2 stands on 2026-09-20.* On `main`: the control plane (config rows, run rows with frozen
 snapshots, the event log behind a `RecordingStore`, the serial job queue, the advisory serve lock),
-the target wizard with a live check, the six-persona starter library, the limits screen, the run
-form with its estimate, and the live run screen. The second slice carries the full persona editor
-with its prompt preview, YAML import and export from the dashboard, and config history.
+the target wizard with a live check and a first-contact report (ADR-0034), the six-persona starter
+library, settings, the run form with its estimate, the live execution screen, and — after the
+projects/simulations/cohorts/people restructure — the persona editor with a prompt preview rendered
+from the runner's own `personaSystemPrompt`.
+
+Two pieces of this rung are **not** on `main` and are the outstanding M2 work: **YAML export and
+import from the dashboard**, and **config history with restore**. `yaml` is a dependency of `cli`
+only, and there is no revision table. Both were built on the pre-restructure entity model and were
+not carried across it; ADR-0025 still says export exists, so either they are rebuilt on projects,
+simulations and cohorts, or that ADR needs amending to say the file is a CLI-only entry point.
+Until one or the other happens the ADR and the code disagree, which is the state this document
+exists to prevent.
 
 **M3 — the loop.** Cluster signatures persisted, triage state attached to them rather than to
 finding rows (ADR-0028), run comparison, "re-run the people who complained" as a job over
@@ -231,13 +264,9 @@ finding rows (ADR-0028), run comparison, "re-run the people who complained" as a
 **M4 — many targets.** Projects become real, targets get a library, runs get schedules, and a
 non-interactive CI mode consumes the same API.
 
-M2 left one thing for this rung to undo. `POST /runs` refuses a second run while one is going
-(ADR-0022 amendment), which is right while a local install drives one target and stops everything
-with one button. M4 is done when one install drives three targets on schedules, and a scheduled
-start that arrives during another run would be refused with a 409 that nobody is watching. So M4
-either queues starts instead of rejecting them, or makes the stop run-scoped and leaves the kill
-switch as the global control. Whichever it is, the CI mode needs the same answer, because a build
-that skipped its run and said nothing is worse than one that waited.
+Scheduled runs make the scoping gap in §9 urgent rather than creating it: a schedule that fired
+into an engaged kill switch would skip its run and say nothing, which is worse than waiting. The CI
+mode needs the same answer.
 
 **M5 — cloud.** `@populace/store-postgres` behind the existing `Store` interface, an external
 scheduler behind `Scheduler`, hosted runners pulling jobs, accounts and tenancy in `server`,
@@ -246,14 +275,29 @@ secrets out of the config rows. The runner is untouched.
 ## 9. Open items
 
 Decisions this architecture needs and has not made. Each is recorded where it belongs; they are
-gathered here so nobody has to find them by reading every ADR.
+gathered here so nobody has to find them by reading every ADR. Checked against `main` on
+2026-09-20.
 
-- **Replay contaminates the target it verifies against.** A finding with no evidence calls is
-  replayed on the visit's last five tool calls, writes included, and each replay changes what the
-  next one sees. Fix validation is built on verdicts, so this has to be settled before M3 rather
-  than during it. Options and reasoning: ADR-0014, amendment of 2026-09-18.
-- ~~**"Stop everything now" is global while runs are not.**~~ Settled in M2's second slice:
-  `POST /runs` refuses a second run while one is going. The kill switch is a store row every
-  in-flight wake checks (ADR-0009), so it is global by construction, and the button is only honest
-  while there is one thing to stop. See the ADR-0022 amendment, and the M4 row above: M4 is where
-  this has to be revisited.
+- **Replay contaminates the target it verifies against.** A finding filed with no evidence calls is
+  replayed on the visit's last five tool calls (`callLog.slice(-5)`), writes included, and each
+  replay changes what the next one sees. Fix validation is built on verdicts, so a verdict that
+  depended on what an earlier replay wrote is not evidence that a fix worked. This has to be
+  settled before M3 rather than during it. Options and reasoning: ADR-0014, amendment of
+  2026-09-18.
+
+- **The stop is global while executions are not.** Starting is scoped — one execution per
+  simulation, because an ephemeral start resets the target — but "Stop everything now" engages the
+  store-wide kill switch, and nothing may start while it is engaged. Two simulations running at
+  once therefore stop each other. Two more things sit on the same seam: an ephemeral start resets a
+  target another simulation may be mid-run against, and the daily ceiling is scoped per population
+  rather than per machine. ADR-0022, amendment of 2026-09-18.
+
+- **YAML export and import, and config history, are missing from `main`.** See the M2 row above:
+  either they are rebuilt on the new entity model or ADR-0025 is amended to match the code.
+
+- **`docs/product/ROADMAP.md` is not on `main`.** Every milestone above cites roadmap acceptance
+  clauses that live only on a branch, so the criteria a rung is judged against are not in the
+  repository. It is not brought across in this pass because it predates the restructure and is
+  written entirely in personas and populations — it names no simulation and no cohort — so landing
+  it as it stands would put a stale document beside a current one. It should be re-baselined on the
+  new entity model and then land alongside these documents.

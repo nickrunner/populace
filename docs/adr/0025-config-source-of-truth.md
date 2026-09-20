@@ -16,14 +16,27 @@ The alternative is keeping YAML authoritative and having the UI write the file b
 
 Deciding this before M2 design work matters because the target wizard and persona editor are built against whichever answer wins. D1 moved authoring from M3 to M2, so this binds a milestone earlier than first scoped.
 
-## Amendment (M2, 2026-09-18)
+## Amendment (2026-09-18): resolution is per simulation, and it freezes the cast
 
-YAML import is **once, on first open, and never a sync.** If a project already has a target, a
-`populace.yaml` sitting in the working directory is ignored and the import says so. A user who has
-edited their target in the browser must not have it overwritten because a stale file is still on
-disk, and a file and a form that both write the same rows would be exactly the two-sources-of-truth
-this ADR rejects.
+This ADR said config is assembled from rows into a `PopulaceConfig`. What it did not say — because
+there was only ever one of everything — is *which* rows, and the answer is no longer "the project's".
 
-A persona's `slug` is immutable and is what a resolved config's `persona.id` carries, separate from
-the mutable display name. Agent ids are `populationId/personaId#ordinal`, so a rename that reached
-the slug would silently detach every continuation from its own memory.
+**Resolution is per simulation.** `resolveSimulationConfig(simulation)` reads the simulation's own
+population, its own target and its own execution plan, layered over the project's settings. Two
+simulations in one project point at two different targets and run two different casts, and both are
+resolved from rows without either one being "the" config. The process-wide
+`config: () => Promise<PopulaceConfig>` thunk and `ControlDeps.projectId` are deleted with it: there
+is no such thing as "the config" any more, and a function that returns one can only be wrong.
+
+**Resolution inlines the roster.** `member.people[]` carries each person's id, name, details and
+handle (ADR-0031), so the snapshot **freezes the cast**. A three-month-old execution still renders
+the right names after its cohort has been re-cast or resized, because the names it ran with are in
+its snapshot rather than looked up live. This is the same reason the snapshot inlines the full
+`PersonaSpec` rather than referencing a row.
+
+**`scale` is gone.** A cohort's `size` is the only number that decides headcount, so resolution is
+a join over cohorts rather than an arithmetic over two numbers edited on two screens.
+
+The seam this ADR drew is unchanged and is doing more work than before: the runner still consumes a
+resolved `PopulaceConfig` and still does not care where it came from — a YAML file, a project's
+rows, or a snapshot being picked back up with its live secrets put back in.

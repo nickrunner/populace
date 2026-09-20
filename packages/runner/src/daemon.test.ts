@@ -1,5 +1,9 @@
 import { SelfSignupProvider } from "@populace/adapters/self-signup";
-import { PopulaceConfigSchema, newRunId, type PopulaceConfig } from "@populace/core";
+import { StaticIdentityProvider } from "@populace/adapters/static";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PopulaceConfigSchema, newRunId, type JsonValue, type PopulaceConfig } from "@populace/core";
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
 import { SqliteStore } from "@populace/store-sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -31,6 +35,48 @@ function config(maxWakes: number): PopulaceConfig {
 }
 
 const quits: ScriptPolicy = sequence([() => ({ calls: [call("give_up", { title: "Not for me", reason: "Nope.", would_return: false, severity: "medium", evidence_calls: [] })] })]);
+const leaves: ScriptPolicy = sequence([() => ({ calls: [call("done", { summary: "had a look", would_return: true })] })]);
+
+describe("LocalDaemon cadence", () => {
+  /**
+   * `cadenceOf` matched on `persona.id`, so two cohorts sharing one persona both found the first
+   * member and were rescheduled on its cadence. Keyed by cohort, "25 weekend planners every 30
+   * seconds and 9 sceptics every six hours" is a population that can actually run.
+   */
+  it("reschedules each cohort on its own cadence when two cohorts share a persona", async () => {
+    const persona = { id: "lister", name: "List keeper", role: "a hobbyist", backstory: "Has too many lists.", goals: ["keep a list"] };
+    const loaded = PopulaceConfigSchema.parse({
+      target: { name: "Tasklet", mcp: [{ url: target.mcpUrl }] },
+      identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", teardownTool: "delete_account" },
+      daemon: { tick: "10ms", concurrency: 1 },
+      population: {
+        id: "everyone",
+        cadence: { every: "10ms" },
+        maxWakes: 4,
+        members: [
+          { cohort: "eager", cohortName: "Eager", persona, count: 1, cadence: { every: "10ms" } },
+          { cohort: "patient", cohortName: "Patient", persona, count: 1, cadence: { every: "6h" } },
+        ],
+      },
+    });
+    const store = new SqliteStore(":memory:");
+    const runId = newRunId();
+    const daemon = new LocalDaemon({ config: loaded, runId }, { store, provider: new ScriptedProvider(leaves), identityProvider: new SelfSignupProvider(loaded.identity as never) });
+    const scheduled = await daemon.reconcile();
+    expect(scheduled.map((a) => a.id)).toEqual(["everyone/eager#1", "everyone/patient#1"]);
+
+    const at = new Date();
+    await daemon.tick(at);
+    await daemon.tick(at);
+    expect(daemon.wakesRun).toBe(2);
+
+    const byId = new Map((await store.listAgents({ runId })).map((a) => [a.id, a]));
+    const eager = Date.parse(byId.get("everyone/eager#1")!.nextWakeAt!);
+    const patient = Date.parse(byId.get("everyone/patient#1")!.nextWakeAt!);
+    expect(patient - eager).toBeGreaterThan(5 * 3_600_000);
+    await store.close();
+  });
+});
 
 describe("LocalDaemon retirement", () => {
   it("stops waking an agent that gave up, well short of maxWakes", async () => {
@@ -53,7 +99,7 @@ describe("LocalDaemon retirement", () => {
     const second = new LocalDaemon({ config: loaded, runId }, deps);
     const reconciled = await second.reconcile();
     expect(reconciled[0]?.status).toBe("retired");
-    expect(await store.listDueAgents(new Date(Date.now() + 86_400_000), 10)).toEqual([]);
+    expect(await store.listDueAgents(runId, new Date(Date.now() + 86_400_000), 10)).toEqual([]);
     await store.close();
   });
 
@@ -143,6 +189,68 @@ describe("LocalDaemon retirement", () => {
     // And it is not silently replaced by a new agent wearing the same id: a continuation
     // reports on the cohort it inherited, it does not acquire users.
     expect(agents).toHaveLength(0);
+    await store.close();
+  });
+});
+
+/**
+ * `reconcile()` is where every path — `populace run`, a start from the dashboard, a resume —
+ * turns a population into agents, and the last moment before one of them wakes. A provider that
+ * cannot give every person their own account is asked here, because it only ever sees one agent
+ * and a collision is a property of the whole cast.
+ */
+describe("LocalDaemon identity checks", () => {
+  const persona = { id: "lister", name: "List keeper", role: "a hobbyist", backstory: "Has too many lists.", goals: ["keep a list"] };
+
+  function pool(contents: JsonValue): string {
+    const dir = mkdtempSync(join(tmpdir(), "populace-daemon-pool-"));
+    const file = join(dir, "creds.json");
+    writeFileSync(file, JSON.stringify(contents));
+    return file;
+  }
+
+  function twoCohorts(file: string): PopulaceConfig {
+    return PopulaceConfigSchema.parse({
+      target: { name: "Tasklet", mcp: [{ url: target.mcpUrl }] },
+      identity: { strategy: "static", file },
+      daemon: { tick: "10ms", concurrency: 1 },
+      population: {
+        id: "everyone",
+        cadence: { every: "1h" },
+        maxWakes: 1,
+        members: [
+          { cohort: "weekenders", cohortName: "Weekenders", persona, count: 2 },
+          { cohort: "sceptics", cohortName: "Sceptics", persona, count: 1 },
+        ],
+      },
+    });
+  }
+
+  it("refuses to create agents when one persona-keyed pool would serve two cohorts", async () => {
+    const loaded = twoCohorts(pool({ lister: [{ bearerToken: "a" }, { bearerToken: "b" }, { bearerToken: "c" }] }));
+    const store = new SqliteStore(":memory:");
+    const runId = newRunId();
+    const daemon = new LocalDaemon({ config: loaded, runId }, { store, provider: new ScriptedProvider(leaves), identityProvider: new StaticIdentityProvider(loaded.identity as never) });
+    await expect(daemon.reconcile()).rejects.toThrow(/weekenders.*sceptics|sceptics.*weekenders/s);
+    // Nothing was written: a refusal happens before the population exists, not halfway through it.
+    expect(await store.listAgents({ runId })).toHaveLength(0);
+    await store.close();
+  });
+
+  it("creates every agent when a cohort-keyed pool covers the whole cast", async () => {
+    const loaded = twoCohorts(pool({ byCohort: { weekenders: [{ bearerToken: "w1" }, { bearerToken: "w2" }], sceptics: [{ bearerToken: "s1" }] } }));
+    const store = new SqliteStore(":memory:");
+    const runId = newRunId();
+    const provider = new StaticIdentityProvider(loaded.identity as never);
+    const daemon = new LocalDaemon({ config: loaded, runId }, { store, provider: new ScriptedProvider(leaves), identityProvider: provider });
+    const agents = await daemon.reconcile();
+    expect(agents.map((a) => a.id)).toEqual(["everyone/weekenders#1", "everyone/weekenders#2", "everyone/sceptics#1"]);
+    // And each of them is given a different account.
+    const handed = await Promise.all(agents.map(async (agent) => {
+      const result = await provider.provision({ agent, runId, tag: "populace:test" });
+      return result.kind === "credential" ? result.credential.bearerToken : "?";
+    }));
+    expect(handed).toEqual(["w1", "w2", "s1"]);
     await store.close();
   });
 });

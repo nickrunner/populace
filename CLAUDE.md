@@ -9,6 +9,10 @@ server. The agents behave like prospective users — discover the product throug
 up, try to get their own errands done, come back on a schedule — and file structured findings
 that a report pipeline verifies, clusters and renders into a digest.
 
+The product's own words for those things are different from the code's, deliberately: a user sets
+up a **project**, composes **people** into **cohorts** and a **population**, and runs a
+**simulation** whose **executions** send those people on **visits**. See "The chain" below.
+
 Read `docs/ARCHITECTURE.md` for the map and `docs/adr/` for every fixed decision. The ADRs are
 the reason most things are the way they are; several carry amendments recording what changed and
 why. Check them before reversing something that looks odd.
@@ -31,6 +35,7 @@ Running the harness against the reference app:
 
 ```bash
 pnpm mock-target --port 4310      # Tasklet, the reference target (entry is dist/bin.js)
+pnpm populace serve               # the dashboard and the API: set everything up, run it, read it
 pnpm populace validate            # parse config, connect, list the target's tools
 pnpm populace wake casual-lister  # one wake for one persona, live model calls
 pnpm populace run --new-run       # the daemon: every agent on its cadence
@@ -47,6 +52,35 @@ verification, clustering, digest and sweep are all exercised offline.
 
 Dependency direction is strictly downward: `cli -> reports/runner/adapters/store-sqlite -> core`.
 `mock-target` depends on nothing in the workspace.
+
+**The chain is project → simulation → population → cohort → person** (ADR-0029). A *project* scopes
+authoring: targets, personas, cohorts, populations, simulations, settings and triage all belong to
+one and are never shared across two. A *cohort* is N people on one persona, and it owns the
+headcount (`size` — there is no `scale`), the seed, and cadence/visit-cap overrides. A *population*
+is composition and nothing else: an ordered set of cohorts. A *simulation* is a population, a target
+and a mode, and it is what a user presses go on. A *person* is a durable individual
+(`cohortSlug#ordinal`) with a stored name and detail line, written once and never silently
+overwritten (ADR-0031). A **run is one execution of a simulation**, carrying `simulationId` and a
+`seq` counting from 1.
+
+**Ephemeral vs longitudinal is about history and termination, not determinism** (ADR-0030).
+Ephemeral means a clean slate — no memory, accounts or visit counts carried — and a bounded end
+(`visitsPerPerson` required). Longitudinal accumulates, is pausable and is unbounded
+(`visitsPerPerson` must be null). **There is no determinism subsystem and outcomes vary between
+executions by design**, so nothing in the UI or the docs may promise identical results; a problem
+absent from the newest execution is reported as an absence, never as a fix (ADR-0028 amendment
+carries the measured numbers).
+
+**The wire speaks the user's words; the rows do not change** (ADR-0032). `packages/contract` is the
+translation: `ParticipantSummaryView` is an `Agent` row with `wakeCount` as `visits` and `maxWakes`
+as `maxVisits`, and the word "agent" appears in no path, field or query parameter. `Agent`, `Wake`,
+`runWake`, `expandPopulation` and every store method keep their names. Do not rename underneath, and
+do not leak "agent" or "wake" onto the wire or into UI copy.
+
+**Agent ids are unique per run, not globally.** An id is
+`populationSlug/cohortSlug#ordinal` — deterministic, and therefore repeated in every execution of
+the simulation. `agents` is `PRIMARY KEY (run_id, id)`, `memories` is keyed `(runId, agentId)`, and
+`getAgent`/`listDueAgents` take a run id. **Anything keyed by agent id alone leaks across runs.**
 
 **The wake is the unit of everything.** `runWake()` is a pure-ish function of
 `(agent, memory, identity, target, config)` producing `(trace, memory', findings, cost, identity')`.
@@ -98,15 +132,18 @@ agents and a strong judge coexist in one run.
   (ADR-0007 amendment).
 - **Message history within a wake is append-only.** Notices and budget warnings are appended as new
   user turns; earlier turns are never edited or deleted.
-- **The store has a migration gate, and what it protects depends on the table.** `schema_version`
-  in `control` gates an ordered list of forward steps in `packages/store-sqlite/src/migrations.ts`;
-  each runs once, in a transaction, and there are no down migrations. Authored tables (projects,
-  targets, personas, populations, settings) are the user's own work and are never dropped: they get
-  additive columns and defaults. Produced and derived tables (traces, events, digests, clusters)
-  are reproducible or expendable and may be dropped and rebuilt with a warning. Adding a table is
-  still `CREATE TABLE IF NOT EXISTS` inside a step (`DATA-MODEL.md` §11).
+- **The store has no migration framework, and does not even have the beginnings of one.** One
+  `SCHEMA` constant holds every table; a `schema_shape` constant baked into the source is compared
+  on open and a mismatch drops and rebuilds everything with a warning. That is affordable only
+  while the only databases are throwaway local ones in this repo — the trigger that ends it is the
+  first database elsewhere holding a target somebody typed (ADR-0011 amendment). Changing a table
+  today means changing `schema_shape` and accepting the rebuild.
 - **Adding a field to a `core` schema breaks construction sites**, notably `expandPopulation()` and
   the wake/agent builders in `runner`. The compiler finds them; expect more than one.
+- **A detail view is not a superset of its summary.** `ParticipantDetailView.visits` is an array of
+  visits where the summary's `visits` is a count, and `ClusterDetailView.peopleHit` is the people
+  where the card's is a number. Both are deliberate and both have caught a screen; read the schema
+  in `packages/contract/src/project.ts` rather than assuming.
 
 ## Testing
 

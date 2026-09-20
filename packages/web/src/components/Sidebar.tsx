@@ -1,13 +1,17 @@
-import { Link, NavLink } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, NavLink, useMatch } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../api.js";
-import { usd } from "../format.js";
-import { Chip, Mono } from "./ui.jsx";
+import { q } from "../queries.js";
+import { useProject } from "../context.jsx";
+import { people, plural, usd } from "../format.js";
+import { Bar, Chip, Mono } from "./ui.jsx";
 
 /**
- * One navigation, no role switch and no expert mode. The groups are labelled by what the reader
- * wants rather than by who they are: "What we found" is the evidence surface, "How it ran" is the
- * instrument surface, "Set up" is what produces both, and everyone sees all three.
+ * One navigation, no role switch and no expert mode. The grammar is unchanged from M1 — a group
+ * title in `t-label`, items with their counts right-aligned in `t-meta tabular-nums`, the active
+ * one in `bg-accent-wash text-accent` — and what changed is only what it holds: the brand block
+ * became a project switcher, and the run-scoped groups became simulation-scoped ones that appear
+ * when the URL is inside a simulation (SPEC §7.2).
  */
 function Group({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -31,105 +35,161 @@ function Item({ to, label, count, end = false }: { to: string; label: string; co
   );
 }
 
-export function Sidebar({ runId }: { runId: string | null }) {
-  const run = useQuery({ queryKey: ["run", runId], queryFn: () => api.run(runId ?? ""), enabled: runId !== null });
-  const spend = useQuery({ queryKey: ["spend", runId], queryFn: () => api.spend(runId ?? ""), enabled: runId !== null });
-  const setup = useQuery({ queryKey: ["setup"], queryFn: () => api.setup(), refetchInterval: 15_000 });
-  const targets = useQuery({ queryKey: ["targets"], queryFn: () => api.targets() });
-  // The chip says "connected" only when something actually answered. `GET /target` connects and
-  // reports what it found, so the word is backed by a live list of tools rather than by the
-  // existence of a row.
-  const reachable = useQuery({ queryKey: ["target"], queryFn: () => api.target(), retry: false, refetchInterval: 30_000 });
+/**
+ * The switcher. The project's name is the heading of the rail, because a project is the thing
+ * everything below it belongs to; the `populace` mark is a 20px line above it, which is as much
+ * room as a product name needs once the product is open.
+ */
+function ProjectSwitcher() {
+  const { key, project, href } = useProject();
+  const projects = useQuery(q.projects());
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
 
-  const base = runId === null ? null : `/runs/${encodeURIComponent(runId)}`;
-  const kinds = run.data?.findingsByKind;
-  const ceiling = spend.data?.dailyCeilingUsd ?? 0;
-  const spent = spend.data?.spentTodayUsd ?? 0;
-  const proportion = ceiling > 0 ? Math.min(1, spent / ceiling) : 0;
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent): void => {
+      if (box.current && !box.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const others = (projects.data?.items ?? []).filter((p) => p.slug !== key && p.id !== key);
+
+  return (
+    <div className="px-3 py-4 relative" ref={box}>
+      <Link to="/projects" className="t-meta text-ink-muted block leading-5 h-5">
+        populace
+      </Link>
+      <button type="button" onClick={() => setOpen(!open)} className="flex items-baseline gap-1.5 t-section text-left w-full hover:text-accent" aria-expanded={open}>
+        <span className="truncate">{project.name}</span>
+        <span className="t-meta text-ink-muted shrink-0" aria-hidden="true">
+          ▾
+        </span>
+      </button>
+      <Link to={href()} className="t-meta text-ink-muted block truncate hover:text-accent">
+        {project.description || `${people(project.counts.people)} · ${plural(project.counts.simulations, "simulation")}`}
+      </Link>
+
+      {open ? (
+        <div className="absolute left-3 right-3 top-[68px] z-10 bg-card border border-rule rounded-lg shadow-sm py-1">
+          {others.length === 0 ? <p className="t-meta text-ink-muted px-3 py-1.5">No other projects yet.</p> : null}
+          {others.map((other) => (
+            <Link key={other.id} to={`/p/${encodeURIComponent(other.slug)}`} onClick={() => setOpen(false)} className="flex items-baseline justify-between gap-2 px-3 py-1.5 t-body text-ink-soft hover:bg-well">
+              <span className="truncate">{other.name}</span>
+              <span className="t-meta text-ink-muted tabular-nums">{other.counts.people}</span>
+            </Link>
+          ))}
+          <Link to="/projects?new=1" onClick={() => setOpen(false)} className="block px-3 py-1.5 t-body text-accent hover:bg-well border-t border-rule mt-1 pt-2">
+            New project
+          </Link>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * A rail item that is a place on the page below rather than a page of its own. It is never in the
+ * active state — nothing about the current URL makes it "where you are" — and it scrolls its
+ * section into view itself, because a hash alone moves nothing in an app that scrolls its main
+ * pane rather than the window.
+ */
+function Jump({ to, hash, label, count }: { to: string; hash: string; label: string; count?: number }) {
+  return (
+    <Link
+      to={`${to}#${hash}`}
+      onClick={() => {
+        // After the navigation, so the section exists to be scrolled to when this is pressed from
+        // another screen in the project.
+        window.setTimeout(() => document.getElementById(hash)?.scrollIntoView({ block: "start" }), 0);
+      }}
+      className="flex items-baseline justify-between gap-2 px-3 py-1.5 rounded-md t-body text-ink-soft hover:bg-well"
+    >
+      <span>{label}</span>
+      {count === undefined ? null : <span className="t-meta text-ink-muted tabular-nums">{count}</span>}
+    </Link>
+  );
+}
+
+export function Sidebar() {
+  const { key, project, href } = useProject();
+  const targets = useQuery(q.targets(key));
+  const populations = useQuery(q.populations(key));
+  const inSimulation = useMatch("/p/:proj/s/:sim/*");
+  const simulationKey = inSimulation?.params.sim ?? null;
+  const simulation = project.simulations.find((s) => s.slug === simulationKey || s.id === simulationKey);
+
   const target = targets.data?.items[0];
-  const running = (setup.data?.runningRunIds ?? [])[0] ?? null;
+  const spent = project.spentTodayUsd;
+  const ceiling = project.dailyCeilingUsd;
+  const running = project.runningRunIds.length > 0;
+  const base = simulation === undefined ? null : `${href()}/s/${encodeURIComponent(simulation.slug)}`;
+  const live = simulation?.status === "running" || simulation?.status === "paused";
 
   return (
     <aside className="w-[236px] shrink-0 border-r border-rule bg-card flex flex-col h-full overflow-y-auto">
-      <div className="px-3 py-5">
-        <Link to="/" className="t-section block">
-          populace
-        </Link>
-        <div className="t-meta text-ink-muted">running on this machine</div>
-      </div>
-
-      <div className="px-3 mb-5">
-        {running !== null ? (
-          <Link to={`/runs/${encodeURIComponent(running)}/live`} className="flex items-center justify-center gap-2 t-body px-3 py-1.5 rounded-md border border-accent/40 bg-accent-wash text-accent">
-            Watch the run
-          </Link>
-        ) : (
-          <Link
-            to="/start"
-            className={`flex items-center justify-center gap-2 t-body px-3 py-1.5 rounded-md border ${setup.data?.ready ? "bg-accent text-white border-accent hover:opacity-90" : "bg-card text-ink-muted border-rule"}`}
-          >
-            Start a run
-          </Link>
-        )}
-      </div>
+      <ProjectSwitcher />
 
       <div className="px-0 flex-1">
-        {base ? (
-          <>
-            <Group title="">
-              <Item to={base} label="Overview" end />
-            </Group>
-            <Group title="What we found">
-              <Item to={`${base}/findings`} label="Findings" count={run.data?.totals.findings} />
-              <Item to={`${base}/gaps`} label="Coverage gaps" count={kinds?.["coverage-gap"]} />
-              <Item to={`${base}/left`} label="Who walked away" count={kinds?.abandonment} />
-            </Group>
-            <Group title="How it ran">
-              <Item to={`${base}/population`} label="Population" count={run.data?.totals.agents} />
-              <Item to={`${base}/wakes`} label="Wakes" count={run.data?.totals.wakes} />
-            </Group>
-          </>
+        <Group title="">
+          <Item to={href()} label="Simulations" count={project.counts.simulations} end />
+          {/* Not "Problems": the number is the signatures seen in MORE THAN ONE simulation, which
+              for the common shape — one project, one simulation — is permanently nought while the
+              product has found a dozen. It is labelled for what it counts, it only appears when
+              there is a second simulation for something to be seen in, and it scrolls to the
+              section rather than trusting a fragment this router does not act on. */}
+          {project.simulations.length > 1 ? (
+            <Jump to={href()} hash="problems" label="Seen in more than one" count={project.crossSimulation.length} />
+          ) : null}
+        </Group>
+
+        {base && simulation ? (
+          <Group title={simulation.name}>
+            <Item to={base} label="Results" end />
+            {live ? <Item to={`${base}/live`} label="Live" /> : null}
+            <Item to={`${base}/coverage`} label="Coverage gaps" />
+            <Item to={`${base}/left`} label="Who walked away" />
+            {/* The headcount is who is CONFIGURED to go; the screen behind it reads one execution.
+                Before there is one, a number beside a page that says nobody has been sent is two
+                answers to the same question. */}
+            <Item to={`${base}/population`} label="Population" {...(simulation.latest === null ? {} : { count: simulation.population.people })} />
+            <Item to={`${base}/executions`} label={simulation.mode === "longitudinal" ? "Its life so far" : "Executions"} count={simulation.latest?.seq} />
+            <Item to={`${base}/visits`} label="Visits" count={simulation.latest?.totals.wakes} />
+          </Group>
         ) : null}
 
         <Group title="Set up">
-          <Item to="/setup/target" label="The target" />
-          <Item to="/setup/people" label="The people" count={setup.data?.agentCount} />
-          <Item to="/setup/limits" label="Limits and spending" />
+          <Item to={href("library/target")} label={project.counts.targets > 1 ? "The targets" : "The target"} count={project.counts.targets > 1 ? project.counts.targets : undefined} />
+          <Item to={href("library/personas")} label="Personas" count={project.counts.personas} />
+          <Item to={href("library/people")} label="The people" count={project.counts.people} />
+          {/* A population is a concept with no payoff while there is one of them, so it stays
+              implicit and unnamed until a second one exists (SPEC §7.2). */}
+          {(populations.data?.items.length ?? 0) > 1 ? <Item to={href("library/people#populations")} label="Populations" count={populations.data?.items.length} /> : null}
+          <Item to={href("settings")} label="Settings" />
         </Group>
 
         <div className="px-3 mb-6">
-          <div className="t-label text-ink-muted mb-2">Cost</div>
           <div className="t-meta text-ink-muted">Spent today</div>
           <div className="t-section tabular-nums">{usd(spent)}</div>
-          <div className="h-1 bg-well rounded mt-2 overflow-hidden">
-            <div className="h-full bg-accent" style={{ width: `${(proportion * 100).toFixed(1)}%` }} />
+          <div className="mt-2">
+            <Bar value={spent} of={ceiling} />
           </div>
           <div className="t-meta text-ink-muted mt-1.5">of the {usd(ceiling)} daily ceiling</div>
         </div>
       </div>
 
       <div className="px-3 py-4 border-t border-rule">
-        <Link to="/setup/target" className="block">
+        <Link to={target ? href(`library/target/${encodeURIComponent(target.id)}`) : href("library/target")} className="block">
           <div className="flex items-center gap-2 mb-1">
-            <span className="t-label text-ink-muted">{target?.name ?? "No target yet"}</span>
-            {setup.data?.killSwitch.engaged ? (
-              <Chip tone="bad">stopped</Chip>
-            ) : !target ? null : reachable.isPending ? (
-              <Chip>checking</Chip>
-            ) : reachable.data?.tools ? (
-              <Chip tone="good">connected</Chip>
-            ) : (
-              <Chip tone="bad">not answering</Chip>
-            )}
+            <span className="t-label text-ink-muted truncate">{target?.name ?? "No target yet"}</span>
+            {/* Checking reachability opens a connection to somebody else's server, so it is a
+                POST the target screen makes on request — never a timer in the shell. */}
+            {project.killSwitch.engaged ? <Chip tone="bad">stopped</Chip> : running ? <Chip tone="live">running</Chip> : !target ? null : <Chip>configured</Chip>}
           </div>
           <Mono className="text-[11px] text-ink-muted block break-all">{target?.mcp[0]?.url ?? "connect one to begin"}</Mono>
         </Link>
-        {runId === null ? null : (
-          <>
-            <div className="t-label text-ink-muted mt-3 mb-1">Run</div>
-            <Mono className="text-[11px] text-ink-muted block break-all">{runId}</Mono>
-          </>
-        )}
       </div>
     </aside>
   );

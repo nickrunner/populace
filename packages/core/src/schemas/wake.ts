@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { UsageSchema } from "./trace.js";
 
-export const WakeStatusSchema = z.enum(["running", "done", "gave-up", "budget-exceeded", "killed", "max-turns", "error"]);
+/**
+ * `auth-failed` is its own outcome rather than an `error`: the target rejected this person's
+ * credential, which is a fact about the account and not about populace, and a wake that answers
+ * "errored" for it reads as a bug in the harness while quietly spending a budget on 401s.
+ */
+export const WakeStatusSchema = z.enum(["running", "done", "gave-up", "budget-exceeded", "killed", "max-turns", "auth-failed", "error"]);
 export type WakeStatus = z.infer<typeof WakeStatusSchema>;
 
 export const WakeSchema = z.object({

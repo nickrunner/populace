@@ -16,7 +16,7 @@ The log lands in M2. M1's trace viewer reads `trace_events` and polls; its live 
 
 The log is derived from rows that already exist and may be truncated by age or count. Stating that now stops it from being treated later as the system of record.
 
-## Amendment (M2, 2026-09-18)
+## Amendment (2026-09-18): who writes the log, and who fills in the scope
 
 The log is written by a `RecordingStore` decorator around the `Store`, not by the trace writer
 itself. Every row it appends is derived from a write the runner was already making — a wake saved, a
@@ -25,7 +25,20 @@ and keeps the log honestly derived. An append that fails is swallowed: the log i
 losing a row of it costs a live update, while throwing would lose the wake that produced it.
 
 **Every event about a run must carry its `runId`.** Both ends of delivery filter on it: the
-in-process fan-out compares `event.runId` to the subscriber's filter, and `listEvents` filters with
-`run_id = ?`, which excludes NULL in SQL. An event about a run written with a null `runId` therefore
-reaches neither the live stream nor the replay of the screen that run owns. A null `runId` means the
-event is genuinely not about a run.
+in-process fan-out compares the event's ids to the subscriber's filter, and `listEvents` filters
+with `run_id = ?`, which excludes NULL in SQL. An event about a run written with a null `runId`
+therefore reaches neither the live stream nor the replay of the screen that run owns. A null
+`runId` means the event is genuinely not about a run.
+
+**Scope is stamped, not passed in.** Once a project holds several simulations, a page wants one
+connection for all of them (`GET /events?project=…`), which needs `projectId` and `simulationId` on
+the row. An emitter deep inside a wake knows its wake and its run and has no business knowing which
+project the run is filed under, so `RecordingStore.scoped()` fills both from the run row, and fills
+`runId` itself from the wake where only the wake is known. It caches per run, because a run's
+project never changes — with one exception it must not cache: a run whose row is written a moment
+after its first event is stamped with what is known and asked about again next time, rather than
+the cache remembering "no project" forever.
+
+The one emitter this cannot serve is a job with no run at all — `people.generate`, `target.reset`,
+and `run.start` until the row it is creating exists. Those pass `projectId` explicitly, which is
+why `Job` carries one.

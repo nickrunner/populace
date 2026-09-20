@@ -1,8 +1,32 @@
 export { createApp, type ServerDeps, type ControlDeps } from "./app.js";
 export { startServer, type ServeOptions, type RunningServer } from "./serve.js";
-export { ReadModel } from "./read-model.js";
+export { ReadModel, participantOf } from "./read-model.js";
+export { ProjectReadModel, type ProjectReadModelOptions } from "./project-read-model.js";
 export { targetView } from "./target.js";
-export { ConfigIncomplete, ensureProject, ensurePopulation, ensureSettings, redactConfig, resolveProjectConfig, seedProjectFromConfig, snapshotConfig, type ProcessConfig } from "./config-store.js";
+export {
+  ConfigIncomplete,
+  DEFAULT_POPULATION_SLUG,
+  DEFAULT_SIMULATION_SLUG,
+  cohortsOf,
+  cohortsOfPopulation,
+  createSimulation,
+  ensureProject,
+  ensurePopulation,
+  ensureSettings,
+  ensureSimulation,
+  redactConfig,
+  resolveSimulationConfig,
+  seedProjectFromConfig,
+  simulationPlanOf,
+  snapshotConfig,
+  withLiveSecrets,
+  type ProcessConfig,
+  type ResolvedSimulation,
+  type SimulationDraft,
+  type SimulationPlan,
+} from "./config-store.js";
+export { ensureRoster, rosterProfiles, RosterIncomplete } from "./cohort-store.js";
+export { resetTarget, type TargetResetOutcome } from "./target-reset.js";
 export { EventHub, RecordingStore } from "./events.js";
 export { JobRunner } from "./jobs.js";
 export { RunController, type StartRunOptions } from "./runs.js";

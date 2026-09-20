@@ -1,4 +1,4 @@
-export { runWake, type WakeDeps, type WakeOptions, type WakeResult } from "./wake.js";
+export { runWake, looksLikeAuthRejection, type WakeDeps, type WakeOptions, type WakeResult } from "./wake.js";
 export { LocalDaemon, type DaemonOptions } from "./daemon.js";
 export { McpSession, type TargetTool, type CallOutcome } from "./mcp/session.js";
 export { AnthropicProvider } from "./model/anthropic.js";

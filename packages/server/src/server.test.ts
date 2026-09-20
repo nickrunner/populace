@@ -1,15 +1,16 @@
 import { SelfSignupProvider } from "@populace/adapters/self-signup";
 import {
-  AgentSummarySchema,
   DigestSchema,
   ErrorBodySchema,
   FindingSchema,
   HealthViewSchema,
   MemorySchema,
+  ParticipantDetailViewSchema,
+  ParticipantSummaryViewSchema,
+  RunCohortViewSchema,
   RunDetailSchema,
   RunSummarySchema,
   SpendViewSchema,
-  TargetViewSchema,
   ToolUsageViewSchema,
   TraceEventSchema,
   WakeDetailSchema,
@@ -130,15 +131,20 @@ async function seed(): Promise<{ store: SqliteStore; cfg: PopulaceConfig; runId:
   const identityProvider = new SelfSignupProvider(cfg.identity as never);
   const policies: Record<string, ScriptPolicy> = { searcher, organiser };
   const provider = new ScriptedProvider((ctx) => (policies[ctx.metadata.personaId] ?? sequence([]))(ctx));
-  for (const { agent } of expandPopulation(cfg.population, runId)) {
+  for (const { agent } of expandPopulation(cfg.population, runId, cfg.simulation.id)) {
     const result = await runWake({ agent, config: cfg }, { store, provider, identityProvider });
     expect(["done", "gave-up"]).toContain(result.wake.status);
   }
   return { store, cfg, runId };
 }
 
+/**
+ * The read-only API. `configForRun` is how a read route gets at the config a run executed now
+ * that there is no process-wide "the config": these runs were driven straight through `runWake`
+ * and have no snapshot, so the harness answers for them.
+ */
 function app(store: SqliteStore, cfg: PopulaceConfig) {
-  return createApp({ store, config: () => Promise.resolve(cfg), storePath: ":memory:", version: "test" });
+  return createApp({ store, configForRun: () => Promise.resolve(cfg), storePath: ":memory:", version: "test" });
 }
 
 async function json(res: Response): Promise<JsonValue> {
@@ -180,17 +186,18 @@ describe("the read-only M1 API over a real run", () => {
     expect(detail.wakesByStatus["gave-up"]).toBe(1); // the searcher walked away
     expect(detail.verified.checked).toBe(0); // nothing has been judged yet
 
-    const agents = pageOf(AgentSummarySchema).parse(await json(await api.request(routes.runAgents(runId))));
-    expect(agents.items).toHaveLength(2);
-    const searcher = agents.items.find((a) => a.personaId === "searcher");
+    const participants = pageOf(ParticipantSummaryViewSchema).parse(await json(await api.request(routes.runParticipants(runId))));
+    expect(participants.items).toHaveLength(2);
+    const searcher = participants.items.find((a) => a.personaSlug === "searcher");
     expect(searcher?.personaName).toBe("Sam Reed");
     expect(searcher?.status).toBe("retired");
     expect(searcher?.retiredReason).toBe("gave-up");
     expect(searcher?.wouldReturn).toBe(true); // she said she would come back, so a continuation may ask her
-    expect(searcher?.findingCount).toBe(2); // the search bug and the abandonment
-    expect(searcher?.identityId).not.toBeNull(); // she signed up through the target's own tools
-    expect(searcher?.account?.email).toContain("@"); // the handle, never the bearer token
-    expect(searcher?.patience).toBe(3);
+    expect(searcher?.findings).toBe(2); // the search bug and the abandonment
+    expect(searcher?.account?.email).toContain("@"); // she signed up through the target's own tools
+    // The person, not the persona: a cohort is a group and the participant is somebody in it.
+    expect(searcher?.name).not.toBe("");
+    expect(searcher?.personId).toBe(`${searcher?.cohortSlug}#1`);
 
     const wakes = pageOf(WakeSummarySchema).parse(await json(await api.request(routes.runWakes(runId))));
     expect(wakes.items).toHaveLength(2);
@@ -202,12 +209,15 @@ describe("the read-only M1 API over a real run", () => {
     expect(spend.dailyCeilingUsd).toBe(cfg.guardrails.dailyUsd);
     expect(spend.spentTodayUsd).toBeGreaterThanOrEqual(spend.totalUsd - 0.0001);
     expect(spend.byPersona).toHaveLength(2);
+    // By cohort as well as by persona: two cohorts may share one persona, so a per-persona row
+    // cannot answer "what did this group cost me".
+    expect(spend.byCohort.map((b) => b.key).sort()).toEqual(["organiser", "searcher"]);
     expect(spend.byDay).toHaveLength(1);
     expect(spend.totalUsd).toBeGreaterThanOrEqual(0);
 
     // Retiring the last active agent, as the daemon does at max-wakes, flips the run to completed.
-    const organiser = agents.items.find((a) => a.personaId === "organiser");
-    const stored = await store.getAgent(organiser!.id);
+    const organiser = participants.items.find((a) => a.personaSlug === "organiser");
+    const stored = await store.getAgent(runId, organiser!.id);
     await store.upsertAgent({ ...stored!, status: "retired", retiredReason: "max-wakes", nextWakeAt: null });
     const after = RunDetailSchema.parse(await json(await api.request(routes.run(runId))));
     expect(after.status).toBe("completed");
@@ -282,7 +292,7 @@ describe("the read-only M1 API over a real run", () => {
     const unverified = pageOf(FindingSchema).parse(await json(await api.request(`${routes.runFindings(runId)}?unverified=true`)));
     expect(unverified.items).toHaveLength(3); // nothing has been judged yet
 
-    const byAgent = pageOf(FindingSchema).parse(await json(await api.request(`${routes.runFindings(runId)}?agentId=${gaps.items[0]!.agentId}`)));
+    const byAgent = pageOf(FindingSchema).parse(await json(await api.request(`${routes.runFindings(runId)}?participant=${gaps.items[0]!.agentId}`)));
     expect(byAgent.items.every((f) => f.agentId === gaps.items[0]!.agentId)).toBe(true);
 
     await store.close();
@@ -307,8 +317,8 @@ describe("the read-only M1 API over a real run", () => {
     await store.close();
   });
 
-  it("reports health and the target without leaking credentials", async () => {
-    const { store, cfg } = await seed();
+  it("reports health, and never puts the bearer token in any answer it gives", async () => {
+    const { store, cfg, runId } = await seed();
     const withSecret: PopulaceConfig = { ...cfg, target: { ...cfg.target, mcp: cfg.target.mcp.map((e) => ({ ...e, bearerToken: "super-secret-token" })) } };
     const api = app(store, withSecret);
 
@@ -316,13 +326,18 @@ describe("the read-only M1 API over a real run", () => {
     expect(health.readOnly).toBe(true);
     expect(health.killSwitch.engaged).toBe(false);
 
-    const res = await api.request(routes.target);
-    const body = await res.text();
-    expect(body).not.toContain("super-secret-token");
-    const view = TargetViewSchema.parse(JSON.parse(body));
-    expect(view.endpoints[0]?.authenticated).toBe(true);
-    expect(view.tools?.map((t) => t.name)).toContain("search_tasks");
-    expect(view.tools?.some((t) => t.destructive)).toBe(true);
+    // `GET /target` is gone with the singleton it encoded, so the guarantee is asserted where it
+    // actually matters: across every read route, over a config whose endpoint carries a token.
+    const paths = [routes.runs, routes.run(runId), routes.runParticipants(runId), routes.runWakes(runId), routes.runFindings(runId), routes.runSpend(runId), routes.runTools(runId), routes.runDigest(runId)];
+    for (const path of paths) {
+      const res = await api.request(path);
+      expect(res.status, path).toBe(200);
+      expect(await res.text(), path).not.toContain("super-secret-token");
+    }
+    // ...and the tool list a coverage view is measured against still comes off the live target.
+    const usage = ToolUsageViewSchema.parse(await json(await api.request(routes.runTools(runId))));
+    expect(usage.items.map((t) => t.name)).toContain("search_tasks");
+    expect(usage.items.some((t) => t.destructive)).toBe(true);
 
     await store.close();
   });
@@ -366,17 +381,80 @@ describe("what the coverage-gaps and population screens read", () => {
   it("serves an agent's memory, and an empty document for one that has written none", async () => {
     const { store, cfg, runId } = await seed();
     const api = app(store, cfg);
-    const agents = pageOf(AgentSummarySchema).parse(await json(await api.request(routes.runAgents(runId))));
-    const searcher = agents.items.find((a) => a.personaId === "searcher")!;
+    const participants = pageOf(ParticipantSummaryViewSchema).parse(await json(await api.request(routes.runParticipants(runId))));
+    const searcher = participants.items.find((a) => a.personaSlug === "searcher")!;
 
-    const memory = MemorySchema.parse(await json(await api.request(routes.agentMemory(runId, searcher.id))));
+    const memory = MemorySchema.parse(await json(await api.request(routes.participantMemory(runId, searcher.id))));
     expect(memory.agentId).toBe(searcher.id);
     // What she is carrying: this is what makes visit three different from visit one.
     expect(memory.annoyances.map((a) => a.text).join(" ")).toContain("capitalisation");
 
-    const empty = MemorySchema.parse(await json(await api.request(routes.agentMemory(runId, "tasklet/nobody#0"))));
+    const empty = MemorySchema.parse(await json(await api.request(routes.participantMemory(runId, "tasklet/nobody#0"))));
     expect(empty.notes).toEqual([]);
 
+    await store.close();
+  });
+});
+
+/**
+ * Decision A: the wire speaks the user's words. The rows underneath are `Agent`s and every store
+ * method still says so — what changes is only what a client is handed.
+ */
+describe("what a client is told about who visited", () => {
+  it("names the person and their cohort, and never says \"agent\" anywhere in the answer", async () => {
+    const { store, cfg, runId } = await seed();
+    const api = app(store, cfg);
+
+    const res = await api.request(routes.runParticipants(runId));
+    const body = await res.text();
+    // The whole point of the translation layer: the vocabulary of the implementation does not
+    // reach the user. A field, a key or a value saying "agent" fails this.
+    expect(body.toLowerCase()).not.toContain("agent");
+
+    const participants = pageOf(ParticipantSummaryViewSchema).parse(JSON.parse(body));
+    const searcher = participants.items.find((p) => p.personaSlug === "searcher")!;
+    expect(searcher.name.length).toBeGreaterThan(0); // a person, generated for this cohort
+    expect(searcher.cohortSlug).toBe("searcher");
+    expect(searcher.cohortName.length).toBeGreaterThan(0);
+    expect(searcher.visits).toBe(1); // `wakeCount` on the row
+    expect(searcher.maxVisits).toBeNull(); // `maxWakes` on the row
+    expect(searcher.lastVisitAt).not.toBeNull();
+
+    await store.close();
+  });
+
+  it("serves one person's whole page in a single request — memory, visits and findings included", async () => {
+    const { store, cfg, runId } = await seed();
+    const api = app(store, cfg);
+    const participants = pageOf(ParticipantSummaryViewSchema).parse(await json(await api.request(routes.runParticipants(runId))));
+    const searcher = participants.items.find((p) => p.personaSlug === "searcher")!;
+
+    const detail = ParticipantDetailViewSchema.parse(await json(await api.request(routes.participant(runId, searcher.id))));
+    expect(detail.id).toBe(searcher.id);
+    expect(detail.patience).toBe(3);
+    // The memory panel is IN the answer. It used to be a second request per participant, fired on
+    // a five-second poll (`packages/web/src/screens/Population.tsx`).
+    expect(detail.memory.annoyances.map((a) => a.text).join(" ")).toContain("capitalisation");
+    expect(detail.visits).toHaveLength(1);
+    expect(detail.visits[0]?.visitNumber).toBe(1);
+    expect(detail.visits[0]?.status).toBe("gave-up");
+    expect(detail.findingsFiled.map((f) => f.kind).sort()).toEqual(["abandonment", "bug"]);
+    expect(detail.alsoIn).toEqual([]); // one execution so far
+
+    expect((await api.request(routes.participant(runId, "tasklet/nobody#9"))).status).toBe(404);
+    await store.close();
+  });
+
+  it("rolls the run up by cohort, which is the shape the population screen reads", async () => {
+    const { store, cfg, runId } = await seed();
+    const api = app(store, cfg);
+    const cohorts = pageOf(RunCohortViewSchema).parse(await json(await api.request(routes.runCohorts(runId))));
+    expect(cohorts.items.map((c) => c.cohortSlug).sort()).toEqual(["organiser", "searcher"]);
+    const searcher = cohorts.items.find((c) => c.cohortSlug === "searcher")!;
+    expect(searcher.people).toBe(1);
+    expect(searcher.gaveUp).toBe(1);
+    expect(searcher.findings).toBe(2);
+    expect(searcher.headline).toContain("walked away");
     await store.close();
   });
 });
@@ -397,6 +475,30 @@ describe("populace serve", () => {
       await server.close();
       await store.close();
     }
+  });
+
+  /**
+   * Ctrl-C with the dashboard open. Every project page holds an event stream, and an event stream
+   * never ends by itself, so `server.close()` alone waits for a callback that cannot come: the
+   * listener drops at once — the dashboard starts refusing connections — and the process sits
+   * there looking busy until the browser tab is closed.
+   */
+  it("lets go of an open event stream when it is closed", async () => {
+    const { store, cfg } = await seed();
+    const server = await startServer({ store, storePath: ":memory:", version: "test", seedConfig: cfg, port: 0 });
+    const stream = await fetch(`${server.url}${routes.events}?project=default`);
+    expect(stream.status).toBe(200);
+
+    const started = Date.now();
+    await server.close();
+    expect(Date.now() - started).toBeLessThan(5_000);
+
+    try {
+      await stream.body?.cancel();
+    } catch {
+      // The socket is already gone, which is the point of the test.
+    }
+    await store.close();
   });
 
   it("explains itself when no dashboard has been built into the install", async () => {

@@ -33,7 +33,7 @@ export class WakeBudget {
 }
 
 export async function dailyCeilingBreached(store: Store, populationId: string, dailyUsd: number, now: Date): Promise<string | null> {
-  const spent = await store.costSince(populationId, new Date(now.getTime() - 86_400_000));
+  const spent = await store.costSince({ populationId }, new Date(now.getTime() - 86_400_000));
   return spent >= dailyUsd ? `population ${populationId} spent $${spent.toFixed(2)} in the last 24h >= ceiling $${dailyUsd}` : null;
 }
 
