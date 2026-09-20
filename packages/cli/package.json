@@ -20,6 +20,7 @@
     "@populace/core": "workspace:*",
     "@populace/reports": "workspace:*",
     "@populace/runner": "workspace:*",
+    "@populace/server": "workspace:*",
     "@populace/store-sqlite": "workspace:*",
     "commander": "^14.0.0",
     "yaml": "^2.8.0",

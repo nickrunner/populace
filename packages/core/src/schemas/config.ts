@@ -2,9 +2,11 @@ import { z } from "zod";
 import { DurationSchema } from "../duration.js";
 import { GuardrailsSchema } from "./guardrails.js";
 import { IdentityConfigSchema } from "./identity-config.js";
-import { DEFAULT_MODEL, ModelConfigSchema, ModelOverrideSchema } from "./model.js";
+import { ModelConfigSchema } from "./model.js";
 import { PopulationSchema } from "./population.js";
+import { SimulationContextSchema } from "./simulation.js";
 import { TargetSchema } from "./target.js";
+import { VerifierConfigSchema } from "./verifier.js";
 
 export const StoreConfigSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("sqlite"), path: z.string().min(1).default(".populace/populace.sqlite") }),
@@ -17,20 +19,15 @@ export const DaemonConfigSchema = z.object({
   concurrency: z.number().int().positive().default(2),
 });
 
-export const VerifierConfigSchema = z.object({
-  /** `model` asks Claude to judge replay results; `heuristic` compares them mechanically. */
-  judge: z.enum(["model", "heuristic"]).default("model"),
-  /** Verify at most this many findings per digest run. */
-  maxFindings: z.number().int().positive().default(50),
-  /**
-   * The judge's model. It decides what reaches the digest, so it defaults to the strongest
-   * model at high effort regardless of what the agents themselves run.
-   */
-  model: ModelOverrideSchema.prefault({ model: DEFAULT_MODEL, effort: "high" }),
-});
-
+/**
+ * `version: 2` is the projects/simulations/cohorts/people shape. Snapshots are versioned and never
+ * migrated: a run executes the config it froze, and a config written for the old shape is not one
+ * this binary can run.
+ */
 export const PopulaceConfigSchema = z.object({
-  version: z.literal(1).default(1),
+  version: z.literal(2).default(2),
+  /** Which simulation this config belongs to, frozen alongside it. */
+  simulation: SimulationContextSchema.prefault({}),
   target: TargetSchema,
   identity: IdentityConfigSchema,
   model: ModelConfigSchema.prefault({}),

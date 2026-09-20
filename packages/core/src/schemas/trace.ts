@@ -80,7 +80,7 @@ export const TraceEventSchema = z.discriminatedUnion("type", [
     detail: z.string(),
     tool: z.string().optional(),
   }),
-  z.object({ ...base, type: z.literal("identity"), event: z.enum(["provisioned", "captured", "missing", "reconnected"]), strategy: z.string(), detail: z.string() }),
+  z.object({ ...base, type: z.literal("identity"), event: z.enum(["provisioned", "captured", "missing", "reconnected", "redeemed", "rejected"]), strategy: z.string(), detail: z.string() }),
   z.object({ ...base, type: z.literal("finding"), findingId: z.string(), kind: z.string(), title: z.string() }),
   z.object({ ...base, type: z.literal("memory"), operation: z.string(), text: z.string() }),
   z.object({ ...base, type: z.literal("note"), text: z.string() }),

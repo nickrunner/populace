@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import type { Agent } from "./schemas/agent.js";
 import type { Persona, PersonaSpec, TraitSpec, TraitValue } from "./schemas/persona.js";
-import type { Cadence, Population } from "./schemas/population.js";
+import type { Cadence, PersonProfile, Population, PopulationMember } from "./schemas/population.js";
+import { handleFor, nameFrom } from "./names.js";
 
 /** mulberry32: small, seedable, good enough for trait sampling. */
 export function seededRandom(seed: string): () => number {
@@ -60,11 +61,41 @@ export function instantiatePersona(spec: PersonaSpec, seed: string): Persona {
   };
 }
 
-export function agentIdFor(populationId: string, personaId: string, ordinal: number): string {
-  return `${populationId}/${personaId}#${ordinal + 1}`;
+export function agentIdFor(populationSlug: string, cohortSlug: string, ordinal: number): string {
+  return `${populationSlug}/${cohortSlug}#${ordinal + 1}`;
 }
 
-export function cadenceFor(population: Population, member: Population["members"][number]): Cadence {
+/** A person's durable id. Cohort-scoped and 1-based, so it reads the same way an agent id does. */
+export function personIdFor(cohortSlug: string, ordinal: number): string {
+  return `${cohortSlug}#${ordinal + 1}`;
+}
+
+/**
+ * The cohort slug out of an agent id. Agent ids are `populationSlug/cohortSlug#ordinal`, so
+ * "which group was this?" is readable from a finding's `agentId` alone — which is what lets the
+ * clusterer report per-cohort incidence without a second query per report.
+ */
+export function cohortSlugOfAgentId(agentId: string): string {
+  const slash = agentId.indexOf("/");
+  const hash = agentId.lastIndexOf("#");
+  if (slash === -1 || hash <= slash) return "";
+  return agentId.slice(slash + 1, hash);
+}
+
+/**
+ * The person id out of an agent id. The person outlives the execution and the agent does not, so
+ * counting PEOPLE hit — rather than agents — is what makes a number comparable across executions.
+ */
+export function personIdOfAgentId(agentId: string): string {
+  const slash = agentId.indexOf("/");
+  return slash === -1 ? agentId : agentId.slice(slash + 1);
+}
+
+/**
+ * The cohort's cadence, layered over the population's. Keyed by COHORT — it used to be keyed by
+ * persona, which is the single line that made two cohorts on one persona impossible.
+ */
+export function cadenceFor(population: Population, member: PopulationMember): Cadence {
   return { ...population.cadence, ...(member.cadence ?? {}) };
 }
 
@@ -73,19 +104,63 @@ export interface ExpandedAgent {
   cadence: Cadence;
 }
 
-/** Expands a population config into concrete agents (without schedules; the daemon assigns those). */
-export function expandPopulation(population: Population, runId: string, now: Date = new Date()): ExpandedAgent[] {
+/**
+ * A cohort's cast, filling every ordinal the stored roster does not cover.
+ *
+ * The seeded tier is defined to be always available (SPEC §5.1): a config written by hand, or a
+ * cohort whose roster has not been filled yet, still expands into named people, and the names it
+ * produces for a seed are the ones the roster writer would have written for the same seed. An
+ * ordinal that DOES have a row is never touched — a name a model wrote is not re-drawn.
+ */
+export function seededRoster(cohortSlug: string, seed: string, count: number, existing: readonly PersonProfile[] = []): PersonProfile[] {
+  const byOrdinal = new Map(existing.map((p) => [p.ordinal, p]));
+  const used = new Set(existing.map((p) => p.name));
+  const out: PersonProfile[] = [];
+  for (let ordinal = 0; ordinal < count; ordinal++) {
+    const already = byOrdinal.get(ordinal);
+    if (already) {
+      out.push(already);
+      continue;
+    }
+    const name = nameFrom(`${seed}:${cohortSlug}:${ordinal}`, used);
+    used.add(name);
+    out.push({ ordinal, id: personIdFor(cohortSlug, ordinal), name, details: "", handle: handleFor(name, cohortSlug, ordinal) });
+  }
+  return out;
+}
+
+function seededPeople(member: PopulationMember): Map<number, PersonProfile> {
+  return new Map(seededRoster(member.cohort, member.seed, member.count, member.people).map((p) => [p.ordinal, p]));
+}
+
+/**
+ * Expands a population config into concrete agents (without schedules; the daemon assigns those).
+ *
+ * This is a JOIN now, not a generator: every per-person decision — name, details, handle — was
+ * made when the person row was written and is frozen into the config snapshot.
+ * `instantiatePersona` still runs here because the persona spec may have changed since, and the
+ * seed it draws from is the person's, so the draw is the same one.
+ */
+export function expandPopulation(population: Population, runId: string, simulationId: string, now: Date = new Date()): ExpandedAgent[] {
   const out: ExpandedAgent[] = [];
   for (const member of population.members) {
-    const count = Math.max(1, Math.ceil(member.count * population.scale));
     const cadence = cadenceFor(population, member);
-    for (let ordinal = 0; ordinal < count; ordinal++) {
-      const seed = `${population.seed}:${member.persona.id}:${ordinal}`;
+    const byOrdinal = seededPeople(member);
+    for (let ordinal = 0; ordinal < member.count; ordinal++) {
+      const person = byOrdinal.get(ordinal);
+      if (!person) throw new Error(`cohort ${member.cohort} has no person at ordinal ${ordinal}`);
+      const seed = `${member.seed}:${member.cohort}:${ordinal}`;
       const persona = instantiatePersona(member.persona, seed);
       const agent: Agent = {
-        id: agentIdFor(population.id, persona.id, ordinal),
+        id: agentIdFor(population.id, member.cohort, ordinal),
         runId,
+        simulationId,
         populationId: population.id,
+        cohortSlug: member.cohort,
+        personId: person.id,
+        name: person.name,
+        details: person.details,
+        handle: person.handle,
         persona,
         ordinal,
         status: "active",

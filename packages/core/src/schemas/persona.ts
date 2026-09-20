@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ModelOverrideSchema } from "./model.js";
+import { ToolPolicySchema } from "./tool-policy.js";
 
 export const TraitValueSchema = z.union([z.string(), z.number(), z.boolean()]);
 export type TraitValue = z.infer<typeof TraitValueSchema>;
@@ -11,16 +12,6 @@ export const TraitSpecSchema = z.union([
   z.object({ distribution: z.literal("choice"), values: z.array(TraitValueSchema).min(1), weights: z.array(z.number().nonnegative()).optional() }),
 ]);
 export type TraitSpec = z.infer<typeof TraitSpecSchema>;
-
-export const ToolPolicySchema = z.object({
-  /** Glob patterns. Empty means every target tool is allowed. */
-  allow: z.array(z.string()).default([]),
-  /** Glob patterns. Always wins over allow. */
-  deny: z.array(z.string()).default([]),
-  /** What to do with tools annotated `destructiveHint: true`. */
-  destructive: z.enum(["allow", "confirm", "deny"]).default("confirm"),
-});
-export type ToolPolicy = z.infer<typeof ToolPolicySchema>;
 
 export const PersonaSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "persona ids are lowercase slugs"),
@@ -34,6 +25,7 @@ export const PersonaSchema = z.object({
   /** What this persona would pay per month, in USD. 0 means "free only". */
   budgetUsd: z.number().nonnegative().default(0),
   traits: z.record(z.string(), TraitValueSchema).default({}),
+  /** What this persona will not touch. It can only ever NARROW the target's own policy, never widen it. */
   tools: ToolPolicySchema.prefault({}),
   /** Per-persona model and effort. Unset fields fall through to the global `model` block. */
   model: ModelOverrideSchema.prefault({}),

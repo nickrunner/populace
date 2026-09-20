@@ -21,11 +21,30 @@ export const ContinuedFromSchema = z.object({
 export type ContinuedFrom = z.infer<typeof ContinuedFromSchema>;
 
 export const AgentSchema = z.object({
+  /**
+   * `${populationSlug}/${cohortSlug}#${ordinal + 1}`. Unique WITHIN A RUN, not globally.
+   */
   id: z.string().min(1),
   runId: z.string().min(1),
+  simulationId: z.string().min(1),
+  /** The population slug. */
   populationId: z.string().min(1),
+  /** The cohort this participant belongs to. Two cohorts may share one persona. */
+  cohortSlug: z.string().min(1),
+  /** `${cohortSlug}#${ordinal + 1}` — the durable person this participant is an instance of. */
+  personId: z.string().min(1),
+  /** The generated person name, copied in so a run renders without joining the people table. */
+  name: z.string().min(1),
+  /** The person's individuating line, inserted under the persona's backstory in the prompt. */
+  details: z.string().default(""),
+  /**
+   * The person's email local part, copied from the frozen roster. The signup provider uses this
+   * rather than deriving one, so a handle written by anything other than `handleFor` — a model, a
+   * rename — is the handle the account is actually made with (SPEC §5.3.5).
+   */
+  handle: z.string().min(1),
   persona: PersonaSchema,
-  /** Index within the persona's agents (0-based). */
+  /** Index within the cohort (0-based). */
   ordinal: z.number().int().nonnegative(),
   status: AgentStatusSchema.default("active"),
   /** Set when status is `retired`; null while active. */

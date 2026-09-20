@@ -1,12 +1,32 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/core" },
-    { "path": "packages/store-sqlite" },
-    { "path": "packages/adapters" },
-    { "path": "packages/mock-target" },
-    { "path": "packages/runner" },
-    { "path": "packages/reports" },
-    { "path": "packages/cli" }
+    {
+      "path": "packages/core"
+    },
+    {
+      "path": "packages/contract"
+    },
+    {
+      "path": "packages/store-sqlite"
+    },
+    {
+      "path": "packages/adapters"
+    },
+    {
+      "path": "packages/mock-target"
+    },
+    {
+      "path": "packages/runner"
+    },
+    {
+      "path": "packages/reports"
+    },
+    {
+      "path": "packages/server"
+    },
+    {
+      "path": "packages/cli"
+    }
   ]
 }

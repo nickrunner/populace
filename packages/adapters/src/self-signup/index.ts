@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import {
   getPath,
-  slugify,
   type CaptureContext,
   type Credential,
   type Identity,
@@ -21,13 +20,34 @@ export class SelfSignupProvider implements IdentityProvider {
 
   constructor(private readonly config: SelfSignupConfig) {}
 
+  /**
+   * With no `teardownTool` there is nothing to call, so a sweep removes nothing — and must say so.
+   * The accounts ARE populace's (it signed them up), which is why this is not `ownsAccounts:
+   * false`: they exist on the user's product, under this run's tag, and only the run's own rows
+   * still record which ones they are.
+   */
+  get cannotRemove(): string | undefined {
+    return this.config.teardownTool ? undefined : "this target has no teardown tool configured (identity.teardownTool), so populace cannot delete the accounts the population signed up for";
+  }
+
+  /**
+   * The local part is the PERSON's handle, not `slugify(persona.id)-${ordinal + 1}`: that collided
+   * the moment two cohorts shared a persona, and a colliding signup email means the second cohort
+   * cannot make an account at all. The display name is the person's name for the same reason — a
+   * persona is a kind of person and does not have one.
+   *
+   * The handle is read off the agent rather than re-derived from the name. It was minted once, by
+   * `handleFor`, when the person row was written, and frozen into the config snapshot; deriving a
+   * second one here would mean a person whose handle came from anywhere else — a model, a rename —
+   * signs up as somebody the roster does not know (SPEC §5.3.5).
+   */
   provision(ctx: ProvisionContext): Promise<ProvisionResult> {
-    const local = `${slugify(ctx.agent.persona.id)}-${ctx.agent.ordinal + 1}+${ctx.tag}`;
+    const local = `${ctx.agent.handle}+${ctx.tag}`;
     const password = `Pw-${createHash("sha256").update(`${ctx.tag}:${ctx.agent.id}`).digest("base64url").slice(0, 14)}`;
     return Promise.resolve({
       kind: "self-service",
       signupTool: this.config.signupTool,
-      suggested: { email: `${local}@${this.config.emailDomain}`, displayName: ctx.agent.persona.name, password },
+      suggested: { email: `${local}@${this.config.emailDomain}`, displayName: ctx.agent.name, password },
     });
   }
 
@@ -39,6 +59,10 @@ export class SelfSignupProvider implements IdentityProvider {
     const email = typeof ctx.arguments === "object" && ctx.arguments !== null && !Array.isArray(ctx.arguments) ? ctx.arguments.email : undefined;
     return {
       bearerToken: token,
+      // The target said nothing about an expiry or a way to renew, so neither is invented: a
+      // self-signup token is taken at its word until the target refuses it (see `auth-failed`).
+      expiresAt: null,
+      redeemable: null,
       ...(typeof userId === "string" ? { userId } : {}),
       ...(typeof email === "string" ? { email } : {}),
       extra: {},

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { digest, init, kill, run, scale, status, sweep, validate, wake } from "./commands.js";
+import { digest, init, kill, run, scale, serve, status, sweep, validate, wake } from "./commands.js";
 
 // node:sqlite prints an ExperimentalWarning on Node 22; keep every other warning.
 process.removeAllListeners("warning");
@@ -108,11 +108,12 @@ program
 
 program
   .command("sweep")
-  .description("tear down every identity the run created and remove its data")
+  .description("tear down every account the run created on the target; the run's wakes, traces and findings are kept")
   .option("--dry-run", "list what would be removed")
-  .option("--keep-data", "tear down identities but keep wakes, traces and findings")
+  .option("--keep-data", "(default, kept for scripts) keep wakes, traces and findings; wins if --delete-data is also given")
+  .option("--delete-data", "ALSO delete this run's wakes, traces and findings — the evidence it paid for, irreversibly")
   .option("--all-runs", "sweep every run in the store")
-  .action(async (opts: { dryRun?: boolean; keepData?: boolean; allRuns?: boolean }) => {
+  .action(async (opts: { dryRun?: boolean; keepData?: boolean; deleteData?: boolean; allRuns?: boolean }) => {
     try {
       const result = await sweep({ ...globals(), ...opts });
       if (result.failures > 0) process.exit(1);
@@ -141,6 +142,26 @@ program
   .action(async () => {
     try {
       await status(globals());
+    } catch (err) {
+      fail(err as Error);
+    }
+  });
+
+program
+  .command("serve")
+  .description("start the local HTTP API and dashboard: set up targets and people, start runs and watch them")
+  .option("--port <n>", "port to listen on", (v: string) => Number.parseInt(v, 10))
+  .option("--host <host>", "host to bind; defaults to 127.0.0.1 and should stay there")
+  .option("--project <id>", "which project a populace.yaml is imported into and which one a fresh store is created with")
+  .option("--resume", "pick back up the executions a previous populace process left paused when it stopped")
+  .option("--read-only", "serve the dashboard without the controls that start runs or change config")
+  .option("--force", "take over the store lock from a populace process that is no longer running")
+  .action(async (opts: { port?: number; host?: string; project?: string; resume?: boolean; readOnly?: boolean; force?: boolean }) => {
+    try {
+      const server = await serve({ ...globals(), ...opts });
+      const stop = (): void => void server.close().then(() => process.exit(0));
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
     } catch (err) {
       fail(err as Error);
     }

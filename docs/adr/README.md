@@ -24,3 +24,17 @@ One record per fixed decision from the kickoff brief, plus the routine calls mad
 | [0018](0018-yaml-config.md) | Configuration is a single YAML file validated by zod |
 | [0019](0019-in-process-scheduler.md) | Scheduler interface and the in-process cadence loop |
 | [0020](0020-run-lineage-and-continuations.md) | Memory is run-scoped, and runs form a lineage (`--continue-from`) |
+| [0021](0021-web-app-packages-and-stack.md) | Web app packages and stack: Hono API, React/Vite dashboard, shared contract |
+| [0022](0022-serve-owns-the-store.md) | `populace serve` is one process and owns the store |
+| [0023](0023-http-api-contract.md) | REST API under a zod contract, loopback by default |
+| [0024](0024-runs-are-first-class.md) | Runs are first-class and carry a frozen config snapshot |
+| [0025](0025-config-source-of-truth.md) | The store becomes the source of truth for configuration at M2 |
+| [0026](0026-sse-event-log.md) | Live updates over SSE, backed by a persisted event log |
+| [0027](0027-persisted-jobs.md) | Long-running operations are persisted jobs |
+| [0028](0028-triage-keyed-by-cluster-signature.md) | Triage is keyed by cluster signature, not by finding id |
+| [0029](0029-project-simulation-population-cohort-person.md) | Project, simulation, population, cohort, person |
+| [0030](0030-ephemeral-is-a-clean-slate.md) | Ephemeral is a clean slate, not a repeatable result |
+| [0031](0031-people-are-written-once-and-stored.md) | People are written once and stored |
+| [0032](0032-translate-at-the-contract-boundary.md) | Translate at the contract boundary; do not rename internal nouns |
+| [0033](0033-tool-policy-belongs-to-the-target.md) | A tool policy belongs to the target; a persona may only narrow it |
+| [0034](0034-first-contact-check.md) | First contact — one account, one read-only call, before a run |

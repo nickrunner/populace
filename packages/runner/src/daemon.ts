@@ -41,9 +41,15 @@ export class LocalDaemon {
     return this.deps.store;
   }
 
+  /**
+   * Keyed by COHORT. It matched on `persona.id`, which silently assumed one member per persona:
+   * two cohorts on one persona both matched the first member and shared its cadence, which is
+   * precisely what made "25 weekend planners every 10 minutes and 9 sceptics every hour" a
+   * population you could describe and not run.
+   */
   private cadenceOf(agent: Agent): Cadence {
     const population = this.options.config.population;
-    const member = population.members.find((m) => m.persona.id === agent.persona.id);
+    const member = population.members.find((m) => m.cohort === agent.cohortSlug);
     return member ? cadenceFor(population, member) : population.cadence;
   }
 
@@ -56,7 +62,7 @@ export class LocalDaemon {
    */
   private async seedFromParent(parentRunId: string): Promise<Map<string, Agent>> {
     const seeded = new Map<string, Agent>();
-    const parents = await this.store.listAgents({ runId: parentRunId, populationId: this.options.config.population.id });
+    const parents = await this.store.listAgents({ runId: parentRunId });
     for (const parent of parents) {
       const wakes = await this.store.listWakes({ runIds: [parentRunId], agentId: parent.id });
       const last = wakes[wakes.length - 1];
@@ -79,8 +85,13 @@ export class LocalDaemon {
 
   /** Creates (or reconciles) the agents for the population and schedules their first wakes. */
   async reconcile(now: Date = new Date()): Promise<Agent[]> {
-    const expanded = expandPopulation(this.options.config.population, this.options.runId, now);
-    const existing = await this.store.listAgents({ runId: this.options.runId, populationId: this.options.config.population.id });
+    const expanded = expandPopulation(this.options.config.population, this.options.runId, this.options.config.simulation.id, now);
+    // The identity provider sees one agent at a time, so "every person gets their own account" can
+    // only be checked here, where the whole population is visible — and before any row is written
+    // or any wake is paid for. A run that will hand two people one login is worse than a refusal.
+    const problems = this.deps.identityProvider.checkPopulation?.(expanded.map((e) => e.agent)) ?? [];
+    if (problems.length > 0) throw new Error(`this population cannot be given identities: ${problems.join("; ")}`);
+    const existing = await this.store.listAgents({ runId: this.options.runId });
     // A continuation seeds from the parent run, but only before this run has agents of its own.
     const continuing = this.options.continueFrom !== undefined;
     const inherited = continuing && existing.length === 0 ? await this.seedFromParent(this.options.continueFrom as string) : new Map<string, Agent>();
@@ -121,7 +132,7 @@ export class LocalDaemon {
   async tick(now: Date = new Date()): Promise<number> {
     const free = this.options.config.daemon.concurrency - this.inFlight;
     if (free <= 0) return 0;
-    const due = await this.store.listDueAgents(now, free);
+    const due = await this.store.listDueAgents(this.options.runId, now, free);
     await Promise.all(
       due.map(async (agent) => {
         // Claim: push nextWakeAt into the future so a concurrent tick does not pick it up again.
@@ -157,7 +168,12 @@ export class LocalDaemon {
         } catch (err) {
           this.deps.log?.(`[daemon] tick failed: ${err instanceof Error ? err.message : String(err)}`);
         }
-        const active = await this.store.listAgents({ runId: this.options.runId, populationId: this.options.config.population.id, status: "active" });
+        // `stop()` resolves `run()` immediately, so a tick that was already in flight when it was
+        // called outlives the shutdown it was supposed to end. Checking again after every await is
+        // what makes "the daemon has stopped" mean "it has stopped touching the store".
+        if (!this.running) return;
+        const active = await this.store.listAgents({ runId: this.options.runId, status: "active" });
+        if (!this.running) return;
         const limitReached = this.options.stopAfterTotalWakes !== undefined && this.totalWakes >= this.options.stopAfterTotalWakes;
         if ((active.length === 0 && this.inFlight === 0) || limitReached) {
           this.running = false;
@@ -168,6 +184,15 @@ export class LocalDaemon {
       };
       void loop();
     });
+  }
+
+  /**
+   * Replaces the config this run executes, for "apply changes to the running execution"
+   * (SPEC §4.2). A run executes a frozen snapshot, so an edit is invisible to it until something
+   * says otherwise; this is that something, and the caller re-snapshots and reconciles around it.
+   */
+  applyConfig(config: PopulaceConfig): void {
+    this.options.config = config;
   }
 
   stop(): void {

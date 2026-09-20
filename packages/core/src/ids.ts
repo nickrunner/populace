@@ -1,9 +1,9 @@
-import { randomBytes } from "node:crypto";
-
 const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
 
 function randomSuffix(length: number): string {
-  const bytes = randomBytes(length);
+  // Web Crypto rather than node:crypto: core is imported by the browser bundle (ADR-0021).
+  const bytes = new Uint8Array(length);
+  globalThis.crypto.getRandomValues(bytes);
   let out = "";
   for (const b of bytes) out += alphabet.charAt(b % alphabet.length);
   return out;
@@ -24,6 +24,35 @@ export function newFindingId(): string {
 
 export function newIdentityId(): string {
   return `idn_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
+export function newJobId(): string {
+  return `job_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
+/** Authored rows get surrogate ids so a slug can be renamed without the row moving. */
+export function newProjectId(): string {
+  return `prj_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
+export function newTargetId(): string {
+  return `tgt_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
+export function newPersonaId(): string {
+  return `psn_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
+export function newPopulationId(): string {
+  return `pop_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
+export function newCohortId(): string {
+  return `coh_${Date.now().toString(36)}_${randomSuffix(6)}`;
+}
+
+export function newSimulationId(): string {
+  return `sim_${Date.now().toString(36)}_${randomSuffix(6)}`;
 }
 
 export const TAG_PREFIX = "populace:";

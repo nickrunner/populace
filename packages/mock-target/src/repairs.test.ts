@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { TaskletApp, parseRepairs } from "./app.js";
+import { TaskletApp, parseRepairs, type User } from "./app.js";
 
 /** Signs up a user and gives them one task, so each case starts from the same place. */
-function seed(app: TaskletApp): { user: ReturnType<TaskletApp["signUp"]>["user"]; taskId: string } {
-  const { user } = app.signUp({ email: "a@b.test", displayName: "A", password: "pw-12345678" });
+function seed(app: TaskletApp): { user: User; taskId: string } {
+  // Sign-up hands back the redacted public user; the domain methods take the full record.
+  const user = app.userForToken(app.signUp({ email: "a@b.test", displayName: "A", password: "pw-12345678" }).token);
   const project = app.createProject(user, { name: "Home" });
   const task = app.createTask(user, { projectId: project.id, title: "Buy Groceries", dueDate: "2026-10-01" });
   return { user, taskId: task.id };
