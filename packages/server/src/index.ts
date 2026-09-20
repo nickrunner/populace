@@ -14,6 +14,7 @@ export {
   ensurePopulation,
   ensureSettings,
   ensureSimulation,
+  frozenConfigForRun,
   liveConfigForRun,
   redactConfig,
   resolveSimulationConfig,

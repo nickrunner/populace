@@ -153,16 +153,19 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     /**
      * The config a run is executing, for everything that then CONNECTS with it: the sweep job, the
      * digest job's verification replay and the tool list behind a run's coverage. It is the
-     * snapshot with the live credentials put back, never the snapshot verbatim.
+     * snapshot with the live credentials put back, never the snapshot verbatim — and when the
+     * credentials cannot be had it throws, because `[redacted]` on the wire is the failure this is
+     * here to prevent and it is invisible from every other vantage point.
      */
     const configForRun = async (runId: string): Promise<PopulaceConfig> => {
-      const stored = await liveConfigForRun(store, runId, resolveLive);
-      if (stored) return stored;
-      // No such run, or a run whose plan no longer resolves: fall back to the project's own
-      // simulation and let a genuinely broken config throw, as it did before.
+      const live = await liveConfigForRun(store, runId, resolveLive);
+      if (live) return live;
       const run = await store.getRun(runId);
-      const simulationId = run?.simulationId ?? (await ensureSimulation(store, projectId)).id;
-      return resolveLive(simulationId);
+      // No such run at all: the project's own simulation, as before.
+      if (!run) return resolveLive((await ensureSimulation(store, projectId)).id);
+      // The run is there but its rows no longer resolve, so there are no live credentials to
+      // restore. `resolveLive` is asked again for the reason, which names what is missing.
+      return resolveLive(run.simulationId);
     };
 
     control = {
