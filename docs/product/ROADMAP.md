@@ -117,6 +117,11 @@ wizard" implied this and never named it.
 - **The returning verdict.** See §5 — this is the gap that matters most.
 - **Export to an issue tracker.** No GitHub export exists.
 - **A shareable digest.** Markdown export exists from the CLI; there is no shareable result.
+- **YAML export.** Import works: a `populace.yaml` seeds the authored tables the first time a store
+  is opened, and it is an import rather than a sync. There is no way back out. A cohort cast in the
+  browser, a persona written in the editor and a target typed into the wizard exist only in one
+  local SQLite file (DATA-MODEL §12). The old roadmap said YAML would become "an export and an
+  import"; only half of that is true.
 - **Persisted digests and clusters.** Computed per request, deliberately, and fine at local scale.
 - **Scheduled or unattended runs.** A longitudinal simulation runs only as long as `serve` does.
   There is no cron, no daemonisation, no wake-on-boot. See D6.
@@ -261,13 +266,25 @@ supporting context. §5 is the whole argument.
 *Done when:* break Tasklet, find it, fix it, press one control, and read Priya's own words about
 whether it is fixed — without composing a CLI command or reasoning about a set difference.
 
-### R2 — Results that leave the building
+### R2 — Work that leaves the building
 
-Export a problem to a GitHub issue, carrying its reproduction steps and its evidence. A shareable
-result a product owner can send to somebody who does not run `serve`.
+Everything a user makes is currently trapped in one local database. Two halves:
 
-*Done when:* a problem becomes a filed issue with its reproduction intact, and a result can be
-read by somebody with no populace install.
+- **Results.** Export a problem to a GitHub issue, carrying its reproduction steps and its
+  evidence. A shareable result a product owner can send to somebody who does not run `serve`.
+- **Config.** YAML export, so the authored layer can go back into a repository.
+
+The config half is a D1 consequence and is easy to under-rate. v1 serves developers, and a
+developer expects their configuration in version control: reviewable in a pull request, diffable
+when a run's behaviour changes, and recoverable when a laptop dies. Today the wizard, the persona
+editor and the cohort caster all write to a file that is in no repository and, until the migration
+framework exists (D5), can be dropped by the next schema change. Import-only was the right call
+for getting the database to be the source of truth; leaving it import-only makes the authored
+layer unshareable and unbacked.
+
+*Done when:* a problem becomes a filed issue with its reproduction intact; a result can be read by
+somebody with no populace install; and a project authored entirely in the browser can be written
+out as YAML, committed, and used to seed a fresh store.
 
 ### R3 — Unattended running
 
