@@ -106,19 +106,27 @@ export function createApp(deps: ServerDeps): Hono {
   });
 
   /**
-   * The config a run actually executed, from its snapshot. A digest or a tool list rebuilt today
-   * has to describe what ran, not what the forms happen to say now — which is the whole reason a
-   * snapshot exists (ADR-0024). `deps.configForRun` is the fallback for a run with no snapshot,
-   * and it resolves that run's SIMULATION rather than "the project's config".
+   * The config a run actually executed. A digest or a tool list rebuilt today has to describe what
+   * ran, not what the forms happen to say now — which is the whole reason a snapshot exists
+   * (ADR-0024).
+   *
+   * `deps.configForRun` is asked FIRST, and it is snapshot-first itself (`liveConfigForRun`): the
+   * frozen plan, with the live credentials put back. Reading the snapshot here instead would hand
+   * `[redacted]` to the two routes below that go on to connect to the target — the tool list, and
+   * the verification replay behind `?verify=1`. Reading the snapshot directly is only the fallback
+   * for a read-only app wired without a resolver.
    */
   async function configForRun(runId: string): Promise<PopulaceConfig | undefined> {
+    if (deps.configForRun) {
+      const resolved = await deps.configForRun(runId).catch(() => undefined);
+      if (resolved) return resolved;
+    }
     const stored = await deps.store.getRun(runId);
     if (stored?.configSnapshotId) {
       const snapshot = await deps.store.getConfigSnapshot(stored.configSnapshotId);
       if (snapshot) return snapshot.config;
     }
-    if (!deps.configForRun) return undefined;
-    return deps.configForRun(runId).catch(() => undefined);
+    return undefined;
   }
 
   app.get(`${API_BASE}/runs/:id/digest`, async (c) => {

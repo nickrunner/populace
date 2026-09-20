@@ -462,6 +462,43 @@ export function withLiveSecrets(frozen: PopulaceConfig, live: PopulaceConfig): P
 }
 
 /**
+ * The config a run is executing, ready to connect with: its frozen snapshot (ADR-0024) with the
+ * live credentials put back, or a live resolve when the run froze nothing.
+ *
+ * EVERY path that opens a connection to the target from a stored run belongs here — sweep,
+ * verification's replay, the tool list a run's coverage is measured against — because a redacted
+ * snapshot handed to any of them authenticates with the literal string `[redacted]`. That is not a
+ * visible failure: verification comes back "not reproduced" with nothing on screen to say why, and
+ * sweep reports accounts removed that are still sitting on somebody's product.
+ *
+ * `undefined` means there is no stored plan to read this run by at all — no such run, or a run
+ * whose snapshot is gone and whose simulation no longer resolves.
+ */
+export async function liveConfigForRun(
+  store: Store,
+  runId: string,
+  resolveLive: (simulationId: string) => Promise<PopulaceConfig>,
+): Promise<PopulaceConfig | undefined> {
+  const run = await store.getRun(runId);
+  if (!run) return undefined;
+  const snapshot = run.configSnapshotId ? await store.getConfigSnapshot(run.configSnapshotId) : undefined;
+  if (!snapshot) {
+    try {
+      return await resolveLive(run.simulationId);
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    return withLiveSecrets(snapshot.config, await resolveLive(run.simulationId));
+  } catch {
+    // The rows may have moved on since — a deleted target, a renamed persona. The frozen plan is
+    // still what this run executed, and it is better than refusing to describe the run at all.
+    return snapshot.config;
+  }
+}
+
+/**
  * Writes a resolved `PopulaceConfig` into the authored tables. This is how a `populace.yaml`
  * becomes rows on first open and how `POST /config/import` works; both go through one path so a
  * YAML file and a form produce the same rows.

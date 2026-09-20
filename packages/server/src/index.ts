@@ -14,6 +14,7 @@ export {
   ensurePopulation,
   ensureSettings,
   ensureSimulation,
+  liveConfigForRun,
   redactConfig,
   resolveSimulationConfig,
   seedProjectFromConfig,
