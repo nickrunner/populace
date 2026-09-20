@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { GuardrailsSchema } from "./guardrails.js";
+import { GuardrailsOverrideSchema } from "./guardrails.js";
 import { ModelOverrideSchema } from "./model.js";
 import { CadenceSchema } from "./population.js";
-import { VerifierConfigSchema } from "./verifier.js";
+import { VerifierOverrideSchema } from "./verifier.js";
 
 /**
  * The two ways a population is run against a target. The distinction is **history carryover and
@@ -69,12 +69,16 @@ export const SimulationSchema = z
      */
     requireFreshTarget: z.boolean().default(false),
 
-    /** Layered over the project's settings; unset fields fall through, as `resolveModel` already does. */
+    /**
+     * Layered over the project's settings; unset fields fall through, as `resolveModel` already
+     * does. Each block carries no defaults of its own, so a simulation nobody has overridden
+     * anything on overrides nothing.
+     */
     overrides: z
       .object({
         model: ModelOverrideSchema.prefault({}),
-        guardrails: GuardrailsSchema.partial().prefault({}),
-        verifier: VerifierConfigSchema.partial().prefault({}),
+        guardrails: GuardrailsOverrideSchema.prefault({}),
+        verifier: VerifierOverrideSchema.prefault({}),
       })
       .prefault({}),
 

@@ -512,6 +512,52 @@ describe("authoring config into the database", () => {
     expect(view.guardrails.perWake.maxTurns).toBe(40);
     await h.close();
   });
+
+  /**
+   * The spending controls have to reach the run. A simulation that overrides nothing must resolve
+   * to the project's settings: its `overrides` block sits between the number a user types and the
+   * ceiling a wake is held to, and a block that parses to a full set of schema defaults overwrites
+   * every one of those numbers without saying so.
+   */
+  it("holds a run to the project's verifier and guardrail settings when the simulation overrides neither", async () => {
+    const h = await harness({ seed: false });
+    await seedProjectFromConfig(
+      h.store,
+      PopulaceConfigSchema.parse({
+        ...config(),
+        verifier: { judge: "heuristic", maxFindings: 9, model: { model: "claude-haiku-4-5", effort: "low" } },
+        guardrails: { dailyUsd: 7, perWake: { maxTokens: 50_000, maxUsd: 1, maxTurns: 12 }, maxMemoryNotes: 11 },
+      }),
+    );
+
+    // The authored numbers are stored, exactly as they were asked for.
+    const settings = await ensureSettings(h.store);
+    expect(settings.guardrails.dailyUsd).toBe(7);
+    expect(settings.verifier.judge).toBe("heuristic");
+
+    // A simulation nobody has overridden anything on overrides nothing.
+    const simulation = await ensureSimulation(h.store);
+    expect(simulation.overrides.guardrails).toEqual({});
+    expect(simulation.overrides.verifier).toEqual({});
+
+    // ...so those are the numbers the run is held to, not the schema's defaults.
+    const resolved = (await resolveSimulationConfig(h.store, processConfig, simulation.id)).config;
+    expect(resolved.verifier.judge).toBe("heuristic");
+    expect(resolved.verifier.maxFindings).toBe(9);
+    expect(resolved.verifier.model.model).toBe("claude-haiku-4-5");
+    expect(resolved.guardrails.dailyUsd).toBe(7);
+    expect(resolved.guardrails.perWake).toEqual({ maxTokens: 50_000, maxUsd: 1, maxTurns: 12 });
+    expect(resolved.guardrails.maxMemoryNotes).toBe(11);
+
+    // The Settings screen edits that same row, and the next execution is held to the new ceiling.
+    const view = SettingsViewSchema.parse(await json(await put(h.app, routes.settings(P), { guardrails: { dailyUsd: 12, perWake: { maxUsd: 2 } } })));
+    expect(view.guardrails.dailyUsd).toBe(12);
+    const again = (await resolveSimulationConfig(h.store, processConfig, simulation.id)).config;
+    expect(again.guardrails.dailyUsd).toBe(12);
+    expect(again.guardrails.perWake.maxUsd).toBe(2);
+    expect(again.guardrails.perWake.maxTurns).toBe(12);
+    await h.close();
+  });
 });
 
 describe("what the connect wizard reads off a live target", () => {

@@ -18,3 +18,11 @@ export const VerifierConfigSchema = z.object({
   model: ModelOverrideSchema.prefault({ model: DEFAULT_MODEL, effort: "high" }),
 });
 export type VerifierConfig = z.infer<typeof VerifierConfigSchema>;
+
+/** A partial `VerifierConfig` carrying no defaults, for the same reason as `GuardrailsOverrideSchema`. */
+export const VerifierOverrideSchema = z.object({
+  judge: z.enum(["model", "heuristic"]).optional(),
+  maxFindings: z.number().int().positive().optional(),
+  model: ModelOverrideSchema.optional(),
+});
+export type VerifierOverride = z.infer<typeof VerifierOverrideSchema>;

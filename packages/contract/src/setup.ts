@@ -4,6 +4,7 @@ import {
   EventSchema,
   FirebaseAdminConfigSchema,
   FirstContactSchema,
+  GuardrailsOverrideSchema,
   GuardrailsSchema,
   JobSchema,
   ModelConfigSchema,
@@ -15,6 +16,7 @@ import {
   StaticIdentityConfigSchema,
   ToolPolicySchema,
   VerifierConfigSchema,
+  VerifierOverrideSchema,
 } from "@populace/core/isomorphic";
 import { z } from "zod";
 
@@ -239,10 +241,17 @@ export const SettingsViewSchema = z.object({
 });
 export type SettingsView = z.infer<typeof SettingsViewSchema>;
 
+/**
+ * A patch over the stored settings: what a form sends is merged field-wise, so a field it does not
+ * mention keeps the value the project already has. The guardrail and verifier blocks are the
+ * no-default override schemas rather than `.partial()` of the full ones — `.partial()` leaves each
+ * field's `.default()` in place, so `{ dailyUsd: 12 }` would arrive carrying every other ceiling
+ * at its schema default and overwrite them on the way through.
+ */
 export const SettingsInputSchema = z.object({
   model: ModelConfigSchema.omit({ apiKey: true }).partial().optional(),
-  guardrails: GuardrailsSchema.partial().optional(),
-  verifier: VerifierConfigSchema.partial().optional(),
+  guardrails: GuardrailsOverrideSchema.optional(),
+  verifier: VerifierOverrideSchema.optional(),
   daemon: DaemonConfigSchema.partial().optional(),
 });
 export type SettingsInput = z.infer<typeof SettingsInputSchema>;

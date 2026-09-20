@@ -25,3 +25,27 @@ export const GuardrailsSchema = z.object({
   maxPeoplePerGenerate: z.number().int().positive().default(100),
 });
 export type Guardrails = z.infer<typeof GuardrailsSchema>;
+
+/**
+ * A partial `Guardrails` that carries NO defaults of its own, so an unset field is absent rather
+ * than present-and-equal-to-the-default. `GuardrailsSchema.partial()` does not do this: zod leaves
+ * each field's `.default()` in place under the added `.optional()`, so `{}` parses back into a
+ * full set of defaults, and a field-wise merge over a project's settings then overwrites every one
+ * of them instead of falling through. `ModelOverrideSchema` has always been written this way,
+ * which is why the model override is the one that worked.
+ */
+export const GuardrailsOverrideSchema = z.object({
+  perWake: z
+    .object({
+      maxTokens: z.number().int().positive().optional(),
+      maxUsd: z.number().positive().optional(),
+      maxTurns: z.number().int().positive().optional(),
+    })
+    .optional(),
+  dailyUsd: z.number().positive().optional(),
+  maxMemoryNotes: z.number().int().positive().optional(),
+  maxToolResultChars: z.number().int().positive().optional(),
+  webFetch: z.boolean().optional(),
+  maxPeoplePerGenerate: z.number().int().positive().optional(),
+});
+export type GuardrailsOverride = z.infer<typeof GuardrailsOverrideSchema>;
