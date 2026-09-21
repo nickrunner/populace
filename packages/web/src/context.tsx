@@ -13,7 +13,7 @@ export interface ProjectScope {
   /** The URL segment, exactly as it was written: a slug or an id, and never re-spelled. */
   key: string;
   project: ProjectOverview;
-  /** `/p/tasklet`, or `/p/tasklet/library/people` with a path. */
+  /** `/p/my-app`, or `/p/my-app/library/people` with a path. */
   href: (path?: string) => string;
 }
 
@@ -32,7 +32,7 @@ export function useProject(): ProjectScope {
 export interface SimulationScope {
   key: string;
   simulation: SimulationSummary;
-  /** `/p/tasklet/s/smoke`, or with a path under it. */
+  /** `/p/my-app/s/smoke`, or with a path under it. */
   href: (path?: string) => string;
   /**
    * The execution the run-scoped screens read. Null before the simulation has ever been run,

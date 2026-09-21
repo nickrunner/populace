@@ -1,0 +1,230 @@
+[
+  {
+    "path": "README.md",
+    "bytes": 3273
+  },
+  {
+    "path": "fonts/SpaceGrotesk-OFL.txt",
+    "bytes": 4495
+  },
+  {
+    "path": "fonts/SpaceGrotesk-Variable.ttf",
+    "bytes": 136676
+  },
+  {
+    "path": "icons/favicon-16.png",
+    "bytes": 636
+  },
+  {
+    "path": "icons/favicon-32.png",
+    "bytes": 1343
+  },
+  {
+    "path": "icons/favicon-48.png",
+    "bytes": 2034
+  },
+  {
+    "path": "icons/favicon.ico",
+    "bytes": 3865
+  },
+  {
+    "path": "icons/favicon.svg",
+    "bytes": 637
+  },
+  {
+    "path": "icons/populace-app-icon.svg",
+    "bytes": 636
+  },
+  {
+    "path": "icons/populace-icon-180.png",
+    "bytes": 5763
+  },
+  {
+    "path": "icons/populace-icon-192.png",
+    "bytes": 6077
+  },
+  {
+    "path": "icons/populace-icon-32.png",
+    "bytes": 1047
+  },
+  {
+    "path": "icons/populace-icon-48.png",
+    "bytes": 1566
+  },
+  {
+    "path": "icons/populace-icon-512.png",
+    "bytes": 17644
+  },
+  {
+    "path": "logos/png/populace-logo-forest.png",
+    "bytes": 57606
+  },
+  {
+    "path": "logos/png/populace-logo-ink.png",
+    "bytes": 56837
+  },
+  {
+    "path": "logos/png/populace-logo-inverse.png",
+    "bytes": 55678
+  },
+  {
+    "path": "logos/png/populace-logo-on-forest.png",
+    "bytes": 61717
+  },
+  {
+    "path": "logos/png/populace-logo-on-paper.png",
+    "bytes": 61136
+  },
+  {
+    "path": "logos/png/populace-logo-primary.png",
+    "bytes": 56995
+  },
+  {
+    "path": "logos/png/populace-logo-white.png",
+    "bytes": 39921
+  },
+  {
+    "path": "logos/png/populace-mark-forest.png",
+    "bytes": 21660
+  },
+  {
+    "path": "logos/png/populace-mark-ink.png",
+    "bytes": 21353
+  },
+  {
+    "path": "logos/png/populace-mark-inverse.png",
+    "bytes": 20964
+  },
+  {
+    "path": "logos/png/populace-mark-primary.png",
+    "bytes": 21469
+  },
+  {
+    "path": "logos/png/populace-mark-white.png",
+    "bytes": 15469
+  },
+  {
+    "path": "logos/png/populace-wordmark-forest.png",
+    "bytes": 11603
+  },
+  {
+    "path": "logos/png/populace-wordmark-ink.png",
+    "bytes": 11433
+  },
+  {
+    "path": "logos/png/populace-wordmark-inverse.png",
+    "bytes": 11121
+  },
+  {
+    "path": "logos/png/populace-wordmark-primary.png",
+    "bytes": 11433
+  },
+  {
+    "path": "logos/png/populace-wordmark-white.png",
+    "bytes": 7999
+  },
+  {
+    "path": "logos/svg/populace-logo-forest.svg",
+    "bytes": 3780
+  },
+  {
+    "path": "logos/svg/populace-logo-ink.svg",
+    "bytes": 3780
+  },
+  {
+    "path": "logos/svg/populace-logo-inverse.svg",
+    "bytes": 3780
+  },
+  {
+    "path": "logos/svg/populace-logo-on-forest.svg",
+    "bytes": 3827
+  },
+  {
+    "path": "logos/svg/populace-logo-on-paper.svg",
+    "bytes": 3827
+  },
+  {
+    "path": "logos/svg/populace-logo-primary.svg",
+    "bytes": 3780
+  },
+  {
+    "path": "logos/svg/populace-logo-white.svg",
+    "bytes": 3780
+  },
+  {
+    "path": "logos/svg/populace-mark-forest.svg",
+    "bytes": 585
+  },
+  {
+    "path": "logos/svg/populace-mark-ink.svg",
+    "bytes": 585
+  },
+  {
+    "path": "logos/svg/populace-mark-inverse.svg",
+    "bytes": 585
+  },
+  {
+    "path": "logos/svg/populace-mark-primary.svg",
+    "bytes": 585
+  },
+  {
+    "path": "logos/svg/populace-mark-white.svg",
+    "bytes": 585
+  },
+  {
+    "path": "logos/svg/populace-wordmark-forest.svg",
+    "bytes": 3342
+  },
+  {
+    "path": "logos/svg/populace-wordmark-ink.svg",
+    "bytes": 3342
+  },
+  {
+    "path": "logos/svg/populace-wordmark-inverse.svg",
+    "bytes": 3342
+  },
+  {
+    "path": "logos/svg/populace-wordmark-primary.svg",
+    "bytes": 3342
+  },
+  {
+    "path": "logos/svg/populace-wordmark-white.svg",
+    "bytes": 3342
+  },
+  {
+    "path": "manifest.json",
+    "bytes": 4153
+  },
+  {
+    "path": "patterns/populace-exploration.svg",
+    "bytes": 2359
+  },
+  {
+    "path": "preview/populace-assets-preview.png",
+    "bytes": 125938
+  },
+  {
+    "path": "preview/populace-assets-preview.svg",
+    "bytes": 11543
+  },
+  {
+    "path": "theme/contrast-checks.md",
+    "bytes": 1102
+  },
+  {
+    "path": "theme/populace.css",
+    "bytes": 1529
+  },
+  {
+    "path": "theme/populace.gpl",
+    "bytes": 130
+  },
+  {
+    "path": "theme/populace.palette.json",
+    "bytes": 112
+  },
+  {
+    "path": "theme/populace.tokens.json",
+    "bytes": 1305
+  }
+]

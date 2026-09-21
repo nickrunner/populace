@@ -2,12 +2,25 @@ import {
   DigestSchema,
   FindingKindSchema,
   FindingSchema,
+  JsonValueSchema,
   MemorySchema,
   SeveritySchema,
+  ToolCallRecordSchema,
   TraceEventSchema,
   VerdictSchema,
+  VerificationSchema,
   WakeSchema,
   WakeStatusSchema,
+} from "@populace/core/isomorphic";
+import type {
+  Digest,
+  Finding,
+  JsonValue,
+  Memory,
+  ToolCallRecord,
+  TraceEvent,
+  Verdict,
+  Verification,
 } from "@populace/core/isomorphic";
 import { z } from "zod";
 
@@ -76,6 +89,7 @@ export type RunDetail = z.infer<typeof RunDetailSchema>;
  * this was a translation at the boundary, not a rename underneath it.
  */
 export { MemorySchema };
+export type { Memory };
 
 /**
  * What a target tool was actually used for during a run. A tool with no calls is the point of
@@ -114,7 +128,40 @@ export const WakeDetailSchema = WakeSummarySchema.extend({
 });
 export type WakeDetail = z.infer<typeof WakeDetailSchema>;
 
-export { TraceEventSchema, FindingSchema, DigestSchema, VerdictSchema };
+/**
+ * ---- the records the browser reads verbatim ------------------------------------------------
+ *
+ * A trace event, a tool-call record, a finding, a verification and a digest are **stored rows the
+ * dashboard reads unchanged**. They are re-exported here rather than restated as a parallel
+ * `…View`, and that is a deliberate reading of ADR-0032 rather than an exception to it.
+ *
+ * ADR-0032 says the wire speaks the *user's words*: `Agent` becomes `ParticipantSummaryView`
+ * because the product calls that thing a person and the row calls it an agent, and the two
+ * vocabularies have to meet somewhere. **These records have no second vocabulary.** A tool call is
+ * a tool call on both sides of the boundary; `ToolCallRecord.ref` is the `[c3]` a person typed
+ * into `evidence_calls` and the `[c3]` a reader clicks (ADR-0015). Inventing `ToolCallView` with
+ * the same eight fields would add a shape to maintain, a second place for a field to be forgotten,
+ * and no translation whatsoever.
+ *
+ * What ADR-0032 *does* require is that there is **one import site**. `@populace/contract` is it:
+ * nothing in `packages/web` reaches into `@populace/core/isomorphic` for a record shape, so the
+ * day one of these genuinely needs translating, this file is where the translation goes and no
+ * screen changes its import to find out.
+ *
+ * These already cross the wire under exactly these names: `ClusterDetailView.reproduction` is
+ * `ToolCallRecord[]` and `ClusterDetailView.replay` is `Verification` (`project.ts`), and
+ * `GET /wakes/:id/trace` pages `TraceEvent`.
+ */
+export {
+  TraceEventSchema,
+  ToolCallRecordSchema,
+  FindingSchema,
+  VerificationSchema,
+  DigestSchema,
+  VerdictSchema,
+  JsonValueSchema,
+};
+export type { TraceEvent, ToolCallRecord, Finding, Verification, Digest, Verdict, JsonValue };
 
 export const SpendBucketSchema = z.object({
   key: z.string(),

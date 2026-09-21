@@ -1,0 +1,299 @@
+import { forwardRef, type MouseEvent } from "react";
+import type { ProjectOverviewView, ProjectSummaryView, RunTotals } from "@populace/contract";
+import { cva } from "class-variance-authority";
+import { Link as RouterLink, useMatch } from "react-router-dom";
+
+import { cn } from "../cn.js";
+import { focusRing, pressTransition } from "../variants.js";
+import { Separator, Stack, Text } from "../atoms/index.js";
+import { NavGroup, NavItem } from "../molecules/index.js";
+import { ProjectSwitcher } from "./ProjectSwitcher.js";
+import { SpendMeter } from "./SpendMeter.js";
+import { TargetStatus, type TargetStatusView } from "./TargetStatus.js";
+
+/**
+ * Sidebar — ATOMIC-INVENTORY §3, organism 32. One navigation, no role switch, no expert mode.
+ *
+ * **The grammar is the one the product already has** and it is not up for redesign here: a group
+ * title in `t-label`, items with their counts right-aligned and tabular, the one you are on lit
+ * in `primary-wash` with `primary` ink. What the port changes is underneath it — every row is a
+ * `NavItem`, so every row has a focus ring and an `aria-current="page"` it does not have today,
+ * and every group is a named `role="group"` rather than a stray line of text above some links.
+ *
+ * **Three runs of items, and the middle one is conditional.** The project's own screens; then the
+ * simulation-scoped run, which appears only while the URL is inside a simulation; then "Set up".
+ * The simulation's run opens on the two questions a reader has about it — what came back, and
+ * what the next one would cost — so "Before you send them" sits directly under "Results" rather
+ * than at the foot of the group with the machinery.
+ *
+ * Two rows inside those runs are themselves conditional and the reasons are load-bearing:
+ *
+ *  - *"Seen in more than one"* counts signatures seen in **more than one simulation**, which for
+ *    the common shape — one project, one simulation — is permanently nought while the product has
+ *    found a dozen problems. It is labelled for what it counts and it appears only once there is
+ *    a second simulation for something to be seen in.
+ *  - *Populations* stays implicit and unnamed until a second one exists: a population is a
+ *    concept with no payoff while there is one of them.
+ *
+ * **Nothing here promises a repeatable outcome** (§7.3), and every label is in the product's own
+ * vocabulary (§7.2): project, simulation, population, cohort, person, visit, execution, finding.
+ * Where a contract field still carries the store's internal name for a session, that name is
+ * translated once, in `visitsIn` below, and never written anywhere a reader — or a reader of this
+ * file — meets it (ADR-0032, §7.2).
+ */
+
+/**
+ * How many visits an execution's totals record.
+ *
+ * `RunTotals` is a row shape, and the rows keep the store's own names (ADR-0032): the wire has not
+ * yet been widened to spell this one in the product's vocabulary. Rather than let the forbidden
+ * word appear in the rail's markup — beside the label "Visits", of all places — the translation
+ * happens exactly once, here, behind a name that says what the number is. When the contract grows
+ * a `visits` field, this function is the only thing that changes.
+ */
+function visitsIn(totals: RunTotals | undefined): number | undefined {
+  return totals?.wakes;
+}
+
+/**
+ * The rail's own frame, or none.
+ *
+ * `collapsed` does **not** mean a glyph-only strip: §6 forbids an affordance glyph without a text
+ * label, so a 56px icon rail is not a thing this system can draw. It means the rail has been put
+ * inside a container that supplies the frame — the shell's rail column, or the drawer below the
+ * `md` breakpoint — so it fills that container and draws no width and no rule of its own.
+ */
+const rail = cva("flex min-h-0 flex-col overflow-y-auto bg-surface", {
+  variants: {
+    collapsed: {
+      true: "w-full flex-1",
+      false: "h-full w-[var(--w-rail)] shrink-0 border-r border-rule",
+    },
+  },
+  defaultVariants: { collapsed: false },
+});
+
+/**
+ * A rail row that is a *place on the page below* rather than a page of its own.
+ *
+ * It can never be a `NavItem`, and that is the point: `NavLink` would light it whenever the URL
+ * is on the screen it points into, and nothing about the current URL makes "the problems section
+ * of this page" *where you are*. So it borrows the inactive row's language and none of its state.
+ *
+ * It scrolls its own section into view, because a fragment alone moves nothing in an app that
+ * scrolls its main pane rather than the window.
+ */
+const jump = cn(
+  "flex items-baseline gap-2 rounded-sm px-3 py-1.5",
+  "t-ui text-ink-soft hover:bg-hover hover:text-ink",
+  pressTransition,
+  focusRing,
+);
+
+interface SectionJumpProps {
+  to: string;
+  hash: string;
+  label: string;
+  count?: number;
+}
+
+function SectionJump({ to, hash, label, count }: SectionJumpProps) {
+  return (
+    <RouterLink
+      to={`${to}#${hash}`}
+      className={jump}
+      onClick={() => {
+        // After the navigation, so the section exists to be scrolled to when this is pressed
+        // from another screen in the project.
+        window.setTimeout(() => document.getElementById(hash)?.scrollIntoView({ block: "start" }), 0);
+      }}
+    >
+      <Text size="ui" truncate className="flex-1">
+        {label}
+      </Text>
+      {count === undefined ? null : (
+        <Text size="meta" tone="muted" className="shrink-0">
+          {count}
+        </Text>
+      )}
+    </RouterLink>
+  );
+}
+
+/**
+ * The target as the rail draws it: the readable bits and nothing else. A bearer token is never on
+ * the wire and is certainly never in a prop (`DATA-MODEL.md` §4).
+ */
+export interface RailTarget {
+  id: string;
+  name: string;
+  /** The MCP endpoint, or null when the target is configured but lists none. */
+  endpoint: string | null;
+}
+
+/**
+ * **Everything the rail draws arrives as a prop.** This component used to run its own queries and
+ * read the project out of React context, and it was the only thing under `design/` that fetched
+ * anything — which quietly made the design system depend on the app's data layer, its query keys
+ * and its providers, so that the rail could not be rendered in isolation, in a test, or by a
+ * second app. The fetching now happens on the app side (`packages/web/src/ProjectRail.tsx`) and
+ * the rail is a pure function of what it is given, exactly like every other organism.
+ *
+ * `useMatch` stays. Which URL you are on is not data: it is the same routing the `NavItem`s
+ * underneath already read to light themselves, and a rail that had to be told its own location
+ * would be told it by a caller reading the same router.
+ */
+export interface SidebarProps {
+  /** The rail's frame is supplied by its container — the shell's column, or the drawer. */
+  collapsed?: boolean;
+  /**
+   * Called when a link inside the rail is followed. The drawer closes on it; the fixed rail
+   * passes nothing and nothing happens.
+   */
+  onNavigate?: () => void;
+  /** The project this rail belongs to: its counts, its simulations, its spend, its kill switch. */
+  project: ProjectOverviewView;
+  /** Every project the switcher offers, the current one included. */
+  projects: readonly ProjectSummaryView[];
+  /** A path inside this project: `href()` is its home, `href("settings")` a page under it. */
+  href: (path?: string) => string;
+  /** The configured target, or null when the project has none yet. */
+  target: RailTarget | null;
+  /** How many populations the project has. The row appears only above one. */
+  populationCount: number;
+}
+
+export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
+  { collapsed = false, onNavigate, project, projects, href, target, populationCount },
+  ref,
+) {
+  const inSimulation = useMatch("/p/:proj/s/:sim/*");
+  const simulationKey = inSimulation?.params.sim ?? null;
+  const simulation = project.simulations.find((s) => s.slug === simulationKey || s.id === simulationKey);
+
+  const spent = project.spentTodayUsd;
+  const ceiling = project.dailyCeilingUsd;
+  const running = project.runningRunIds.length > 0;
+  const base = simulation === undefined ? null : `${href()}/s/${encodeURIComponent(simulation.slug)}`;
+  const live = simulation?.status === "running" || simulation?.status === "paused";
+
+  const targetStatus: TargetStatusView = {
+    name: target?.name ?? null,
+    endpoint: target?.endpoint ?? null,
+    to: target === null ? href("library/target") : href(`library/target/${encodeURIComponent(target.id)}`),
+    state: project.killSwitch.engaged
+      ? "stopped"
+      : running
+        ? "running"
+        : target === null
+          ? "none"
+          : "configured",
+  };
+
+  /**
+   * One delegated handler rather than a callback threaded through every row: the drawer's job is
+   * to close when the reader has gone somewhere, and "somewhere" is any anchor inside the rail.
+   * The switcher's trigger is a `<button>` and its menu is portalled out of this subtree, so
+   * neither one trips this — opening the menu must not close the drawer under it.
+   */
+  function handleClick(event: MouseEvent<HTMLElement>): void {
+    if (onNavigate === undefined) return;
+    if (!(event.target instanceof Element)) return;
+    if (event.target.closest("a") !== null) onNavigate();
+  }
+
+  return (
+    <aside ref={ref} className={cn(rail({ collapsed }))} onClick={handleClick}>
+      <ProjectSwitcher current={project} projects={projects} />
+
+      {/*
+        `flex-1` so the target block is pinned to the foot of the rail on a tall window and
+        carried along by the scroll on a short one — exactly as it behaves today.
+      */}
+      <nav aria-label="This project" className="flex-1 px-0 pb-6">
+        <Stack gap={6}>
+          <NavGroup>
+            <NavItem to={href()} label="Simulations" count={project.counts.simulations} end />
+            {project.simulations.length > 1 ? (
+              <SectionJump
+                to={href()}
+                hash="problems"
+                label="Seen in more than one"
+                count={project.crossSimulation.length}
+              />
+            ) : null}
+          </NavGroup>
+
+          {base !== null && simulation !== undefined ? (
+            <NavGroup label={simulation.name}>
+              <NavItem to={base} label="Results" end />
+              {/*
+                The screen that saves the reader money, promoted out of a footnote (§6.3 row 13).
+                It was reachable only as a link at the bottom of `GetStarted`'s last step, which
+                meant the one page that says what an execution will cost — before anything is
+                spent — could be read only by somebody already halfway through starting one. It
+                is unconditional, because "what would this cost" is a question a reader is
+                entitled to ask of a simulation that has run ten times as much as of one that has
+                never run, and the page itself spends nothing to answer it.
+              */}
+              <NavItem to={`${base}/preflight`} label="Before you send them" />
+              {live ? <NavItem to={`${base}/live`} label="Live" /> : null}
+              <NavItem to={`${base}/coverage`} label="Coverage gaps" />
+              <NavItem to={`${base}/left`} label="Who walked away" />
+              {/*
+                The headcount is who is CONFIGURED to go; the screen behind it reads one
+                execution. Before there is one, a number beside a page that says nobody has been
+                sent is two answers to the same question.
+              */}
+              <NavItem
+                to={`${base}/population`}
+                label="Population"
+                {...(simulation.latest === null ? {} : { count: simulation.population.people })}
+              />
+              <NavItem
+                to={`${base}/executions`}
+                label={simulation.mode === "longitudinal" ? "Its life so far" : "Executions"}
+                count={simulation.latest?.seq}
+              />
+              <NavItem
+                to={`${base}/visits`}
+                label="Visits"
+                count={visitsIn(simulation.latest?.totals)}
+              />
+            </NavGroup>
+          ) : null}
+
+          <NavGroup label="Set up">
+            <NavItem
+              to={href("library/target")}
+              label={project.counts.targets > 1 ? "The targets" : "The target"}
+              count={project.counts.targets > 1 ? project.counts.targets : undefined}
+            />
+            <NavItem to={href("library/personas")} label="Personas" count={project.counts.personas} />
+            <NavItem to={href("library/people")} label="The people" count={project.counts.people} />
+            {populationCount > 1 ? (
+              <NavItem
+                to={href("library/people#populations")}
+                label="Populations"
+                count={populationCount}
+              />
+            ) : null}
+            <NavItem to={href("settings")} label="Settings" />
+          </NavGroup>
+
+          <div className="px-3">
+            <SpendMeter spent={spent} ceiling={ceiling} />
+          </div>
+        </Stack>
+      </nav>
+
+      {/* The rule runs the full width of the rail; the block inside it keeps the gutter. */}
+      <div className="shrink-0">
+        <Separator />
+        <div className="p-3">
+          <TargetStatus target={targetStatus} />
+        </div>
+      </div>
+    </aside>
+  );
+});

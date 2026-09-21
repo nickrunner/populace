@@ -1,0 +1,57 @@
+{
+  "name": "Populace",
+  "version": "1.0.0",
+  "brand": {
+    "ink": "#202823",
+    "paper": "#F4F1E9",
+    "forest": "#254B3E",
+    "signal": "#D7F56B",
+    "clay": "#C46D51"
+  },
+  "themes": {
+    "light": {
+      "background": "#F4F1E9",
+      "surface": "#FFFFFF",
+      "text": "#202823",
+      "text-muted": "#566259",
+      "border": "#CBD2C7",
+      "primary": "#254B3E",
+      "on-primary": "#F4F1E9",
+      "accent": "#D7F56B",
+      "on-accent": "#202823",
+      "focus": "#254B3E",
+      "error": "#A33132",
+      "on-error": "#FFFFFF",
+      "warning": "#785600",
+      "success": "#2D6345",
+      "info": "#285C88"
+    },
+    "dark": {
+      "background": "#202823",
+      "surface": "#2C3730",
+      "text": "#F4F1E9",
+      "text-muted": "#BCC9BC",
+      "border": "#526357",
+      "primary": "#D7F56B",
+      "on-primary": "#202823",
+      "accent": "#254B3E",
+      "on-accent": "#F4F1E9",
+      "focus": "#D7F56B",
+      "error": "#FF9A93",
+      "on-error": "#202823",
+      "warning": "#E8CE7A",
+      "success": "#A6D9A9",
+      "info": "#A5CFFF"
+    }
+  },
+  "typography": {
+    "display": "Space Grotesk",
+    "body": "Inter, system-ui, sans-serif",
+    "mono": "IBM Plex Mono, ui-monospace, monospace"
+  },
+  "radius": {
+    "sm": "6px",
+    "md": "12px",
+    "lg": "20px"
+  }
+}

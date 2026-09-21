@@ -1,13 +1,43 @@
-import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
-import type { ClusterDetail, Triage as TriageView } from "../api.js";
-import { api } from "../api.js";
+import { useParams } from "react-router-dom";
+import type { TriageInput } from "@populace/contract";
+import type { ClusterDetail } from "../api.js";
+import { api, isMissing } from "../api.js";
 import { keys, q } from "../queries.js";
 import { useProject, useSimulation } from "../context.jsx";
-import { ago, ms, stateOfCluster, usd4, when } from "../format.js";
-import { Incidence } from "../components/ClusterRow.jsx";
-import { Avatar, Bar, Breadcrumb, Button, CallRef, Card, Failed, Loading, Mono, Payload, Select, Severity, TextArea, ToolName, Verdict } from "../components/ui.jsx";
+import { people, plural, stateOfCluster } from "../format.js";
+import {
+  Badge,
+  Button,
+  Dot,
+  EvidenceSteps,
+  Heading,
+  IncidenceBars,
+  Inline,
+  Link,
+  Measure,
+  Mono,
+  PageHeader,
+  PersonQuoteCard,
+  ReplayVerdict,
+  Section,
+  Skeleton,
+  SplitPage,
+  Stack,
+  StateBlock,
+  Text,
+  ToolName,
+  SeverityTag,
+  TriageForm,
+  VerdictTag,
+  VisuallyHidden,
+  WhatWentWrong,
+  type BadgeTone,
+  type CohortIncidence,
+  type Crumb,
+  type MetaFact,
+  type StateKind,
+} from "../design/index.js";
 
 /**
  * One problem, in full — and the first level of the product where a person is named (SPEC §7.1).
@@ -20,169 +50,47 @@ import { Avatar, Bar, Breadcrumb, Button, CallRef, Card, Failed, Loading, Mono, 
  * bookmark survives the next execution, and triage lands on the problem rather than on a row
  * (ADR-0028).
  *
- * Left is prose — their words, what they expected, what happened. Right is the instrument — the
- * calls that produced it, the replay verdict, and what has become of it across executions.
- * Neither is behind a mode.
+ * Left is prose — their words, what they expected, what happened, and how far it reached. Right is
+ * the instrument — the decision, the calls that produced it, what a judge got when it ran them
+ * again, and what has become of it across executions. Neither is behind a mode.
+ *
+ * **`Verification.replay[]` is drawn here for the first time** (ATOMIC-INVENTORY §6.3, row 20).
+ * The store has held the judge's fresh tool calls since the verifier existed and every screen
+ * printed the verdict word and threw the receipts away — the strongest evidence this product has,
+ * unrendered. `ReplayVerdict` puts them under the original steps, in the same `EvidenceSteps`
+ * shape and aligned by index, so a reader can read the second list against the first line for
+ * line rather than taking the verdict on trust.
+ *
+ * **The dot strip's count is in the DOM.** `AcrossExecutions` wrote one `●`/`○` per execution and
+ * hid how many reports it stood for in a `title=` attribute — a tooltip on a hover-only surface,
+ * invisible to a keyboard and to a screen reader (DESIGN-SYSTEM §6, "never colour alone"). Each
+ * cell is now a sequence number, a mark and a number, all three of them real text.
+ *
+ * **The screen's one lime appearance** (§5.4, appearance 4) is fixed by name: *the confirmed
+ * verdict's glyph*. The most recent execution whose replay came back `confirmed` takes the mark's
+ * `theOne` dot — a lime fill inside a mandatory ink ring in light, a lime ring in dark. An
+ * execution that did not report it stays a ring, because **an absence is an absence and never a
+ * repair** (ADR-0028); the word "fixed" on this screen appears only inside `TriageForm`'s
+ * decisions, where a human types it about their own product.
+ *
+ * **Four sibling `<h2>`s become one `<h2>` per `Section`** with `<h3>`s beneath (§6, "Heading
+ * order"), and the two divergent proportion markups become one `IncidenceBars`: a cohort nobody
+ * in it hit reads `0/8` in the same column as the rest, rather than in a second list with its own
+ * shape three paragraphs down.
  */
-
-const TRIAGE_WORDS: { value: TriageView["state"]; label: string }[] = [
-  { value: "untriaged", label: "Not decided yet" },
-  { value: "accepted", label: "Accepted — it is real and we will fix it" },
-  { value: "fixed", label: "We have fixed it" },
-  { value: "wont-fix", label: "We are not going to fix it" },
-  { value: "duplicate", label: "Duplicate of something we already track" },
-];
 
 /**
- * The triage control, and the only place in the product where the word "fixed" is asserted —
- * because here a human is the one asserting it. The screens that compare executions report an
- * absence as an absence (ADR-0028 amendment).
+ * What ink a cluster's state word takes. Read off the state rather than off `stateOfCluster`'s
+ * `ink` class string: the words are the product's copy and are preserved verbatim, but a class
+ * name is styling and a screen that reached for one would be reading a design decision out of a
+ * string. `fixed` is deliberately quiet — an absence is not an alarm and not an achievement.
  */
-function Triage({ card }: { card: ClusterDetail }) {
-  const { key } = useProject();
-  const { key: sim } = useSimulation();
-  const queries = useQueryClient();
-  const [state, setState] = useState<TriageView["state"]>(card.triage?.state ?? "untriaged");
-  const [note, setNote] = useState(card.triage?.note ?? "");
-  const [open, setOpen] = useState(false);
-
-  const save = useMutation({
-    mutationFn: () => api.setTriage(key, { signature: card.signature, state, note }),
-    onSuccess: async () => {
-      setOpen(false);
-      await Promise.all([
-        queries.invalidateQueries({ queryKey: keys.cluster(key, sim, card.signature) }),
-        queries.invalidateQueries({ queryKey: keys.results(key, sim) }),
-        queries.invalidateQueries({ queryKey: keys.triage(key) }),
-        queries.invalidateQueries({ queryKey: keys.project(key) }),
-      ]);
-    },
-  });
-
-  const current = TRIAGE_WORDS.find((word) => word.value === (card.triage?.state ?? "untriaged"));
-
-  return (
-    <div className="shrink-0 min-w-[16rem]">
-      <button type="button" onClick={() => setOpen(!open)} className="t-body text-accent hover:underline">
-        {current?.label ?? "Not decided yet"} {open ? "▾" : "▸"}
-      </button>
-      {card.triage !== null && card.triage.drifted ? (
-        <p className="t-meta text-high mt-1 max-w-[34ch]">
-          This was decided under a different wording — “{card.triage.titleAtTriage}”. The problem may have been reworded, or this may be a different one wearing the same key.
-        </p>
-      ) : null}
-      {open ? (
-        <Card className="p-3.5 mt-2">
-          {/* The options are the enum, so a chosen value is looked up rather than asserted. */}
-          <Select value={state} onChange={(value) => setState(TRIAGE_WORDS.find((word) => word.value === value)?.value ?? "untriaged")} options={TRIAGE_WORDS} />
-          <div className="mt-2">
-            <TextArea value={note} onChange={setNote} rows={3} placeholder="Why, or where it is tracked. Optional." />
-          </div>
-          <div className="flex items-center gap-3 mt-2">
-            <Button tone="go" onClick={() => save.mutate()} disabled={save.isPending}>
-              {save.isPending ? "Saving…" : "Save"}
-            </Button>
-            {card.triage === null ? null : <span className="t-meta text-ink-muted">last changed {ago(card.triage.updatedAt)}</span>}
-          </div>
-          {save.isError ? <p className="t-meta text-critical mt-2">{save.error.message}</p> : null}
-          <p className="t-meta text-ink-muted mt-2 max-w-[38ch]">
-            This decision is kept against the problem, not against this execution, so it is still here the next time the simulation runs.
-          </p>
-        </Card>
-      ) : null}
-    </div>
-  );
-}
-
-function Steps({ card }: { card: ClusterDetail }) {
-  const { href } = useSimulation();
-  return (
-    <Card className="p-4">
-      <div className="flex items-baseline justify-between gap-3 mb-3">
-        <div className="t-label text-ink-muted">Steps that reproduce it</div>
-        <Link to={href(`visits/${encodeURIComponent(card.representative.wakeId)}`)} className="t-meta text-accent hover:underline">
-          open the full visit
-        </Link>
-      </div>
-      {card.reproduction.length === 0 ? (
-        <p className="t-body text-ink-muted italic">Nobody cited a call when they filed this, so there is nothing to replay.</p>
-      ) : (
-        <ol className="flex flex-col gap-2.5">
-          {card.reproduction.map((step) => (
-            <li key={step.ref}>
-              <div className="flex items-baseline gap-2 mb-1">
-                <CallRef>{step.ref}</CallRef>
-                <Mono className="text-[12px] text-ink">
-                  {step.tool}({JSON.stringify(step.arguments)})
-                </Mono>
-                <span className="t-meta text-ink-muted ml-auto shrink-0">{ms(step.latencyMs)}</span>
-              </div>
-              <Payload>
-                <span className={step.result.isError ? "text-critical" : "text-ink-soft"}>→ {step.result.text.slice(0, 600)}</span>
-              </Payload>
-            </li>
-          ))}
-        </ol>
-      )}
-    </Card>
-  );
-}
-
-function Replay({ card }: { card: ClusterDetail }) {
-  if (card.replay === null)
-    return (
-      <Card className="p-4">
-        <div className="t-label text-ink-muted mb-1.5">We have not replayed this yet</div>
-        <p className="t-body text-ink-soft">
-          Build the digest with verification on, and the judge runs these calls again itself and rules on what comes back.
-        </p>
-      </Card>
-    );
-  return (
-    <Card className="p-4">
-      <div className="flex items-baseline gap-3 mb-1.5">
-        <span className="t-label text-ink-muted">We ran those calls again ourselves</span>
-        <Verdict value={card.replay.verdict} />
-      </div>
-      <p className="t-body text-ink-soft">{card.replay.reason}</p>
-      <div className="t-meta text-ink-muted mt-2.5 font-mono">
-        {card.replay.judge} judge · {when(card.replay.verifiedAt)} · {usd4(card.replay.costUsd)}
-      </div>
-    </Card>
-  );
-}
-
-/** Which executions reported it, as a strip. The dots are the evidence for the state word above. */
-function AcrossExecutions({ card, mode }: { card: ClusterDetail; mode: "ephemeral" | "longitudinal" }) {
-  if (mode === "longitudinal")
-    return (
-      <Card className="p-4">
-        <div className="t-label text-ink-muted mb-1.5">Over this execution</div>
-        <p className="t-body text-ink-soft">
-          First reported {ago(card.firstSeenAt)}, last reported {ago(card.lastSeenAt)}.
-        </p>
-      </Card>
-    );
-  const seen = new Set(card.seenIn);
-  return (
-    <Card className="p-4">
-      <div className="t-label text-ink-muted mb-2">Across executions</div>
-      <div className="flex flex-wrap gap-2 mb-2">
-        {card.history.map((entry) => (
-          <span key={entry.runId} className={`t-meta tabular-nums px-1.5 rounded ${entry.reports > 0 ? "bg-accent-wash text-accent" : "text-ink-muted"}`} title={`${entry.reports} reports`}>
-            {entry.seq}
-            {entry.reports > 0 ? " ●" : " ○"}
-          </span>
-        ))}
-      </div>
-      <p className="t-body text-ink-soft">
-        {seen.size === card.history.length
-          ? "Reported in every execution this simulation has had."
-          : `Reported in ${seen.size} of ${card.history.length} executions. An execution that did not report it is an absence, not a repair — the same complaint worded differently is a different key.`}
-      </p>
-    </Card>
-  );
-}
+const STATE_TONE = {
+  new: "critical",
+  regressed: "critical",
+  open: "high",
+  fixed: "neutral",
+} satisfies Record<ClusterDetail["state"], BadgeTone>;
 
 export function FindingInFull() {
   const { key } = useProject();
@@ -190,93 +98,343 @@ export function FindingInFull() {
   const { signature = "" } = useParams();
   const cluster = useQuery(q.cluster(key, sim, signature));
   const results = useQuery(q.results(key, sim));
+  const queries = useQueryClient();
 
-  if (cluster.isPending) return <Loading what="this problem" />;
-  if (cluster.isError) return <Failed error={cluster.error} />;
+  /**
+   * The decision, saved against the SIGNATURE. Unchanged from the panel this screen used to carry
+   * its own copy of: the same endpoint, and the same four invalidations — the cluster, the
+   * results it is a row of, the project's triage list and the project overview that counts it.
+   */
+  const save = useMutation({
+    mutationFn: (triage: TriageInput) => api.setTriage(key, triage),
+    onSuccess: async () => {
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: keys.cluster(key, sim, signature) }),
+        queries.invalidateQueries({ queryKey: keys.results(key, sim) }),
+        queries.invalidateQueries({ queryKey: keys.triage(key) }),
+        queries.invalidateQueries({ queryKey: keys.project(key) }),
+      ]);
+    },
+  });
 
+  const crumbs: Crumb[] = [{ label: "Results", to: href() }];
   const card = cluster.data;
+
+  if (card === undefined) {
+    const state: StateKind = cluster.isPending
+      ? "loading"
+      : isMissing(cluster.error)
+        ? "gone"
+        : "failed";
+
+    return (
+      <SplitPage
+        header={<PageHeader title="One problem" crumbs={crumbs} />}
+        state={state}
+        left={null}
+        right={null}
+        loading={
+          <StateBlock
+            kind="loading"
+            what="this problem"
+            skeleton={
+              <Stack gap={6} align="stretch">
+                <Skeleton variant="block" height={120} label="Reading this problem" />
+                <Skeleton variant="row" count={4} height={96} label="Reading the evidence" />
+              </Stack>
+            }
+          />
+        }
+        gone={
+          // The state this screen never had. A signature that is not in this simulation is a
+          // stale bookmark or a link from a sibling simulation, which is not a failure and must
+          // not be dressed as one.
+          <StateBlock kind="gone" what="this problem">
+            No problem in this simulation carries that signature. The link may be from another
+            simulation, or from an execution whose reports have been swept.{" "}
+            <Link to={href()}>Open the results</Link> to see what is there.
+          </StateBlock>
+        }
+        error={
+          <StateBlock kind="failed" what="this problem" error={cluster.error}>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                void cluster.refetch();
+              }}
+            >
+              Try again
+            </Button>
+          </StateBlock>
+        }
+      />
+    );
+  }
+
   const seqs = (results.data?.history ?? []).map((entry) => entry.seq).sort((a, b) => a - b);
   const state = stateOfCluster(card, simulation.mode, seqs);
   const representative = card.representative;
 
+  /**
+   * One column of proportions, not two. `cohorts` carries the cohorts somebody in them hit, and
+   * `peopleMissed` counts everybody who did not — including, for a cohort nobody in it hit at all,
+   * the whole cohort. Those are the only rows the first list cannot show, so they join it as
+   * `0 of N` rather than becoming a second list with its own shape (organism 22).
+   */
+  const hitCohorts = new Set(card.cohorts.map((cohort) => cohort.slug));
+  const incidence: CohortIncidence[] = [
+    ...card.cohorts,
+    ...card.peopleMissed
+      .filter((missed) => !hitCohorts.has(missed.cohortSlug))
+      .map((missed) => ({ slug: missed.cohortSlug, name: missed.name, hit: 0, total: missed.count })),
+  ];
+
+  const facts: MetaFact[] = [
+    { key: "severity", node: <SeverityTag level={card.severity} kind={card.kind} /> },
+    {
+      key: "tool",
+      node:
+        card.tool === null ? null : (
+          <ToolName name={card.tool} missing={card.kind === "coverage-gap"} />
+        ),
+    },
+    { key: "verdict", node: <VerdictTag value={card.verdict ?? "unchecked"} /> },
+    {
+      key: "state",
+      node: (
+        <Badge variant="status" tone={STATE_TONE[card.state]}>
+          <VisuallyHidden>this problem is </VisuallyHidden>
+          {state.badge}
+        </Badge>
+      ),
+    },
+    { key: "detail", node: state.detail },
+    { key: "reports", node: plural(card.reports, "report") },
+    { key: "signature", node: <Mono size="ref">{card.signature}</Mono> },
+  ];
+
   return (
-    <>
-      <Breadcrumb items={[{ label: "Results", to: href() }, { label: card.title }]} />
+    <SplitPage
+      header={
+        <PageHeader title={card.title} crumbs={[...crumbs, { label: card.title }]} meta={facts} />
+      }
+      left={
+        <Stack gap={8} align="stretch">
+          <Section title="In their own words" trailing={card.quotes.length}>
+            {card.quotes.length === 0 ? (
+              <StateBlock kind="empty" what="their own words">
+                Nobody wrote this one up in their own words.
+              </StateBlock>
+            ) : (
+              <Stack gap={4} align="stretch">
+                {card.quotes.map((quote) => (
+                  <Stack key={`${quote.personId}-${quote.wakeId}`} gap={2} align="stretch">
+                    <PersonQuoteCard
+                      name={quote.name}
+                      words={quote.text}
+                      cohort={quote.cohortName || quote.cohortSlug}
+                      visit={quote.visitNumber}
+                      to={href(`people/${encodeURIComponent(quote.personId)}`)}
+                    />
+                    <Inline gap={4} wrap>
+                      <Link size="meta" to={href(`visits/${encodeURIComponent(quote.wakeId)}`)}>
+                        watch the visit they said it on
+                      </Link>
+                    </Inline>
+                  </Stack>
+                ))}
+              </Stack>
+            )}
+          </Section>
 
-      <div className="flex items-start justify-between gap-6 mt-2 mb-2">
-        <h1 className="t-title max-w-[46ch]">{card.title}</h1>
-        <Triage card={card} />
-      </div>
+          <Section title="What they ran into">
+            <Stack gap={6} align="stretch">
+              <Stack gap={2} align="stretch">
+                <Heading level={3} size="name">
+                  They expected
+                </Heading>
+                <Measure width="read">
+                  <Text as="p" size="read" tone="soft">
+                    {representative.expected}
+                  </Text>
+                </Measure>
+              </Stack>
 
-      <div className="flex flex-wrap items-center gap-3 mb-2">
-        <Severity value={card.severity} kind={card.kind} />
-        {card.tool ? <ToolName name={card.tool} missing={card.kind === "coverage-gap"} /> : null}
-        <Verdict value={card.verdict} />
-        <span className={`t-label ${state.ink}`}>{state.badge}</span>
-        <span className="t-meta text-ink-muted">{state.detail}</span>
-      </div>
+              <Stack gap={2} align="stretch">
+                <Heading level={3} size="name">
+                  What happened
+                </Heading>
+                <Measure width="read">
+                  <Text as="p" size="read" tone="soft">
+                    {representative.observed}
+                  </Text>
+                </Measure>
+              </Stack>
+            </Stack>
+          </Section>
 
-      <p className="t-body text-ink-soft mb-8 pb-6 border-b border-rule tabular-nums">
-        {card.peopleHit.length} of {card.peopleTotal} {card.peopleTotal === 1 ? "person" : "people"} hit this · {card.reports} {card.reports === 1 ? "report" : "reports"} ·{" "}
-        <Mono className="text-[11px] text-ink-muted">{card.signature}</Mono>
-      </p>
+          <Section
+            title="Who hit it"
+            trailing={`${card.peopleHit.length} of ${people(card.peopleTotal)}`}
+          >
+            <Stack gap={4} align="stretch">
+              {incidence.length === 0 ? (
+                <StateBlock kind="empty" what="the breakdown">
+                  This execution has no cohort breakdown to draw.
+                </StateBlock>
+              ) : (
+                <IncidenceBars cohorts={incidence} />
+              )}
+              <Inline gap={4} wrap>
+                <Link size="ui" to={href(`f/${encodeURIComponent(card.signature)}/people`)}>
+                  {`All ${people(card.peopleHit.length)} who hit this`}
+                </Link>
+              </Inline>
+            </Stack>
+          </Section>
+        </Stack>
+      }
+      right={
+        <Stack gap={8} align="stretch">
+          <Section title="Your decision" level={2}>
+            <Stack gap={3} align="stretch">
+              <TriageForm
+                signature={card.signature}
+                current={card.triage}
+                drifted={card.triage?.drifted ?? false}
+                onSave={(triage) => {
+                  save.mutate(triage);
+                }}
+              />
+              {save.error === null ? null : (
+                <WhatWentWrong
+                  says="The decision was not saved, so this problem still carries whatever it carried before."
+                  error={save.error}
+                />
+              )}
+            </Stack>
+          </Section>
 
-      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-8 items-start">
-        <div>
-          <h2 className="t-section mb-3">In their own words</h2>
-          <div className="flex flex-col gap-4 mb-8">
-            {card.quotes.map((quote) => (
-              <div key={`${quote.personId}-${quote.wakeId}`} className="flex gap-3">
-                <Avatar name={quote.name} />
-                <div className="min-w-0">
-                  <p className="t-body text-ink italic">“{quote.text}”</p>
-                  <div className="t-meta text-ink-muted mt-1">
-                    {quote.name} · {quote.cohortName || quote.cohortSlug} ·{" "}
-                    <Link to={href(`visits/${encodeURIComponent(quote.wakeId)}`)} className="text-accent hover:underline">
-                      visit {quote.visitNumber}
-                    </Link>
-                  </div>
-                </div>
-              </div>
-            ))}
-            {card.quotes.length === 0 ? <p className="t-body text-ink-muted italic">Nobody wrote this one up in their own words.</p> : null}
-          </div>
+          <Section
+            title="Evidence"
+            actions={
+              <Link
+                size="meta"
+                to={href(`visits/${encodeURIComponent(card.representative.wakeId)}`)}
+              >
+                open the full visit
+              </Link>
+            }
+          >
+            <Stack gap={8} align="stretch">
+              <EvidenceSteps steps={card.reproduction} />
 
-          <h2 className="t-section mb-2">They expected</h2>
-          <p className="t-body text-ink-soft mb-5">{representative.expected}</p>
-          <h2 className="t-section mb-2">What happened</h2>
-          <p className="t-body text-ink-soft">{representative.observed}</p>
-        </div>
+              {card.replay === null ? (
+                <Stack gap={2} align="stretch">
+                  <Heading level={3} size="name">
+                    We have not replayed this yet
+                  </Heading>
+                  <Measure width="read">
+                    <Text as="p" size="read" tone="soft">
+                      Build the digest with verification on, and the judge runs these calls again
+                      itself and rules on what comes back.
+                    </Text>
+                  </Measure>
+                </Stack>
+              ) : (
+                <ReplayVerdict verification={card.replay} />
+              )}
+            </Stack>
+          </Section>
 
-        <div className="flex flex-col gap-4">
-          <Steps card={card} />
-          <Replay card={card} />
           <AcrossExecutions card={card} mode={simulation.mode} />
-        </div>
-      </div>
+        </Stack>
+      }
+    />
+  );
+}
 
-      <section className="mt-10 pt-8 border-t border-rule">
-        <h2 className="t-section mb-3">Who hit it</h2>
-        <Incidence cohorts={card.cohorts} />
-        {card.peopleMissed.length > 0 ? (
-          <div className="mt-5 max-w-[34rem] flex flex-col gap-2">
-            {card.peopleMissed.map((missed) => (
-              <div key={missed.cohortSlug} className="flex items-baseline gap-3">
-                <span className="t-meta text-ink-muted w-36 truncate">{missed.name}</span>
-                <span className="flex-1">
-                  <Bar value={0} of={missed.count} tone="quiet" />
-                </span>
-                <span className="t-meta text-ink-muted tabular-nums shrink-0">
-                  {missed.count} did not hit it
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : null}
-        <Link to={href(`f/${encodeURIComponent(card.signature)}/people`)} className="inline-block mt-5 t-body text-accent hover:underline">
-          All {card.peopleHit.length} {card.peopleHit.length === 1 ? "person" : "people"} who hit this →
-        </Link>
-      </section>
-    </>
+/**
+ * Which executions reported it, as a strip. The dots are the evidence for the state word in the
+ * header, and every cell says in text what its mark says in shape: the execution's number, the
+ * mark, and how many reports it stood for.
+ *
+ * **The number used to live in `title=`**, which is a tooltip on a hover-only surface: a keyboard
+ * reader could not reach it and a screen reader was never offered it (§6, "never colour alone").
+ * It is in the DOM now, and the mark beside it is `aria-hidden` because the two say the same
+ * thing and a reader should hear it once.
+ *
+ * **An execution that did not report it is a ring, and that is all it is.** The sentence beneath
+ * says so in words as well, because a strip of rings is exactly the picture somebody wants to read
+ * as "we fixed it" and the product cannot know that (ADR-0028).
+ */
+function AcrossExecutions({
+  card,
+  mode,
+}: {
+  card: ClusterDetail;
+  mode: "ephemeral" | "longitudinal";
+}) {
+  if (mode === "longitudinal") {
+    const words = stateOfCluster(card, mode, []);
+    return (
+      <Section title="Over this execution">
+        <Measure width="read">
+          <Text as="p" size="read" tone="soft">
+            {words.detail}
+          </Text>
+        </Measure>
+      </Section>
+    );
+  }
+
+  const seen = new Set(card.seenIn);
+  /**
+   * The screen's one lime appearance (§5.4, appearance 4): *the confirmed verdict's glyph*. The
+   * most recent execution whose replay came back `confirmed` — one execution, because "exactly
+   * one" is what the rule says, and the most recent one because that is the reading the reader
+   * came for.
+   */
+  const theOne = [...card.history]
+    .reverse()
+    .find((entry) => entry.reports > 0 && entry.verdict === "confirmed");
+
+  return (
+    <Section title="Across executions" trailing={`${seen.size} of ${card.history.length}`}>
+      <Stack gap={4} align="stretch">
+        <ul className="flex flex-wrap gap-4">
+          {card.history.map((entry) => (
+            <li key={entry.runId} className="flex flex-col items-center gap-1">
+              <Text size="meta" tone="muted">
+                <VisuallyHidden>execution </VisuallyHidden>
+                {entry.seq}
+              </Text>
+              <Dot
+                state={
+                  entry.reports === 0
+                    ? "absent"
+                    : entry.runId === theOne?.runId
+                      ? "theOne"
+                      : "present"
+                }
+                size="md"
+              />
+              <Text size="meta" tone={entry.reports === 0 ? "muted" : "ink"}>
+                {entry.reports}
+                <VisuallyHidden>{entry.reports === 1 ? " report" : " reports"}</VisuallyHidden>
+              </Text>
+            </li>
+          ))}
+        </ul>
+
+        <Measure width="read">
+          <Text as="p" size="read" tone="soft">
+            {seen.size === card.history.length
+              ? "Reported in every execution this simulation has had."
+              : `Reported in ${seen.size} of ${card.history.length} executions. An execution that did not report it is an absence, not a repair — the same complaint worded differently is a different key.`}
+          </Text>
+        </Measure>
+      </Stack>
+    </Section>
   );
 }

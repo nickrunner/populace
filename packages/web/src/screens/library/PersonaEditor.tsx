@@ -1,11 +1,41 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { blockedBecause, effectiveToolPolicy, type PersonaSpec, type ToolPolicy as ToolPolicyShape, type TraitSpec, type TraitValue } from "@populace/core/isomorphic";
+import type { PersonaSpec, ToolPolicy as ToolPolicyShape, TraitSpec, TraitValue } from "@populace/core/isomorphic";
 import { api, type TargetCheck } from "../../api.js";
 import { q } from "../../queries.js";
 import { useProject } from "../../context.jsx";
-import { Breadcrumb, Button, Card, Chip, Failed, Field, Input, Loading, Mono, NumberInput, Payload, Problem, Section, Select, TextArea, ToolName } from "../../components/ui.jsx";
+import {
+  Button,
+  Card,
+  ConfirmButton,
+  Field,
+  FieldGrid,
+  FieldWarning,
+  FormPane,
+  Input,
+  KeyValueEditor,
+  Measure,
+  Mono,
+  NumberInput,
+  PageHeader,
+  PayloadBlock,
+  Repeater,
+  SamplePreview,
+  ScaleField,
+  Section,
+  Select,
+  Skeleton,
+  SplitPage,
+  Stack,
+  StateBlock,
+  Text,
+  TextArea,
+  ToolPolicyEditor,
+  WhatWentWrong,
+  type PolicyTool,
+  type StateKind,
+} from "../../design/index.js";
 
 /**
  * The editor that decides whether any of this is worth reading.
@@ -15,6 +45,15 @@ import { Breadcrumb, Button, Card, Chip, Failed, Field, Input, Loading, Mono, Nu
  * that are easy to get wrong are shown rather than described — the tool policy is matched against
  * the target's actual tool list as you type, and the prompt the model will be handed is rendered
  * down the right by the runner's own code (product judge gap #6).
+ *
+ * Ported to the design system — ATOMIC-INVENTORY §6.3 row 23. `SplitPage` owns the two columns
+ * and `FormPane` — the form, the sticky `SaveBar` and the unsaved-changes guard that `FormPage`
+ * is also made of — owns the left one. What went with them: the `<input type="range">` and its
+ * `accent-[var(--color-accent)]` (now `ScaleField`), the second copy of `asList()` and the second
+ * implementation of the tool-policy merge rule (now `ToolPolicyEditor`, shared with the target
+ * editor), the `line-through opacity-50` that carried "blocked" as an opacity, the hand-rolled
+ * `grid-cols-[minmax(0,1fr)_minmax(0,1fr)]` and `sticky top-9`, and the `dirty` chip in the
+ * header — the flag itself is what the bar and the guard now run on.
  */
 
 type Spec = Omit<PersonaSpec, "id">;
@@ -47,6 +86,18 @@ const PATIENCE: Record<number, string> = {
 /** A goal phrased as an instruction to a tester rather than as an errand a person has. */
 const TESTER_WORDS = /\b(test|verify|validate|check that|ensure|assert|confirm that|reproduce|regression|qa)\b/i;
 
+const MODELS: readonly { value: string; label: string }[] = [
+  { value: "", label: "Whatever the project uses" },
+  { value: "claude-opus-5", label: "Opus 5 — the most capable, and the most expensive" },
+  { value: "claude-sonnet-5", label: "Sonnet 5 — a good default for the people" },
+  { value: "claude-haiku-4-5", label: "Haiku 4.5 — cheapest, for wide populations" },
+];
+
+const EFFORTS: readonly { value: string; label: string }[] = [
+  { value: "", label: "Whatever the project uses" },
+  ...["low", "medium", "high", "xhigh", "max"].map((effort) => ({ value: effort, label: effort })),
+];
+
 /** One draw from a trait spec. The real ones are drawn per person from the cohort's seed. */
 function draw(spec: TraitSpec): TraitValue {
   if (typeof spec !== "object") return spec;
@@ -77,6 +128,8 @@ export function PersonaEditor() {
   const [draft, setDraft] = useState<Spec>(EMPTY);
   const [loaded, setLoaded] = useState(false);
   const [dirty, setDirty] = useState(false);
+  /** A save has been asked for at least once, which is when the blockers become messages. */
+  const [attempted, setAttempted] = useState(false);
 
   useEffect(() => {
     if (loaded || !personas.isSuccess) return;
@@ -108,252 +161,447 @@ export function PersonaEditor() {
     },
   });
 
-  if (personas.isPending) return <Loading what="this persona" />;
-  if (personas.isError) return <Failed error={personas.error} />;
+  /** What the server would refuse, named here rather than carried by a dead button (§6). */
+  const blockers = {
+    name: draft.name === "",
+    role: draft.role === "",
+    backstory: draft.backstory === "",
+    goals: draft.goals.filter(Boolean).length === 0,
+  };
+  const blocked = blockers.name || blockers.role || blockers.backstory || blockers.goals;
 
-  return (
-    <>
-      <header className="mb-7 flex items-start justify-between gap-6">
-        <div>
-          <Breadcrumb items={[{ label: "Personas", to: href("library/personas") }, { label: existing?.spec.name ?? "New persona" }]} />
-          <h1 className="t-title mt-1">{draft.name || "New persona"}</h1>
-          {existing ? (
-            <p className="t-meta text-ink-muted mt-1">
-              <Mono className="text-[11px]">{existing.slug}</Mono> — the slug every person id in this persona's cohorts is built from. Renaming never moves it.
-            </p>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          {dirty ? <Chip>unsaved</Chip> : null}
-          <Button tone="go" onClick={() => save.mutate()} disabled={save.isPending || draft.name === "" || draft.role === "" || draft.backstory === "" || draft.goals.filter(Boolean).length === 0}>
-            {save.isPending ? "Saving…" : "Save"}
-          </Button>
-        </div>
-      </header>
+  // Both are `TraitSpec`: either one value for everybody, or a spec drawn from per person. They
+  // are read into consts because the narrowing has to survive a render prop, and `typeof` on a
+  // property does not reach inside a callback.
+  const patience = draft.patience;
+  const budget = draft.budgetUsd;
 
-      {save.isError ? <Problem>{save.error.message}</Problem> : null}
-      {remove.isError ? <Problem>{remove.error.message}</Problem> : null}
+  const state: StateKind | undefined = personas.isPending
+    ? "loading"
+    : personas.isError
+      ? "failed"
+      : undefined;
 
-      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-8 items-start">
-        <div>
-          <Section title="Who they are">
-            <Card className="p-4">
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Name" hint="The kind of person, not a person: “First-time visitor”, not “Dana”.">
-                  <Input value={draft.name} onChange={(v) => set("name", v)} placeholder="First-time visitor" />
-                </Field>
-                <Field label="Role">
-                  <Input value={draft.role} onChange={(v) => set("role", v)} placeholder="someone who just heard about this" />
-                </Field>
-              </div>
-              <Field label="Backstory" hint="Line two of their prompt. Why they turned up, in their own life's terms.">
-                <TextArea value={draft.backstory} onChange={(v) => set("backstory", v)} rows={3} placeholder="You keep your week in your head and it keeps falling out…" />
-              </Field>
-            </Card>
-          </Section>
+  const what = "this persona";
 
-          <Section title="What they came to do" sub="errands, not instructions">
-            <Card className="p-4">
-              {draft.goals.map((goal, i) => (
-                <div key={i} className="mb-3">
-                  <div className="flex items-start gap-2">
-                    <div className="flex-1">
-                      <Input value={goal} onChange={(v) => set("goals", draft.goals.map((g, j) => (j === i ? v : g)))} placeholder="Get this week's tasks written down somewhere you trust" />
-                    </div>
-                    <Button onClick={() => set("goals", draft.goals.filter((_, j) => j !== i))} title="Remove this goal">
-                      −
-                    </Button>
-                  </div>
-                  {TESTER_WORDS.test(goal) ? (
-                    <p className="t-meta text-medium mt-1">
-                      This reads like an instruction to a tester. People who are told to test a product find test results; people with an errand find what is actually in the way.
-                    </p>
-                  ) : null}
-                </div>
-              ))}
-              <Button onClick={() => set("goals", [...draft.goals, ""])}>+ Another goal</Button>
-            </Card>
-          </Section>
-
-          <Section title="What they will not do" sub="constraints, in their own voice">
-            <Card className="p-4">
-              {draft.constraints.map((constraint, i) => (
-                <div key={i} className="flex items-start gap-2 mb-3">
-                  <div className="flex-1">
-                    <Input value={constraint} onChange={(v) => set("constraints", draft.constraints.map((c, j) => (j === i ? v : c)))} placeholder="You will not hand over a credit card on a first visit" />
-                  </div>
-                  <Button onClick={() => set("constraints", draft.constraints.filter((_, j) => j !== i))} title="Remove this constraint">
-                    −
-                  </Button>
-                </div>
-              ))}
-              <Button onClick={() => set("constraints", [...draft.constraints, ""])}>+ Another constraint</Button>
-            </Card>
-          </Section>
-
-          <Section title="How much they will put up with">
-            <Card className="p-4">
-              {typeof draft.patience === "number" ? (
-                <Field label="Patience">
-                  <input
-                    type="range"
-                    min={1}
-                    max={5}
-                    step={1}
-                    value={draft.patience}
-                    onChange={(e) => set("patience", Number(e.target.value))}
-                    className="w-full accent-[var(--color-accent)]"
-                    aria-label="patience"
-                  />
-                  <p className="t-body text-ink-soft mt-1">{PATIENCE[asNumber(draft.patience, 3)]}</p>
-                </Field>
-              ) : (
-                <div className="mb-4">
-                  <div className="t-label text-ink-muted mb-1.5">Patience</div>
-                  <p className="t-body text-ink-soft">Drawn per person from a distribution, so a cohort of twelve holds twelve different tempers.</p>
-                  <Button onClick={() => set("patience", 3)}>Use one value for everybody instead</Button>
-                </div>
-              )}
-              {typeof draft.budgetUsd === "number" ? (
-                <Field label="What they would pay, a month" hint="Zero means they are not willing to pay for this kind of product, and the prompt says so.">
-                  <div className="w-40">
-                    <NumberInput value={draft.budgetUsd} onChange={(v) => set("budgetUsd", v)} step={5} />
-                  </div>
-                </Field>
-              ) : (
-                <div className="mb-4">
-                  <div className="t-label text-ink-muted mb-1.5">Budget</div>
-                  <p className="t-body text-ink-soft">Drawn per person from a distribution.</p>
-                </div>
-              )}
-            </Card>
-          </Section>
-
-          <Traits traits={draft.traits} onChange={(traits) => set("traits", traits)} />
-
-          <ToolPolicy
-            policy={draft.tools}
-            onChange={(tools) => set("tools", tools)}
-            projectKey={key}
-            targetId={project.simulations[0]?.target.id ?? null}
-            simulationSlug={project.simulations[0]?.slug ?? null}
+  const form = (
+    <FormPane
+      dirty={dirty}
+      saving={save.isPending}
+      savedAt={existing?.updatedAt ?? null}
+      onSave={() => {
+        setAttempted(true);
+        if (blocked) return;
+        save.mutate();
+      }}
+    >
+      <Stack gap={8}>
+        {save.isError ? (
+          <WhatWentWrong
+            says="Saving failed. Nothing here was written, and what is on this page is still yours to send again."
+            error={save.error}
           />
+        ) : null}
+        {remove.isError ? (
+          <WhatWentWrong
+            says="This persona was not removed. It is still here, and so is everything drawn from it."
+            error={remove.error}
+          />
+        ) : null}
 
-          <Section title="What they think with" sub="unset falls through to the project's model">
-            <Card className="p-4">
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Model">
-                  <Select
-                    value={draft.model.model ?? ""}
-                    onChange={(v) => set("model", { ...draft.model, ...(v === "" ? { model: undefined } : { model: v }) })}
-                    options={[
-                      { value: "", label: "Whatever the project uses" },
-                      { value: "claude-opus-5", label: "Opus 5 — the most capable, and the most expensive" },
-                      { value: "claude-sonnet-5", label: "Sonnet 5 — a good default for the people" },
-                      { value: "claude-haiku-4-5", label: "Haiku 4.5 — cheapest, for wide populations" },
-                    ]}
+        <Section title="Who they are">
+          <Card>
+            <Stack gap={6}>
+              <FieldGrid cols={2}>
+                <Field
+                  label="Name"
+                  hint="The kind of person, not a person: “First-time visitor”, not “Dana”."
+                  error={attempted && blockers.name ? "A persona needs a name." : undefined}
+                >
+                  {({ id, describedBy, invalid }) => (
+                    <Input
+                      id={id}
+                      describedBy={describedBy}
+                      invalid={invalid}
+                      value={draft.name}
+                      onChange={(v) => set("name", v)}
+                      placeholder="First-time visitor"
+                    />
+                  )}
+                </Field>
+                <Field
+                  label="Role"
+                  error={attempted && blockers.role ? "Say what kind of person this is." : undefined}
+                >
+                  {({ id, describedBy, invalid }) => (
+                    <Input
+                      id={id}
+                      describedBy={describedBy}
+                      invalid={invalid}
+                      value={draft.role}
+                      onChange={(v) => set("role", v)}
+                      placeholder="someone who just heard about this"
+                    />
+                  )}
+                </Field>
+              </FieldGrid>
+              <Field
+                label="Backstory"
+                hint="Line two of their prompt. Why they turned up, in their own life's terms."
+                error={
+                  attempted && blockers.backstory
+                    ? "Why did they turn up? Without this they are a role and nothing else."
+                    : undefined
+                }
+              >
+                {({ id, describedBy, invalid }) => (
+                  <TextArea
+                    id={id}
+                    describedBy={describedBy}
+                    invalid={invalid}
+                    value={draft.backstory}
+                    onChange={(v) => set("backstory", v)}
+                    rows={3}
+                    placeholder="You keep your week in your head and it keeps falling out…"
                   />
+                )}
+              </Field>
+            </Stack>
+          </Card>
+        </Section>
+
+        <Section title="What they came to do">
+          <Stack gap={4}>
+            <Measure width="read">
+              <Text as="p" size="read-sm" tone="soft">
+                Errands, not instructions. What they turned up to get done, in their own terms.
+              </Text>
+            </Measure>
+            <Card>
+              <Repeater
+                legend="Errands"
+                addLabel="Another errand"
+                minReason="A person comes here to do something, so there is always at least one."
+                onAdd={() => set("goals", [...draft.goals, ""])}
+                onRemove={(index) => set("goals", draft.goals.filter((_, j) => j !== index))}
+                items={draft.goals.map((goal, i) => ({
+                  id: String(i),
+                  label: `Errand ${String(i + 1)}`,
+                  fields: (
+                    <Field
+                      label="What they came to get done"
+                      warning={
+                        TESTER_WORDS.test(goal)
+                          ? "This reads like an instruction to a tester. People who are told to test a product find test results; people with an errand find what is actually in the way."
+                          : undefined
+                      }
+                      error={
+                        attempted && blockers.goals
+                          ? "Give them at least one errand to come here for."
+                          : undefined
+                      }
+                    >
+                      {({ id, describedBy, invalid }) => (
+                        <Input
+                          id={id}
+                          describedBy={describedBy}
+                          invalid={invalid}
+                          value={goal}
+                          onChange={(v) => set("goals", draft.goals.map((g, j) => (j === i ? v : g)))}
+                          placeholder="Get this week's tasks written down somewhere you trust"
+                        />
+                      )}
+                    </Field>
+                  ),
+                }))}
+              />
+            </Card>
+          </Stack>
+        </Section>
+
+        <Section title="What they will not do">
+          <Stack gap={4}>
+            <Measure width="read">
+              <Text as="p" size="read-sm" tone="soft">
+                Constraints, in their own voice — the things this person would not do, whatever
+                the product asks.
+              </Text>
+            </Measure>
+            <Card>
+              <Repeater
+                legend="Constraints"
+                addLabel="Another constraint"
+                min={0}
+                onAdd={() => set("constraints", [...draft.constraints, ""])}
+                onRemove={(index) => set("constraints", draft.constraints.filter((_, j) => j !== index))}
+                items={draft.constraints.map((constraint, i) => ({
+                  id: String(i),
+                  label: `Constraint ${String(i + 1)}`,
+                  fields: (
+                    <Field label="What they will not do">
+                      {({ id, describedBy, invalid }) => (
+                        <Input
+                          id={id}
+                          describedBy={describedBy}
+                          invalid={invalid}
+                          value={constraint}
+                          onChange={(v) =>
+                            set("constraints", draft.constraints.map((c, j) => (j === i ? v : c)))
+                          }
+                          placeholder="You will not hand over a credit card on a first visit"
+                        />
+                      )}
+                    </Field>
+                  ),
+                }))}
+              />
+            </Card>
+          </Stack>
+        </Section>
+
+        <Section title="How much they will put up with">
+          <Card>
+            <Stack gap={6}>
+              {typeof patience === "number" ? (
+                <ScaleField
+                  label="Patience"
+                  min={1}
+                  max={5}
+                  value={patience}
+                  onChange={(v) => set("patience", v)}
+                  describe={(v) => PATIENCE[v] ?? PATIENCE[asNumber(patience, 3)] ?? ""}
+                />
+              ) : (
+                <Stack gap={2} align="start">
+                  <Text size="label" tone="muted">
+                    Patience
+                  </Text>
+                  <Measure width="read">
+                    <Text as="p" size="read-sm" tone="soft">
+                      Drawn per person from a distribution, so a cohort of twelve holds twelve
+                      different tempers.
+                    </Text>
+                  </Measure>
+                  <Button variant="secondary" onClick={() => set("patience", 3)}>
+                    Use one value for everybody instead
+                  </Button>
+                </Stack>
+              )}
+
+              {typeof budget === "number" ? (
+                <Field
+                  label="What they would pay, a month"
+                  hint="Zero means they are not willing to pay for this kind of product, and the prompt says so."
+                >
+                  {({ id, describedBy, invalid }) => (
+                    <div className="w-40">
+                      <NumberInput
+                        id={id}
+                        describedBy={describedBy}
+                        invalid={invalid}
+                        value={budget}
+                        onChange={(v) => set("budgetUsd", v)}
+                        step={5}
+                      />
+                    </div>
+                  )}
+                </Field>
+              ) : (
+                <Stack gap={2} align="start">
+                  <Text size="label" tone="muted">
+                    Budget
+                  </Text>
+                  <Text as="p" size="read-sm" tone="soft">
+                    Drawn per person from a distribution.
+                  </Text>
+                </Stack>
+              )}
+            </Stack>
+          </Card>
+        </Section>
+
+        <Traits traits={draft.traits} onChange={(traits) => set("traits", traits)} />
+
+        <PersonaToolPolicy
+          policy={draft.tools}
+          onChange={(tools) => set("tools", tools)}
+          projectKey={key}
+          targetId={project.simulations[0]?.target.id ?? null}
+          simulationSlug={project.simulations[0]?.slug ?? null}
+        />
+
+        <Section title="What they think with">
+          <Stack gap={4}>
+            <Measure width="read">
+              <Text as="p" size="read-sm" tone="soft">
+                Left unset, both fall through to the project's own model.
+              </Text>
+            </Measure>
+            <Card>
+              <FieldGrid cols={2}>
+                <Field label="Model">
+                  {({ id, describedBy, invalid }) => (
+                    <Select
+                      id={id}
+                      describedBy={describedBy}
+                      invalid={invalid}
+                      value={draft.model.model ?? ""}
+                      onChange={(v) => set("model", { ...draft.model, ...(v === "" ? { model: undefined } : { model: v }) })}
+                      options={MODELS}
+                    />
+                  )}
                 </Field>
                 <Field label="Effort">
-                  <Select
-                    value={draft.model.effort ?? ""}
-                    onChange={(v) => set("model", { ...draft.model, ...(v === "" ? { effort: undefined } : { effort: v as NonNullable<Spec["model"]["effort"]> }) })}
-                    options={[{ value: "", label: "Whatever the project uses" }, ...["low", "medium", "high", "xhigh", "max"].map((effort) => ({ value: effort, label: effort }))]}
-                  />
+                  {({ id, describedBy, invalid }) => (
+                    <Select
+                      id={id}
+                      describedBy={describedBy}
+                      invalid={invalid}
+                      value={draft.model.effort ?? ""}
+                      onChange={(v) => set("model", { ...draft.model, ...(v === "" ? { effort: undefined } : { effort: v as NonNullable<Spec["model"]["effort"]> }) })}
+                      options={EFFORTS}
+                    />
+                  )}
                 </Field>
-              </div>
+              </FieldGrid>
+            </Card>
+          </Stack>
+        </Section>
+
+        {existing ? (
+          <Section title="Removing this persona">
+            <Card>
+              <Stack gap={4} align="start">
+                <Measure width="read">
+                  <Text as="p" size="read-sm" tone="soft">
+                    The cohort drawn from this persona goes with it, and its people leave the
+                    population. Where more than one cohort draws from it, removing it is refused —
+                    take those apart first. Executions already run keep what these people found;
+                    nobody new is drawn from it again.
+                  </Text>
+                </Measure>
+                <ConfirmButton
+                  title={`Remove ${draft.name || "this persona"}?`}
+                  body="The cohort drawn from it goes too, and its people leave the population. Executions already run keep their people, their visits and their findings."
+                  confirmLabel="Remove this persona"
+                  variant="danger"
+                  pending={remove.isPending}
+                  onConfirm={() => remove.mutate()}
+                >
+                  <Button variant="danger">Remove this persona</Button>
+                </ConfirmButton>
+              </Stack>
             </Card>
           </Section>
+        ) : null}
+      </Stack>
+    </FormPane>
+  );
 
-          {existing ? (
-            <Card className="p-4 mb-8">
-              <p className="t-body text-ink-soft mb-2">
-                Removing this persona takes its cohorts apart with it. Past executions keep what these people found; nobody new is drawn from it again.
-              </p>
-              <Button tone="stop" onClick={() => remove.mutate()} disabled={remove.isPending}>
-                Remove this persona
-              </Button>
-            </Card>
-          ) : null}
-        </div>
-
-        <PromptPreview projectKey={key} personaId={existing?.id ?? null} dirty={dirty} />
-      </div>
-    </>
+  return (
+    <SplitPage
+      header={
+        <PageHeader
+          title={draft.name || "New persona"}
+          crumbs={[{ label: "Personas", to: href("library/personas") }, { label: existing?.spec.name ?? "New persona" }]}
+          eyebrow="Persona"
+          meta={
+            existing === undefined
+              ? undefined
+              : [
+                  { key: "slug", node: <Mono size="code-sm">{existing.slug}</Mono> },
+                  {
+                    key: "slug-note",
+                    node: "the slug every person in this persona's cohorts is named from. Renaming never moves it.",
+                  },
+                ]
+          }
+        />
+      }
+      state={state}
+      loading={
+        <StateBlock
+          kind="loading"
+          what={what}
+          skeleton={<Skeleton variant="block" height={148} count={3} label={`Reading ${what}`} />}
+        />
+      }
+      error={
+        <StateBlock kind="failed" what={what} error={personas.error}>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              void personas.refetch();
+            }}
+          >
+            Try again
+          </Button>
+        </StateBlock>
+      }
+      left={form}
+      right={<PromptPreview projectKey={key} personaId={existing?.id ?? null} dirty={dirty} />}
+    />
   );
 }
 
 /** Traits are whatever this product needs them to be; the prompt prints them as `key=value`. */
 function Traits({ traits, onChange }: { traits: Spec["traits"]; onChange: (traits: Spec["traits"]) => void }) {
-  const [name, setName] = useState("");
   const entries = Object.entries(traits);
   const samples = useMemo(() => Array.from({ length: 5 }, () => entries.map(([trait, spec]) => `${trait}=${String(draw(spec))}`).join(", ")), [traits]);
 
   return (
-    <Section title="What tells them apart" sub="one line in the prompt, and a draw per person">
-      <Card className="p-4">
-        {entries.length === 0 ? <p className="t-body text-ink-muted italic mb-3">No traits. Everyone in a cohort is alike apart from their name and their detail line.</p> : null}
-        {entries.map(([trait, spec]) => (
-          <div key={trait} className="flex items-center gap-2 mb-2">
-            <Mono className="text-[12.5px] text-evidence w-40 shrink-0">{trait}</Mono>
-            {typeof spec === "object" ? (
-              <span className="t-body text-ink-soft flex-1">
-                {spec.distribution === "uniform" ? `anything from ${spec.min} to ${spec.max}` : `one of ${spec.values.map(String).join(", ")}`}
-              </span>
-            ) : (
-              <div className="flex-1">
-                <Input value={String(spec)} onChange={(v) => onChange({ ...traits, [trait]: v })} />
-              </div>
-            )}
-            <Button onClick={() => onChange(Object.fromEntries(entries.filter(([other]) => other !== trait)))} title={`Remove ${trait}`}>
-              −
-            </Button>
-          </div>
-        ))}
-        <div className="flex items-end gap-2 mt-3">
-          <div className="flex-1 max-w-[240px]">
-            <span className="t-label text-ink-muted block mb-1.5">Add a trait</span>
-            <Input value={name} onChange={setName} placeholder="device" mono />
-          </div>
-          <Button
-            onClick={() => {
-              if (name.trim() === "") return;
-              onChange({ ...traits, [name.trim()]: "" });
-              setName("");
-            }}
-          >
-            Add
-          </Button>
-        </div>
-        {entries.length > 0 ? (
-          <div className="mt-4 border-t border-rule pt-3">
-            <div className="t-label text-ink-muted mb-1.5">Five draws from this</div>
-            <ul>
-              {samples.map((sample, i) => (
-                <li key={i} className="t-meta text-ink-muted font-mono">
-                  {sample}
-                </li>
-              ))}
-            </ul>
-            <p className="t-meta text-ink-muted mt-1.5">
-              Examples of what the spec can produce. The real draws are made per person from the cohort's seed, so they stay the same between executions.
-            </p>
-          </div>
-        ) : null}
-      </Card>
+    <Section title="What tells them apart">
+      <Stack gap={4}>
+        <Measure width="read">
+          <Text as="p" size="read-sm" tone="soft">
+            One line in the prompt, and a draw per person.
+          </Text>
+        </Measure>
+        <Card>
+          <Stack gap={6}>
+            <KeyValueEditor
+              addLabel="Add a trait"
+              addPlaceholder="device"
+              empty="No traits. Everyone in a cohort is alike apart from their name and their detail line."
+              onAdd={(name) => onChange({ ...traits, [name]: "" })}
+              onRemove={(name) => onChange(Object.fromEntries(entries.filter(([other]) => other !== name)))}
+              rows={entries.map(([trait, spec]) => ({
+                key: trait,
+                value:
+                  typeof spec === "object" ? (
+                    <Text size="read-sm" tone="soft">
+                      {spec.distribution === "uniform"
+                        ? `anything from ${String(spec.min)} to ${String(spec.max)}`
+                        : `one of ${spec.values.map(String).join(", ")}`}
+                    </Text>
+                  ) : (
+                    <Input value={String(spec)} onChange={(v) => onChange({ ...traits, [trait]: v })} />
+                  ),
+              }))}
+            />
+
+            {entries.length > 0 ? (
+              <SamplePreview
+                label="Five draws from this"
+                samples={samples}
+                note="Examples of what the spec can produce. The real draws are made per person from the cohort's seed."
+              />
+            ) : null}
+          </Stack>
+        </Card>
+      </Stack>
     </Section>
   );
 }
 
-/** The destructive setting in the words the two forms use for it, for saying which one wins. */
-const DESTRUCTIVE_WORDS: Record<Spec["tools"]["destructive"], string> = {
-  allow: "let them do it",
-  confirm: "ask them to confirm first",
-  deny: "never",
-};
-
-/** Allow and deny are globs, and a glob is only as good as what it matches. So: show the matches. */
-function ToolPolicy({
+/**
+ * The persona's own policy, matched against the target's tool list — and against the target's own
+ * policy underneath it, which is the honest part: a glob here can only ever take more away.
+ *
+ * The merge and the list are `ToolPolicyEditor`, shared with the target editor (§6.3 rows 22–23).
+ * What stays here is what only a screen can do: the three reads it is matched against.
+ */
+function PersonaToolPolicy({
   policy,
   onChange,
   projectKey,
@@ -371,76 +619,50 @@ function ToolPolicy({
   const targets = useQuery(q.targets(projectKey));
   const check = useMutation({ mutationFn: () => api.checkTarget(projectKey, targetId ?? ""), onSuccess: setChecked });
 
-  const tools = checked?.tools.map((tool) => tool.name) ?? preflight.data?.target.tools ?? [];
+  // Two sources, and they are not the same list: a check is everything the target exposes, while
+  // pre-flight's is what the merged policy already leaves. The check is preferred for that reason,
+  // and asking for one is the control beside the list.
+  const tools: PolicyTool[] =
+    checked?.tools.map((tool) => ({ name: tool.name, description: tool.description, destructive: tool.destructive })) ??
+    preflight.data?.target.tools.map((name) => ({ name })) ??
+    [];
+
   // The TARGET's policy is the floor this persona stands on. Matching the globs below on their own
   // would show a tool as reachable that the target forbids — which is the one thing this panel
   // exists to be honest about.
-  const targetPolicy = targets.data?.items.find((target) => target.id === targetId)?.tools;
-  const effective = effectiveToolPolicy(...(targetPolicy ? [targetPolicy, policy] : [policy]));
-  const asList = (value: string): string[] =>
-    value
-      .split(/[,\n]/)
-      .map((pattern) => pattern.trim())
-      .filter(Boolean);
+  const targetPolicy = targets.data?.items.find((target) => target.id === targetId)?.tools ?? null;
 
   return (
-    <Section title="What they are allowed to touch" sub="globs, matched against the target's own tool list">
-      <Card className="p-4">
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Allow" hint="Empty means everything the target exposes.">
-            <Input value={policy.allow.join(", ")} onChange={(v) => onChange({ ...policy, allow: asList(v) })} placeholder="list_*, search_*" mono />
-          </Field>
-          <Field label="Deny" hint="Always wins over allow.">
-            <Input value={policy.deny.join(", ")} onChange={(v) => onChange({ ...policy, deny: asList(v) })} placeholder="delete_*" mono />
-          </Field>
-        </div>
-        <Field
-          label="Tools the target marks destructive"
-          // The runner takes the STRICTER of the two, so a persona that says "let them do it"
-          // against a target that says "confirm" gets confirm — and a screen that showed the
-          // persona's own word alone would read as if agents will act freely when they will not.
-          hint={
-            effective.destructive === policy.destructive
-              ? "A persona may be stricter than the target, never looser."
-              : `The target says "${DESTRUCTIVE_WORDS[effective.destructive]}", and the stricter of the two is what happens — so this is what they will actually do, whatever is picked here.`
-          }
-        >
-          <Select
-            value={policy.destructive}
-            onChange={(v) => onChange({ ...policy, destructive: v as Spec["tools"]["destructive"] })}
-            options={[
-              { value: "confirm", label: "Ask them to confirm first (recommended)" },
-              { value: "allow", label: "Let them do it" },
-              { value: "deny", label: "Never" },
-            ]}
-          />
-        </Field>
-
-        <div className="border-t border-rule pt-3">
-          <div className="flex items-baseline gap-3 mb-2">
-            <span className="t-label text-ink-muted">What that leaves them</span>
-            {targetId === null ? null : (
-              <Button onClick={() => check.mutate()} disabled={check.isPending}>
-                {check.isPending ? "Asking the target…" : "Ask the target again"}
+    <Section title="What they are allowed to touch">
+      <Stack gap={4}>
+        <Measure width="read">
+          <Text as="p" size="read-sm" tone="soft">
+            Globs, matched against the target's own tool list.
+          </Text>
+        </Measure>
+        <ToolPolicyEditor
+          policy={policy}
+          onChange={onChange}
+          floor={targetPolicy}
+          tools={tools.length === 0 ? null : tools}
+          allowPlaceholder="list_*, search_*"
+          denyPlaceholder="delete_*"
+          destructiveHint="A persona may be stricter than the target, never looser."
+          whenUnknown="No tool list to match against yet. Connect a target, and this fills in."
+          action={
+            targetId === null ? undefined : (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => check.mutate()}
+                pending={check.isPending}
+              >
+                Ask the target again
               </Button>
-            )}
-          </div>
-          {tools.length === 0 ? (
-            <p className="t-body text-ink-muted italic">No tool list to match against yet. Connect a target, and this fills in.</p>
-          ) : (
-            <p className="flex flex-wrap gap-x-3 gap-y-1.5">
-              {tools.map((tool) => (
-                <span key={tool} className={blockedBecause(tool, effective) === null ? "" : "line-through opacity-50"}>
-                  <ToolName name={tool} />
-                </span>
-              ))}
-            </p>
-          )}
-          {targetPolicy && (targetPolicy.allow.length > 0 || targetPolicy.deny.length > 0) ? (
-            <p className="t-meta text-ink-muted mt-2">The target has a policy of its own, and it is applied first: this persona can take more away, never put anything back.</p>
-          ) : null}
-        </div>
-      </Card>
+            )
+          }
+        />
+      </Stack>
     </Section>
   );
 }
@@ -450,27 +672,41 @@ function PromptPreview({ projectKey, personaId, dirty }: { projectKey: string; p
   const preview = useQuery({ ...q.personaPreview(projectKey, personaId ?? ""), enabled: personaId !== null });
 
   return (
-    <div className="sticky top-9">
-      <div className="flex items-baseline gap-3 mb-3">
-        <h2 className="t-section">What the model is told</h2>
-        {dirty ? <span className="t-meta text-medium">unsaved edits are not in this yet</span> : null}
-      </div>
+    <Section title="What the model is told">
       {personaId === null ? (
-        <Card className="p-4">
-          <p className="t-body text-ink-muted italic">Save this persona and the prompt it produces is rendered here, by the same code the runner uses.</p>
-        </Card>
+        <StateBlock kind="empty" what="the prompt">
+          Save this persona and the prompt it produces is rendered here, by the same code the
+          runner uses.
+        </StateBlock>
       ) : preview.isPending ? (
-        <Loading what="the prompt" />
+        <StateBlock
+          kind="loading"
+          what="the prompt"
+          skeleton={<Skeleton variant="block" height={320} label="Reading the prompt" />}
+        />
       ) : preview.isError ? (
-        <Failed error={preview.error} />
+        <StateBlock kind="failed" what="the prompt" error={preview.error}>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              void preview.refetch();
+            }}
+          >
+            Try again
+          </Button>
+        </StateBlock>
       ) : (
-        <>
-          <Payload>{preview.data.text}</Payload>
-          <p className="t-meta text-ink-muted mt-2">
-            A person's own name and their detail line go in at the top of this, and their memory and account arrive in the first message of each visit.
-          </p>
-        </>
+        <Stack gap={2}>
+          {dirty ? <FieldWarning>Unsaved edits are not in this yet.</FieldWarning> : null}
+          <PayloadBlock caption="The prompt" value={preview.data.text} maxLines={48} />
+          <Measure width="read">
+            <Text as="p" size="meta" tone="muted">
+              A person's own name and their detail line go in at the top of this, and their memory
+              and account arrive in the first message of each visit.
+            </Text>
+          </Measure>
+        </Stack>
       )}
-    </div>
+    </Section>
   );
 }

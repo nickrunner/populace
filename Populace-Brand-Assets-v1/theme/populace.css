@@ -1,0 +1,49 @@
+/* Populace v1. Semantic status colors extend the original five brand colors. */
+@font-face { font-family: "Space Grotesk"; src: url("../fonts/SpaceGrotesk-Variable.ttf") format("truetype"); font-weight: 300 700; font-style: normal; font-display: swap; }
+:root {
+  --populace-ink: #202823;
+  --populace-paper: #F4F1E9;
+  --populace-forest: #254B3E;
+  --populace-signal: #D7F56B;
+  --populace-clay: #C46D51;
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+}
+:root, [data-theme="light"] {
+  --color-background: #F4F1E9;
+  --color-surface: #FFFFFF;
+  --color-text: #202823;
+  --color-text-muted: #566259;
+  --color-border: #CBD2C7;
+  --color-primary: #254B3E;
+  --color-on-primary: #F4F1E9;
+  --color-accent: #D7F56B;
+  --color-on-accent: #202823;
+  --color-focus: #254B3E;
+  --color-error: #A33132;
+  --color-on-error: #FFFFFF;
+  --color-warning: #785600;
+  --color-success: #2D6345;
+  --color-info: #285C88;
+}
+[data-theme="dark"] {
+  --color-background: #202823;
+  --color-surface: #2C3730;
+  --color-text: #F4F1E9;
+  --color-text-muted: #BCC9BC;
+  --color-border: #526357;
+  --color-primary: #D7F56B;
+  --color-on-primary: #202823;
+  --color-accent: #254B3E;
+  --color-on-accent: #F4F1E9;
+  --color-focus: #D7F56B;
+  --color-error: #FF9A93;
+  --color-on-error: #202823;
+  --color-warning: #E8CE7A;
+  --color-success: #A6D9A9;
+  --color-info: #A5CFFF;
+}

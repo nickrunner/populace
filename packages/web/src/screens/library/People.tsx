@@ -1,12 +1,47 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
 import { costOf, priceFor } from "@populace/core/isomorphic";
 import { api, type CohortView, type Settings } from "../../api.js";
 import { q } from "../../queries.js";
 import { useProject } from "../../context.jsx";
-import { people, usd, usd4 } from "../../format.js";
-import { Bar, Button, Card, Empty, Failed, Loading, Mono, PageHeader, Problem, Section, Select, Stat, Stepper } from "../../components/ui.jsx";
+import { people, plural } from "../../format.js";
+import {
+  AlertDialog,
+  Button,
+  Card,
+  CardFooter,
+  CohortCapsule,
+  CostEstimate,
+  costBasisOf,
+  Field,
+  FieldGrid,
+  Inline,
+  JobProgress,
+  Ledger,
+  LedgerRow,
+  Link,
+  MetaLine,
+  MetaSentence,
+  Money,
+  Mono,
+  PageHeader,
+  RosterLattice,
+  Section,
+  Select,
+  Skeleton,
+  Spacer,
+  SplitPage,
+  Stack,
+  Stat,
+  StateBlock,
+  Stepper,
+  Text,
+  WhatWentWrong,
+  visitPlanOf,
+  type LatticeDot,
+  type MetaFact,
+  type StateKind,
+} from "../../design/index.js";
 
 /**
  * The composition screen (SPEC sketch 4): cohorts on the left, what they add up to on the right.
@@ -15,6 +50,35 @@ import { Bar, Button, Card, Empty, Failed, Loading, Mono, PageHeader, Problem, S
  * while there is one of them it is a concept with no payoff — so it stays implicit and unnamed
  * until a second one exists, at which point the switcher appears and the word starts to mean
  * something (SPEC §7.2).
+ *
+ * **Ported to the design system** — ATOMIC-INVENTORY §6.3, row 18. `SplitPage` owns the split;
+ * `grid-cols-[1fr_1fr] gap-6`, `sticky top-9` and `max-w-[320px]` are gone with it, along with
+ * the template's own answer to the thing none of those had: below 1000px it stacks with the
+ * total **above** the list, which is what a narrow reader wants first.
+ *
+ * **The bars are gone, because the bar is the people** (DESIGN-SYSTEM §1.2 M4). Each cohort is a
+ * `CohortCapsule` — a stadium whose *length* is its headcount, with one dot per person inside
+ * it — so the left column is the composition drawn at its own scale rather than a column of
+ * proportion bars a reader has to convert back into people. "Altogether" is the same population
+ * as one `RosterLattice`: every person in the project, four rows high, at the mark's ratio.
+ * Everybody is `provisional`, the grammar's word for *this has not happened yet*, because a cast
+ * that has not been sent anywhere has been nowhere (§8.6, and Preflight's own reading of it).
+ *
+ * **The writer's progress is the `JobProgress` organism** (§6.3 row 18, "two `JobProgress`
+ * implementations unify"). They had not: this screen and `Cohort` each kept a local
+ * `WritingProgress`, and the two had already drifted on something a reader can see — one hid the
+ * meter on `total === 0` and the other on `total === null || total === 0`, one took the first
+ * non-empty label across several jobs and the other read a single job's. The organism takes both
+ * shapes, and this screen hands it the jobs it started at once.
+ *
+ * **Removing a cohort is destructive and says so first.** It goes through the same `AlertDialog`
+ * that removing a persona does on `Personas`, because it is the same act from the other end: the
+ * population lets go, the people are archived, and executions that have already run keep naming
+ * them. A `Tooltip` is not a confirmation (§7.4).
+ *
+ * Nothing here promises what an execution will produce. The estimate is the `CostEstimate`
+ * organism, which names its own basis and says outright that it is a range, not a bill
+ * (ADR-0028, §7.3).
  */
 
 /**
@@ -39,6 +103,48 @@ function priceOfWriting(people: number, settings: Settings | undefined): number 
  * size and no rows at all, and counting rows would call twelve people nought of anything.
  */
 const withoutDetails = (cohort: CohortView): number => Math.max(0, cohort.size - cohort.generated.model - cohort.generated.authored);
+
+/**
+ * One dot per person in a cohort, none of whom has been anywhere yet.
+ *
+ * Nobody is named here — this screen has the headcount and not the roster, and the cohort's own
+ * page is where the names live — so a dot is labelled by the cohort it belongs to. The lattice
+ * folds and then gives way to a meter past its ladder's rungs, so a cohort of nine hundred draws
+ * as honestly as a cohort of nine.
+ */
+function castOf(cohort: CohortView): readonly LatticeDot[] {
+  return Array.from({ length: cohort.size }, (_, index) => ({
+    id: `${cohort.slug}#${String(index)}`,
+    state: "provisional" as const,
+    label: `somebody in ${cohort.name}`,
+  }));
+}
+
+/**
+ * What removing a cohort actually does, said before it happens.
+ *
+ * The same act reached from the other end — removing the persona a cohort is drawn from, on
+ * `Personas` — has gone through an `AlertDialog` naming the consequence since wave 1, and this
+ * end of it had a `Tooltip` and a quiet button. Destructiveness is a property of the act, not of
+ * the screen it is pressed on (§7.4), so both ends now say the same thing in the same shape.
+ *
+ * It promises only what the server does: the population lets go of the cohort, the cohort's people
+ * are archived rather than deleted, and executions that have already run keep naming them
+ * (`store.deleteCohort` archives; `control.ts` detaches the population first).
+ */
+function consequence(cohort: CohortView): string {
+  if (cohort.size === 0) {
+    return `Nobody is in ${cohort.name} today, so nothing else in this project moves. Executions that have already run keep their people, their visits and their findings.`;
+  }
+  return `${people(cohort.size)} leave the population. They are kept on record, and executions that have already run keep their visits and their findings.`;
+}
+
+/** How often this cohort comes back, in words. Zero is the simulation's own cadence. */
+function cadenceOf(cohort: CohortView): string {
+  return cohort.cadence?.every === undefined
+    ? "comes back on the simulation's cadence"
+    : `comes back every ${String(Math.round(cohort.cadence.every / 1000))}s`;
+}
 
 export function People() {
   const { key, project, href } = useProject();
@@ -95,202 +201,348 @@ export function People() {
     onSuccess: setWatching,
   });
 
-  if (cohorts.isPending || populations.isPending) return <Loading what="the people" />;
-  if (cohorts.isError) return <Failed error={cohorts.error} />;
-  if (populations.isError) return <Failed error={populations.error} />;
+  const rosterError = resize.error ?? drop.error;
 
-  const rows = cohorts.data.items;
-  const pops = populations.data.items;
+  const addErrorId = useId();
+  const writeErrorId = useId();
+
+  const state: StateKind | undefined =
+    cohorts.isError || populations.isError
+      ? "failed"
+      : cohorts.isPending || populations.isPending
+        ? "loading"
+        : undefined;
+
+  const rows = cohorts.data?.items ?? [];
+  const pops = populations.data?.items ?? [];
   const headcount = rows.reduce((sum, cohort) => sum + cohort.size, 0);
   const unwritten = rows.reduce((sum, cohort) => sum + withoutDetails(cohort), 0);
   const unwrittenIn = rows.filter((cohort) => withoutDetails(cohort) > 0).map((cohort) => cohort.id);
   const writingPrice = priceOfWriting(unwritten, settings.data);
-  const perVisit = estimate.data?.perWakeUsd;
   const visitsEach = priced?.visitsPerPerson ?? null;
-  const plannedVisits = visitsEach === null ? headcount : headcount * visitsEach;
   // Simulations that send THIS population, not every simulation in the project: one that sends a
   // different set of people is not a use of these.
   const populationId = pops[0]?.id;
   const usedBy = populationId === undefined ? 0 : project.simulations.filter((simulation) => simulation.population.id === populationId).length;
   const available = personas.data?.items ?? [];
+  const everyone = rows.flatMap(castOf);
 
   return (
-    <>
-      <PageHeader
-        title="The people"
-        lede="Everyone who visits the target, grouped into cohorts. A cohort is N people on one persona; each of them has a name and a life of their own and keeps both between executions."
-      />
-
-      {resize.isError ? <Problem>{resize.error.message}</Problem> : null}
-      {drop.isError ? <Problem>{drop.error.message}</Problem> : null}
-      {write.isError ? <Problem>{write.error.message}</Problem> : null}
-
-      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-6 items-start">
-        <div>
-          <Section title="Cohorts" sub="click one to meet the people in it">
+    <SplitPage
+      header={
+        <PageHeader
+          title="The people"
+          lede={
+            <>
+              Everyone who visits the target, grouped into cohorts. A cohort is N people on one
+              persona; each of them has a name and a life of their own and keeps both between
+              executions.{" "}
+              {/*
+                Three of this screen's words — cohort, persona, person — divide one job between
+                them, and getting the division wrong is the most common way to misread this page.
+                The sentence above already explains it in passing; this is where that explanation
+                goes on, at a stable anchor, without a second paragraph of chrome on the screen.
+              */}
+              <Link to="/concepts#cohort">What a cohort owns, and what a persona does</Link>
+            </>
+          }
+          meta={
+            rows.length === 0
+              ? undefined
+              : [
+                  { key: "people", node: people(headcount) },
+                  { key: "cohorts", node: plural(rows.length, "cohort") },
+                  { key: "unwritten", node: unwritten === 0 ? null : `${String(unwritten)} without details` },
+                ]
+          }
+        />
+      }
+      state={state}
+      loading={
+        <StateBlock
+          kind="loading"
+          what="the people"
+          skeleton={<Skeleton variant="row" count={4} height={96} label="Reading the people" />}
+        />
+      }
+      error={<StateBlock kind="failed" what="the people" error={cohorts.error ?? populations.error} />}
+      left={
+        // `trailing` is a FACT on the far right of the rule, never an instruction: a row that
+        // opens is an affordance the row itself carries, not a caption above the ledger.
+        <Section title="Cohorts" trailing={rows.length === 0 ? undefined : people(headcount)}>
+          <Stack gap={6}>
             {rows.length === 0 ? (
-              <Card className="p-4">
-                <Empty>No cohorts yet. Take a persona and say how many of them go.</Empty>
-              </Card>
+              <StateBlock kind="empty" what="the cohorts">
+                No cohorts yet. Take a persona and say how many of them go.
+              </StateBlock>
             ) : (
-              <Card className="divide-y divide-rule">
-                {rows.map((cohort) => (
+              <Ledger>
+                {rows.map((cohort, index) => (
                   <CohortRow
                     key={cohort.id}
                     cohort={cohort}
+                    ordinal={index + 1}
                     to={href(`library/people/${encodeURIComponent(cohort.slug)}`)}
-                    onSize={(size) => resize.mutate({ id: cohort.id, size })}
-                    onDrop={() => drop.mutate(cohort.id)}
+                    onSize={(size) => {
+                      resize.mutate({ id: cohort.id, size });
+                    }}
+                    onDrop={() => {
+                      drop.mutate(cohort.id);
+                    }}
                     busy={resize.isPending || drop.isPending}
                   />
                 ))}
-              </Card>
+              </Ledger>
             )}
-            <div className="flex items-end gap-2 mt-3">
-              <div className="flex-1 max-w-[320px]">
-                <Select
-                  value={adding}
-                  onChange={setAdding}
-                  options={[{ value: "", label: "Add a cohort of…" }, ...available.map((persona) => ({ value: persona.id, label: persona.spec.name }))]}
-                />
-              </div>
-              <Button onClick={() => add.mutate(adding)} disabled={adding === "" || add.isPending}>
-                Add a cohort
-              </Button>
-            </div>
-            {add.isError ? <Problem>{add.error.message}</Problem> : null}
-          </Section>
-        </div>
 
-        <div className="sticky top-9">
-          {/* "Altogether", not "This population": the bars below are every cohort in the project,
-              and there is no switcher yet, so with a second population the panel would be titled
-              after one set of people while describing another. */}
+            {rosterError === null ? null : (
+              <WhatWentWrong
+                says="Nothing changed. The cohorts above are as they were."
+                error={rosterError}
+              />
+            )}
+
+            <Card>
+              <Stack gap={4}>
+                <FieldGrid cols={2} align="end">
+                  <Field label="Add a cohort" hint="A persona, and how many of them go. They start as one.">
+                    {({ id, describedBy, invalid }) => (
+                      <Select
+                        id={id}
+                        describedBy={describedBy}
+                        invalid={invalid}
+                        value={adding}
+                        onChange={setAdding}
+                        placeholder="Choose a persona"
+                        options={available.map((persona) => ({ value: persona.id, label: persona.spec.name }))}
+                      />
+                    )}
+                  </Field>
+                  <Inline gap={2} align="center">
+                    <Button
+                      variant="primary"
+                      onClick={() => {
+                        add.mutate(adding);
+                      }}
+                      disabled={adding === "" || add.isPending}
+                      pending={add.isPending}
+                      aria-describedby={add.isError ? addErrorId : undefined}
+                    >
+                      Add a cohort
+                    </Button>
+                  </Inline>
+                </FieldGrid>
+
+                {add.isError ? (
+                  <WhatWentWrong id={addErrorId} says="No cohort was added." error={add.error} />
+                ) : null}
+              </Stack>
+            </Card>
+          </Stack>
+        </Section>
+      }
+      right={
+        <Stack gap={12}>
+          {/* "Altogether", not "This population": the lattice below is every cohort in the
+              project, and there is no switcher yet, so with a second population the panel
+              would be titled after one set of people while describing another. */}
           <Section title="Altogether">
-            <Card className="p-5">
-              <Stat label="People" value={headcount} sub={`${rows.length} ${rows.length === 1 ? "cohort" : "cohorts"}`} />
-              <div className="mt-5 flex flex-col gap-2.5">
-                {rows.map((cohort) => (
-                  <div key={cohort.id}>
-                    <div className="flex items-baseline gap-2">
-                      <Mono className="text-[11.5px] text-evidence flex-1 truncate">{cohort.slug}</Mono>
-                      <span className="t-meta text-ink-muted tabular-nums">{cohort.size}</span>
-                    </div>
-                    <div className="mt-1">
-                      <Bar value={cohort.size} of={Math.max(1, headcount)} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <p className="t-meta text-ink-muted mt-4">
-                {pops.length > 1
-                  ? `These cohorts are shared out between ${pops.length} populations.`
-                  : usedBy === 0
-                    ? "No simulation sends them anywhere yet."
-                    : `Used by ${usedBy} ${usedBy === 1 ? "simulation" : "simulations"}.`}
-              </p>
+            <Card pad="roomy">
+              <Stack gap={6}>
+                <Stat label="People" value={headcount} sub={plural(rows.length, "cohort")} />
+
+                {headcount === 0 ? null : (
+                  <Stack gap={2} align="start">
+                    <RosterLattice
+                      dots={everyone}
+                      sentence={`${people(headcount)} composed across ${plural(rows.length, "cohort")}, none of them sent anywhere yet.`}
+                    />
+                    <Text size="ui" tone="muted">
+                      {`${people(headcount)} composed across ${plural(rows.length, "cohort")}, none of them sent anywhere yet.`}
+                    </Text>
+                  </Stack>
+                )}
+
+                <MetaSentence>
+                  {pops.length > 1
+                    ? `These cohorts are shared out between ${String(pops.length)} populations.`
+                    : usedBy === 0
+                      ? "No simulation sends them anywhere yet."
+                      : `Used by ${plural(usedBy, "simulation")}.`}
+                </MetaSentence>
+              </Stack>
             </Card>
           </Section>
 
           <Section title="About what it costs">
-            <Card className="p-4">
-              {perVisit === undefined ? (
-                <p className="t-body text-ink-soft">Nothing has run here yet, so there is no price to work from. The first execution is what teaches this figure.</p>
-              ) : (
-                <p className="t-body text-ink-soft">
-                  {visitsEach === null ? (
-                    <>
-                      <span className="tabular-nums">{headcount}</span> visits a round → about <span className="tabular-nums">{usd(perVisit * headcount)}</span> each time they all come back.
-                    </>
-                  ) : (
-                    <>
-                      {visitsEach} visits each → <span className="tabular-nums">{plannedVisits}</span> visits → about <span className="tabular-nums">{usd(perVisit * plannedVisits)}</span>
-                      {estimate.data === undefined ? null : (
-                        <>
-                          {" "}
-                          (between {usd(estimate.data.lowUsd)} and {usd(estimate.data.highUsd)} for the simulation as it stands)
-                        </>
-                      )}
-                      .
-                    </>
-                  )}{" "}
-                  <span className="t-meta text-ink-muted">
-                    {estimate.data?.basis === "history" ? `From your last ${estimate.data.sampleSize} visits, at ${usd4(perVisit)} each.` : `From a default, at ${usd4(perVisit)} a visit.`}
-                  </span>
-                </p>
-              )}
+            <Card>
+              {/*
+                The fourth of four hand-rolled estimates (§6.3 row 18), and the one that had a
+                `basisOf()` verbatim in `Preflight`. The organism says it once. The range is
+                left off deliberately: the server's ends are drawn around the population the
+                priced simulation sends, and this column counts every cohort in the project — a
+                range around the wrong total is worse than no range at all.
+              */}
+              <CostEstimate
+                layout="sentence"
+                people={headcount}
+                cohorts={rows.length}
+                plan={
+                  estimate.data === undefined
+                    ? visitsEach === null
+                      ? { kind: "round" }
+                      : { kind: "capped", each: visitsEach }
+                    : visitPlanOf(estimate.data, visitsEach)
+                }
+                basis={costBasisOf(estimate.data)}
+              />
 
-              {unwritten > 0 ? (
-                <div className="mt-4 border-t border-rule pt-3">
-                  <p className="t-body text-ink">
-                    {unwritten} of {headcount} {headcount === 1 ? "person has" : "people have"} no written details yet.
-                  </p>
-                  <p className="t-body text-ink-soft mt-1">
-                    They have names and they work exactly as they are. What the model adds is a sentence about each of them, which is what makes twelve first-timers twelve different people rather
-                    than one repeated twelve times.
-                  </p>
-                  <div className="flex items-center gap-3 mt-2">
-                    <Button tone="go" onClick={() => write.mutate(unwrittenIn)} disabled={write.isPending || running}>
-                      {running ? "Writing them…" : "Have the AI write them"}
-                    </Button>
-                    {writingPrice === null ? null : <span className="t-meta text-ink-muted">roughly {usd4(writingPrice)}, counted against today's ceiling</span>}
-                  </div>
-                  {told.map((line, i) => (
-                    <p key={i} className="t-meta text-ink-muted mt-2">
-                      {line}
-                    </p>
-                  ))}
-                </div>
-              ) : null}
+              {unwritten === 0 ? null : (
+                <CardFooter>
+                  <Stack gap={3}>
+                    <Text size="read" as="p">
+                      {`${String(unwritten)} of ${String(headcount)} ${headcount === 1 ? "person has" : "people have"} no written details yet.`}
+                    </Text>
+                    <Text size="read" tone="soft" as="p">
+                      They have names and they work exactly as they are. What the model adds is
+                      a sentence about each of them, which is what makes twelve first-timers
+                      twelve different people rather than one repeated twelve times.
+                    </Text>
+
+                    <Inline gap={3} align="center" wrap>
+                      <Button
+                        variant="primary"
+                        onClick={() => {
+                          write.mutate(unwrittenIn);
+                        }}
+                        disabled={write.isPending || running}
+                        pending={write.isPending}
+                        aria-describedby={write.isError ? writeErrorId : undefined}
+                      >
+                        {running ? "Writing them…" : "Have the AI write them"}
+                      </Button>
+                      {writingPrice === null ? null : (
+                        <Text size="meta" tone="muted">
+                          <>
+                            roughly <Money usd={writingPrice} precision={4} />, counted against
+                            today&rsquo;s ceiling
+                          </>
+                        </Text>
+                      )}
+                    </Inline>
+
+                    {watching.length === 0 ? null : (
+                      <JobProgress jobs={jobs.data ?? []} label="Writing them" />
+                    )}
+
+                    {told.map((line) => (
+                      <Text key={line} size="meta" tone="muted" as="p">
+                        {line}
+                      </Text>
+                    ))}
+
+                    {write.isError ? (
+                      <WhatWentWrong
+                        id={writeErrorId}
+                        says="Nobody was written. The cohorts are unchanged."
+                        error={write.error}
+                      />
+                    ) : null}
+                  </Stack>
+                </CardFooter>
+              )}
             </Card>
           </Section>
 
-          {pops.length > 1 ? (
-            <section id="populations" className="mb-8 scroll-mt-8">
-              <div className="flex items-baseline gap-3 mb-3">
-                <h2 className="t-section">Populations</h2>
-                <span className="t-meta text-ink-muted">a simulation sends one of these</span>
-              </div>
-              <Card className="divide-y divide-rule">
-                {pops.map((population) => (
-                  <div key={population.id} className="p-3.5 flex items-baseline gap-3">
-                    <span className="t-body text-ink flex-1">{population.name}</span>
-                    <span className="t-meta text-ink-muted tabular-nums">{people(population.members.reduce((sum, member) => sum + member.count, 0))}</span>
-                  </div>
+          {pops.length <= 1 ? null : (
+            <Section id="populations" title="Populations" trailing={plural(pops.length, "population")}>
+              <Ledger>
+                {pops.map((population, index) => (
+                  <LedgerRow
+                    key={population.id}
+                    density="tight"
+                    stub={
+                      <Text size="meta" tone="muted">
+                        {index + 1}
+                      </Text>
+                    }
+                  >
+                    <Inline gap={3} align="baseline">
+                      <Text size="ui">{population.name}</Text>
+                      <Spacer />
+                      <Text size="meta" tone="muted">
+                        {people(population.members.reduce((sum, member) => sum + member.count, 0))}
+                      </Text>
+                    </Inline>
+                  </LedgerRow>
                 ))}
-              </Card>
-            </section>
-          ) : null}
-        </div>
-      </div>
-    </>
+              </Ledger>
+            </Section>
+          )}
+        </Stack>
+      }
+    />
   );
 }
 
-function CohortRow({ cohort, to, onSize, onDrop, busy }: { cohort: CohortView; to: string; onSize: (size: number) => void; onDrop: () => void; busy: boolean }) {
+/**
+ * One cohort: the capsule you can open, the headcount you can change, and the facts about it.
+ *
+ * The capsule carries the name, the drawing and the headcount, so the row adds only what the
+ * capsule does not know — which persona they are drawn from, what they are called on disk, how
+ * often they come back, and how many of them nobody has written yet.
+ */
+function CohortRow({
+  cohort,
+  ordinal,
+  to,
+  onSize,
+  onDrop,
+  busy,
+}: {
+  cohort: CohortView;
+  ordinal: number;
+  to: string;
+  onSize: (size: number) => void;
+  onDrop: () => void;
+  busy: boolean;
+}) {
+  const unwritten = withoutDetails(cohort);
+  const facts: readonly MetaFact[] = [
+    { key: "persona", node: cohort.personaName },
+    { key: "slug", node: <Mono size="code-sm">{cohort.slug}</Mono> },
+    { key: "cadence", node: cadenceOf(cohort) },
+    { key: "unwritten", node: unwritten === 0 ? null : `${String(unwritten)} without details` },
+  ];
+
   return (
-    <div className="p-3.5">
-      <div className="flex items-baseline gap-3">
-        <Link to={to} className="t-body text-ink hover:text-accent">
-          {cohort.name}
-        </Link>
-        <Mono className="text-[11px] text-ink-muted">{cohort.slug}</Mono>
-        <span className="flex-1" />
-        <span className="t-meta text-ink-muted">{cohort.personaName}</span>
-      </div>
-      <div className="flex items-center gap-3 mt-2">
-        <span className="t-meta text-ink-muted tabular-nums w-20">
-          {cohort.size} {cohort.size === 1 ? "person" : "people"}
-        </span>
-        <Stepper value={cohort.size} onChange={onSize} max={999} />
-        <span className="t-meta text-ink-muted flex-1">
-          {cohort.cadence?.every === undefined ? "comes back on the simulation's cadence" : `every ${Math.round(cohort.cadence.every / 1000)}s`}
-          {withoutDetails(cohort) > 0 ? ` · ${withoutDetails(cohort)} without details` : ""}
-        </span>
-        <Button onClick={onDrop} disabled={busy} title="Take this cohort out of the population">
-          Remove
-        </Button>
-      </div>
-    </div>
+    <LedgerRow
+      stub={
+        <Text size="meta" tone="muted">
+          {ordinal}
+        </Text>
+      }
+    >
+      <Stack gap={3}>
+        <Inline gap={3} align="center" wrap>
+          <CohortCapsule name={cohort.name} dots={castOf(cohort)} total={cohort.size} to={to} />
+          <Spacer />
+          <Stepper label={`People in ${cohort.name}`} value={cohort.size} onChange={onSize} max={999} />
+          <AlertDialog
+            title={`Remove ${cohort.name}?`}
+            body={consequence(cohort)}
+            confirmLabel="Remove this cohort"
+            onConfirm={onDrop}
+            trigger={
+              <Button variant="quiet" size="sm" disabled={busy}>
+                Remove
+              </Button>
+            }
+          />
+        </Inline>
+
+        <MetaLine facts={facts} />
+      </Stack>
+    </LedgerRow>
   );
 }

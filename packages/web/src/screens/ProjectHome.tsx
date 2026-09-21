@@ -1,15 +1,56 @@
-import { Link } from "react-router-dom";
 import type { ProjectOverview, SimulationSummary } from "../api.js";
 import { useProject } from "../context.jsx";
-import { people, usd, when } from "../format.js";
-import { Card, Chip, Empty, PageHeader, Section, Severity, Stat } from "../components/ui.jsx";
-import { SimulationActions } from "../components/SimulationActions.jsx";
+import { people, plural } from "../format.js";
 import { GetStarted } from "./GetStarted.jsx";
+import {
+  Badge,
+  Chip,
+  DocumentPage,
+  Dot,
+  Heading,
+  Inline,
+  Ledger,
+  LedgerRow,
+  Link,
+  Measure,
+  MetaLine,
+  Money,
+  PageHeader,
+  RelativeTime,
+  Ring,
+  Section,
+  SeverityStack,
+  SeverityTag,
+  SimulationActions,
+  Spacer,
+  Stack,
+  Stat,
+  StatGroup,
+  StateBlock,
+  Text,
+  type MetaFact,
+} from "../design/index.js";
 
 /**
  * Level one of three (SPEC §7.1): simulations and their headline results, and NOT ONE PERSON'S
  * NAME. The payload has nowhere to put one — `ProjectOverviewView` carries headcounts and cohort
  * slugs — so this screen cannot break the rule without asking for more than it was given.
+ *
+ * **Ported to the design system** — ATOMIC-INVENTORY §6.3, row 14. A document-class screen
+ * (DESIGN-SYSTEM §5.3): `DocumentPage` owns the reading column, `StatGroup` the three figures
+ * that used to be a `grid-cols-3`, `Section` the two bands, and `Ledger` the simulations, which
+ * were a stack of cards with no column to read down. The hand-rolled statement measure
+ * (`max-w-[34ch] leading-[1.25]`) is `Measure width="statement"`, which is the same 34ch as a
+ * token.
+ *
+ * **The stub says whether anything has ever happened**, in the mark's own grammar and the same
+ * spelling the projects list uses: a filled dot for a simulation that has been run, a ring for
+ * one that has not. Neither is a promise about what the next execution will find.
+ *
+ * **The run controls come from the system too.** The screen used to render a legacy
+ * `SimulationActions` that drew its primary button as `bg-accent text-white border-accent`,
+ * which is white on lime at 1.22:1: "Send them in" was illegible on the project's most
+ * important screen. The organism, whose every variant is written against a token, is the fix.
  */
 
 /** What this project is, in one sentence assembled from what is actually in it. */
@@ -20,7 +61,7 @@ function headline(project: ProjectOverview): string {
   if (sims === 0) return `Nothing has been set up in ${project.name} yet.`;
   if (running > 0) return `${running === 1 ? "One simulation is" : `${running} simulations are`} running right now.`;
   const ran = project.simulations.filter((s) => s.latest !== null).length;
-  if (ran === 0) return `${sims === 1 ? "One simulation is" : `${sims} simulations are`} ready to go and ${sims === 1 ? "has" : "have"} never been run.`;
+  if (ran === 0) return `${sims === 1 ? "One simulation is" : `${sims} simulations are`} ready to go, and nobody has gone yet.`;
   return open === 0
     ? `Nothing has shown up in more than one simulation.`
     : `${open === 1 ? "One problem has" : `${open} problems have`} shown up in more than one simulation.`;
@@ -38,139 +79,249 @@ export function ProjectHome() {
   const zero = !configured || (!everRan && project.simulations.length <= 1);
 
   return (
-    <>
-      <PageHeader
-        title={project.name}
-        lede={project.description || undefined}
-        trail={
-          <>
-            {project.counts.simulations} {project.counts.simulations === 1 ? "simulation" : "simulations"} · {people(project.counts.people)} configured · {usd(project.costLast7dUsd)} this week
-          </>
-        }
-      />
-
+    <DocumentPage
+      header={
+        <PageHeader
+          title={project.name}
+          lede={project.description || undefined}
+          meta={[
+            { key: "simulations", node: plural(project.counts.simulations, "simulation") },
+            { key: "people", node: `${people(project.counts.people)} configured` },
+            {
+              key: "spend",
+              node: (
+                <>
+                  <Money usd={project.costLast7dUsd} /> this week
+                </>
+              ),
+            },
+          ]}
+        />
+      }
+    >
       {zero ? (
         <GetStarted />
       ) : (
-        <>
-          <p className="t-display mb-8 max-w-[34ch] leading-[1.25]">{headline(project)}</p>
+        <Stack gap={12}>
+          <Measure width="statement" as="div">
+            <Text size="statement" as="p">
+              {headline(project)}
+            </Text>
+          </Measure>
 
-          <div className="grid grid-cols-3 gap-6 mb-9 pb-8 border-b border-rule">
-            <Stat label="Simulations" value={project.counts.simulations} sub={`${project.counts.cohorts} ${project.counts.cohorts === 1 ? "cohort" : "cohorts"} of people between them`} />
-            <Stat label="People configured" value={project.counts.people} sub={`${project.counts.personas} personas`} />
-            <Stat label="Spent today" value={usd(project.spentTodayUsd)} sub={`of the ${usd(project.dailyCeilingUsd)} daily ceiling`} />
-          </div>
+          <StatGroup cols={3} ruled>
+            <Stat
+              label="Simulations"
+              value={project.counts.simulations}
+              sub={`${plural(project.counts.cohorts, "cohort")} between them`}
+            />
+            <Stat
+              label="People configured"
+              value={project.counts.people}
+              sub={plural(project.counts.personas, "persona")}
+            />
+            <Stat
+              label="Spent today"
+              value={<Money usd={project.spentTodayUsd} />}
+              sub={
+                <>
+                  of the <Money usd={project.dailyCeilingUsd} /> daily ceiling
+                </>
+              }
+            />
+          </StatGroup>
 
-          <Section title="Simulations" sub="each one is a population, a target and a way of running them">
-            <div className="flex flex-col gap-3">
-              {project.simulations.map((simulation) => (
-                <SimulationCard key={simulation.id} simulation={simulation} />
-              ))}
-              {project.simulations.length === 0 ? (
-                <Card className="p-4">
-                  <Empty>No simulations yet.</Empty>
-                </Card>
-              ) : null}
-            </div>
-            <Link to={href("s/new")} className="inline-block mt-3 t-body text-accent hover:underline">
-              New simulation
-            </Link>
+          <Section
+            title="Simulations"
+            trailing={plural(project.counts.simulations, "simulation")}
+            actions={<Link to={href("s/new")}>New simulation</Link>}
+          >
+            {project.simulations.length === 0 ? (
+              <StateBlock kind="empty" what="this project's simulations">
+                No simulations yet. One is a population, a target and a way of sending them.
+              </StateBlock>
+            ) : (
+              <Ledger>
+                {project.simulations.map((simulation) => (
+                  <SimulationRow key={simulation.id} simulation={simulation} />
+                ))}
+              </Ledger>
+            )}
           </Section>
 
           {/* The roll-up across simulations, which presupposes two of them. With one, "nothing has
               turned up in two simulations yet" is a sentence about the product's own machinery. */}
           {project.simulations.length > 1 ? (
-            <section id="problems" className="mb-8 scroll-mt-8">
-              <div className="flex items-baseline gap-3 mb-3">
-                <h2 className="t-section">Seen in more than one simulation</h2>
-                <span className="t-meta text-ink-muted">the same problem, wherever it has shown up</span>
-              </div>
+            <Section
+              id="problems"
+              title="Seen in more than one simulation"
+              trailing={plural(project.crossSimulation.length, "problem")}
+            >
               {project.crossSimulation.length === 0 ? (
-                <Card className="p-4">
-                  <Empty>Nothing has turned up in two simulations yet.</Empty>
-                </Card>
+                <StateBlock kind="empty" what="problems seen in more than one simulation">
+                  Nothing has turned up in two simulations yet.
+                </StateBlock>
               ) : (
-                <Card className="divide-y divide-rule">
+                <Ledger>
                   {project.crossSimulation.map((problem) => (
-                    <div key={problem.signature} className="p-3.5 flex items-baseline gap-3">
-                      <Severity value={problem.severity} kind={problem.kind} />
-                      <div className="flex-1 min-w-0">
-                        <div className="t-body text-ink">{problem.title}</div>
-                        <div className="t-meta text-ink-muted">
-                          {problem.peopleHit} {problem.peopleHit === 1 ? "person" : "people"} hit it
-                          {problem.triage === null ? "" : ` · marked ${problem.triage.state.replace("-", " ")}`}
-                        </div>
-                      </div>
-                      {/* One link per simulation it showed up in: the same signature, read where it was
-                          reported, because the evidence for it is that execution's. */}
-                      <div className="t-meta shrink-0 flex gap-3">
-                        {problem.simulations.map((simulation) => (
-                          <Link
-                            key={simulation.id}
-                            to={href(`s/${encodeURIComponent(simulation.id)}/f/${encodeURIComponent(problem.signature)}`)}
-                            className="text-accent hover:underline"
-                          >
-                            {simulation.name}
-                          </Link>
-                        ))}
-                      </div>
-                    </div>
+                    <LedgerRow
+                      key={problem.signature}
+                      stub={<SeverityStack level={problem.severity} />}
+                    >
+                      <Stack gap={1}>
+                        <Inline gap={3} align="baseline" wrap>
+                          <SeverityTag level={problem.severity} kind={problem.kind} />
+                          <Text size="finding" as="span">
+                            {problem.title}
+                          </Text>
+                        </Inline>
+
+                        <MetaLine facts={incidenceOf(problem)} />
+
+                        {/* One link per simulation it showed up in: the same signature, read
+                            where it was reported, because the evidence for it is that
+                            execution's. */}
+                        <Inline gap={3} wrap>
+                          {problem.simulations.map((simulation) => (
+                            <Link
+                              key={simulation.id}
+                              size="meta"
+                              to={href(
+                                `s/${encodeURIComponent(simulation.id)}/f/${encodeURIComponent(problem.signature)}`,
+                              )}
+                            >
+                              {simulation.name}
+                            </Link>
+                          ))}
+                        </Inline>
+                      </Stack>
+                    </LedgerRow>
                   ))}
-                </Card>
+                </Ledger>
               )}
-            </section>
+            </Section>
           ) : null}
-        </>
+        </Stack>
       )}
-    </>
+    </DocumentPage>
   );
 }
 
-const MODE_WORDS: Record<string, string> = { ephemeral: "EPHEMERAL", longitudinal: "LONGITUDINAL" };
+/**
+ * The short form of the triage decisions, for a line with no room for the full sentence. "fixed"
+ * survives here because a human asserted it about their own product, and the line prints it as
+ * *marked fixed* so the assertion keeps its author (§7.3).
+ */
+const TRIAGE_WORDS: Record<string, string> = {
+  accepted: "accepted",
+  fixed: "fixed",
+  "wont-fix": "won't fix",
+  duplicate: "a duplicate",
+};
 
-function SimulationCard({ simulation }: { simulation: SimulationSummary }) {
+/** How far a problem reached, and what somebody has already decided about it. */
+function incidenceOf(problem: ProjectOverview["crossSimulation"][number]): readonly MetaFact[] {
+  const word = problem.triage === null ? undefined : TRIAGE_WORDS[problem.triage.state];
+  return [
+    { key: "people", node: `${people(problem.peopleHit)} hit it` },
+    { key: "where", node: `in ${plural(problem.simulations.length, "simulation")}` },
+    ...(word === undefined ? [] : [{ key: "triage", node: `marked ${word}` }]),
+  ];
+}
+
+/**
+ * One simulation: what it is made of, where it got to, and the one action it is asking for. The
+ * row is not itself a link — it carries the controls that start and stop an execution, and a
+ * button inside an anchor is a target a reader cannot aim at — so the name is the link, exactly
+ * as it was before the port.
+ */
+function SimulationRow({ simulation }: { simulation: SimulationSummary }) {
   const { href } = useProject();
   const base = `${href()}/s/${encodeURIComponent(simulation.slug)}`;
+  const running = simulation.status === "running";
 
   return (
-    <Card className="p-4">
-      <div className="flex items-baseline gap-3">
-        <Link to={base} className="t-section hover:text-accent">
-          {simulation.name}
-        </Link>
-        <span className="t-label text-ink-muted">{MODE_WORDS[simulation.mode] ?? simulation.mode}</span>
-        <span className="flex-1" />
-        {simulation.status === "running" ? <Chip tone="live">● running</Chip> : null}
-        {simulation.status === "paused" ? <Chip>paused</Chip> : null}
-        <span className="t-meta text-ink-muted tabular-nums">
-          {simulation.latest === null ? "never run" : `execution ${simulation.latest.seq} · ${when(simulation.latest.startedAt)}`}
-        </span>
-      </div>
-
-      <p className="t-body text-ink-soft mt-1">
-        {simulation.population.name} ({people(simulation.population.people)}, {simulation.population.cohorts} {simulation.population.cohorts === 1 ? "cohort" : "cohorts"}) → {simulation.target.name}
-        {simulation.mode === "ephemeral" && simulation.visitsPerPerson !== null ? ` · ${simulation.visitsPerPerson} visits each` : " · until you stop it"}
-      </p>
-
-      <p className="t-meta text-ink-muted mt-1.5 tabular-nums">
-        {simulation.latest === null ? (
-          "nothing has been found yet, because nobody has gone"
+    <LedgerRow
+      stub={
+        simulation.latest === null ? (
+          <Ring size="sm" className="md:ml-auto" />
         ) : (
-          <>
-            {simulation.confirmed} confirmed
-            {simulation.newSinceLast > 0 ? ` · ${simulation.newSinceLast} new since the last one` : ""}
-            {simulation.fixedSinceLast > 0 ? ` · ${simulation.fixedSinceLast} not reported this time` : ""} · {usd(simulation.costUsd)}
-          </>
-        )}
-      </p>
+          <Dot size="sm" className="md:ml-auto" />
+        )
+      }
+    >
+      <Stack gap={2}>
+        <Inline gap={3} align="baseline" wrap>
+          <Heading level={3} size="name">
+            <Link to={base}>{simulation.name}</Link>
+          </Heading>
+          <Badge variant="mode">{simulation.mode}</Badge>
+          {running ? <Chip tone="live">running</Chip> : null}
+          {simulation.status === "paused" ? <Chip>paused</Chip> : null}
+          <Spacer />
+          <Text size="meta" tone="muted">
+            {simulation.latest === null ? (
+              "never sent"
+            ) : (
+              <>
+                execution {simulation.latest.seq},{" "}
+                <RelativeTime at={simulation.latest.startedAt} mode="absolute" />
+              </>
+            )}
+          </Text>
+        </Inline>
 
-      <div className="flex items-end gap-2 mt-3">
-        <SimulationActions simulation={simulation} />
-        <span className="flex-1" />
-        <Link to={simulation.status === "running" ? `${base}/live` : base} className="t-body text-accent hover:underline pb-1.5">
-          {simulation.status === "running" ? "Live →" : "Results →"}
-        </Link>
-      </div>
-    </Card>
+        <MetaLine facts={shapeOf(simulation)} />
+        <MetaLine facts={resultsOf(simulation)} />
+
+        <Inline gap={3} align="center" wrap>
+          <SimulationActions simulation={simulation} />
+          <Spacer />
+          <Link to={running ? `${base}/live` : base}>
+            {running ? "Watch it live" : "Read the results"}
+          </Link>
+        </Inline>
+      </Stack>
+    </LedgerRow>
   );
+}
+
+/** Who goes, where they go, and for how long — the line that says what this simulation *is*. */
+function shapeOf(simulation: SimulationSummary): readonly MetaFact[] {
+  return [
+    { key: "population", node: simulation.population.name },
+    {
+      key: "headcount",
+      node: `${people(simulation.population.people)} in ${plural(simulation.population.cohorts, "cohort")}`,
+    },
+    { key: "target", node: `visits ${simulation.target.name}` },
+    {
+      key: "mode",
+      node:
+        simulation.mode === "ephemeral" && simulation.visitsPerPerson !== null
+          ? `${plural(simulation.visitsPerPerson, "visit")} each`
+          : "until you stop it",
+    },
+  ];
+}
+
+/**
+ * What has come back. A problem missing from the newest execution is reported as an absence and
+ * never as a repair (ADR-0028, DESIGN-SYSTEM §7.3) — "not reported this time" is the whole
+ * claim, and the word "fixed" belongs to the person who typed it into triage.
+ */
+function resultsOf(simulation: SimulationSummary): readonly MetaFact[] {
+  if (simulation.latest === null) {
+    return [{ key: "nothing", node: "nothing has been found yet, because nobody has gone" }];
+  }
+  return [
+    { key: "confirmed", node: `${simulation.confirmed} confirmed` },
+    ...(simulation.newSinceLast > 0
+      ? [{ key: "new", node: `${simulation.newSinceLast} new since the last one` }]
+      : []),
+    ...(simulation.fixedSinceLast > 0
+      ? [{ key: "absent", node: `${simulation.fixedSinceLast} not reported this time` }]
+      : []),
+    { key: "cost", node: <Money usd={simulation.costUsd} /> },
+  ];
 }

@@ -147,7 +147,7 @@ export function staleAfter(event: { type: string; runId: string | null; projectI
   // at tool-call rate — and the live screen, which skips trace rows for exactly this reason, had
   // its own care undone from here.
   if (event.type === "trace.appended") return out;
-  // A project-scoped key is spelled with whatever the URL said — `/p/tasklet` or `/p/prj_9f2…`,
+  // A project-scoped key is spelled with whatever the URL said — `/p/my-app` or `/p/prj_9f2…`,
   // both of which resolve to the same project — and an event only knows the id. Matching on the
   // id alone would therefore invalidate nothing at all on the common path, so these prefixes stop
   // at the query NAME. One browser holds one project at a time, so the over-invalidation is one

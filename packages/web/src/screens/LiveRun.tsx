@@ -1,30 +1,79 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
-import { api, openEventStream, type ParticipantLive, type LiveEvent } from "../api.js";
+
+import { api, openEventStream, type LiveEvent, type ParticipantLive, type RunLive } from "../api.js";
 import { keys, q } from "../queries.js";
 import { useSimulation } from "../context.jsx";
-import { Avatar, Button, Card, Chip, Empty, Failed, Loading, Mono, Problem, Section } from "../components/ui.jsx";
-import { clock, payloadNumber, payloadText, usd4 } from "../format.js";
-
-/** How long it has been going, in the words a person would use rather than a duration string. */
-function elapsed(startedAt: string | null, endedAt: string | null): string {
-  if (startedAt === null) return "—";
-  const seconds = Math.max(0, Math.round(((endedAt ? new Date(endedAt).getTime() : Date.now()) - new Date(startedAt).getTime()) / 1000));
-  if (seconds < 90) return `${seconds}s`;
-  const minutes = Math.round(seconds / 60);
-  return minutes < 90 ? `${minutes} min` : `${(minutes / 60).toFixed(1)} hours`;
-}
-
-function countdown(nextWakeAt: string | null): string {
-  if (nextWakeAt === null) return "not coming back";
-  const seconds = Math.round((new Date(nextWakeAt).getTime() - Date.now()) / 1000);
-  if (seconds <= 0) return "due now";
-  return seconds < 90 ? `back in ${seconds}s` : `back in ${Math.round(seconds / 60)} min`;
-}
+import { lasted, payloadNumber, payloadText, people, plural } from "../format.js";
+import {
+  Badge,
+  Button,
+  Card,
+  Chip,
+  Disclosure,
+  Inline,
+  InstrumentPage,
+  Link,
+  LiveActivityFeed,
+  Meter,
+  MetaLine,
+  Money,
+  Mono,
+  PageHeader,
+  PersonLiveCard,
+  Section,
+  SeverityTag,
+  Skeleton,
+  Stack,
+  StateBlock,
+  Text,
+  Toast,
+  type FeedEvent,
+  type FeedEventKind,
+  type MetaFact,
+  type PersonLiveState,
+  type SeverityLevel,
+  type StateKind,
+} from "../design/index.js";
 
 /** How many cards a cohort shows before it folds. Past a dozen, a grid stops being readable. */
 const FOLD_AT = 12;
+
+/**
+ * The store's event vocabulary, translated into the product's (ADR-0032). A wake is a visit
+ * everywhere a person can read it, and `trace.appended` is the instrument rather than the news —
+ * it lives on the visit screen, so it never reaches the feed at all.
+ */
+function feedKind(type: LiveEvent["type"]): FeedEventKind | null {
+  switch (type) {
+    case "wake.started":
+      return "visit.started";
+    case "wake.ended":
+      return "visit.ended";
+    case "trace.appended":
+      return null;
+    default:
+      return type;
+  }
+}
+
+const SEVERITIES = ["critical", "high", "medium", "low"] as const;
+
+/** A severity word off the wire, narrowed without a cast: anything else is not a severity. */
+function severityOf(word: string): SeverityLevel | null {
+  for (const level of SEVERITIES) if (level === word) return level;
+  return null;
+}
+
+/** What the screen is called, which is the execution's resting state in a word. */
+function headingOf(run: RunLive, abandoned: boolean): string {
+  if (run.status === "running" || run.status === "pending") return run.mode === "longitudinal" ? "Going" : "Running";
+  if (run.status === "paused") return abandoned ? "Stopped when populace was closed" : "Paused";
+  if (run.status === "killed") return "Stopped";
+  if (run.status === "failed") return "Failed";
+  return "Finished";
+}
 
 /**
  * Watching an execution happen. The screen renders from `GET /runs/:id/live`, which is derived
@@ -32,10 +81,20 @@ const FOLD_AT = 12;
  * stream on top of that only moves it forward: every row in the feed is an event-log row, and a
  * dropped connection resumes from its cursor rather than losing the gap (ADR-0026).
  *
- * Two things here are mode-aware (SPEC §4.1). The controls: a longitudinal execution is PAUSED,
- * because it is a life and stopping it would end it; an ephemeral one is STOPPED, because it was
- * always going to end. And the resting state: a run whose process died is `paused` with reason
- * `process-ended`, which is not a failure and must not read like one.
+ * Instrument-class (DESIGN-SYSTEM §5.3): the full page width, `t-ui` chrome, and three instruments
+ * — the run-progress `Meter` in the template's toolbar band, the grid of `PersonLiveCard`s under
+ * their cohorts, and the `LiveActivityFeed`. The feed owns its own scroll and its own freshness
+ * mark, so the `max-h-[26rem]` box and the eleven hand-written event renderings are gone, and the
+ * four mutation-error strips that never cleared are four dismissible `Toast`s in the one region
+ * `AppShell` mounts.
+ *
+ * Three things here are mode-aware or state-aware, and all three are §6.3 row 25's own words.
+ * The controls: a longitudinal execution is PAUSED, because it is a life and stopping it would
+ * end it; an ephemeral one is STOPPED, because it was always going to end. The meter: an
+ * ephemeral execution has a planned number of visits and a longitudinal one is unbounded by
+ * definition, so it gets no progress bar rather than a bar against an invented denominator. And
+ * the resting state: a run whose process died is `paused` with reason `process-ended`, which is
+ * not a failure and must not read like one.
  */
 export function LiveRun({ runId }: { runId: string }) {
   const queries = useQueryClient();
@@ -63,13 +122,6 @@ export function LiveRun({ runId }: { runId: string }) {
     return close;
   }, [runId, opened, queries]);
 
-  // A card's countdown has to tick even when nothing arrives.
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
   const refresh = async (): Promise<void> => {
     await queries.invalidateQueries();
   };
@@ -86,135 +138,294 @@ export function LiveRun({ runId }: { runId: string }) {
     [feed],
   );
 
-  if (live.isPending) return <Loading what="the execution" />;
-  if (live.isError) return <Failed error={live.error} />;
-
   const run = live.data;
-  const going = run.status === "running" || run.status === "pending";
-  const here = run.participants.filter((a) => a.status === "here");
+  const going = run !== undefined && (run.status === "running" || run.status === "pending");
+  const abandoned = run !== undefined && run.status === "paused" && run.pauseReason === "process-ended";
   const busy = stop.isPending || pause.isPending || resume.isPending || round.isPending;
-  const abandoned = run.status === "paused" && run.pauseReason === "process-ended";
+  const here = (run?.participants ?? []).filter((person) => person.status === "here");
   const cohortNames = new Map((cohorts.data?.items ?? []).map((cohort) => [cohort.cohortSlug, cohort.name]));
   // The feed says who, not what kind of who. A cohort of twelve first-timers is twelve people, and
   // twelve rows all reading `first-timer` name a template where the product has a cast. The roster
   // is already on this screen and the events carry the participant id, so the join costs nothing.
-  const names = new Map(run.participants.map((person) => [person.participantId, person.name]));
+  const names = new Map((run?.participants ?? []).map((person) => [person.participantId, person.name]));
 
-  const heading = going
-    ? run.mode === "longitudinal"
-      ? "Going"
-      : "Running"
-    : run.status === "paused"
-      ? abandoned
-        ? "Stopped when populace was closed"
-        : "Paused"
-      : run.status === "killed"
-        ? "Stopped"
-        : run.status === "failed"
-          ? "Failed"
-          : "Finished";
+  // §5.4 fixes which element earns this screen's one lime: the person who most recently filed.
+  // Nothing on the roster records when somebody filed, but the feed does, so the mark is read off
+  // the newest `finding.filed` row rather than invented.
+  const latestFiler = rows.find((event) => event.type === "finding.filed");
+  const theOne = latestFiler === undefined ? null : payloadText(latestFiler, "agentId");
+
+  const events: FeedEvent[] = rows.flatMap((event) => {
+    const kind = feedKind(event.type);
+    return kind === null
+      ? []
+      : [
+          {
+            id: `${event.seq}`,
+            kind,
+            at: event.at,
+            sentence: sentenceOf(event, names),
+            // Freshness is painted by the feed and faded out over 900ms; a row is fresh while it
+            // is younger than that fade. The live query re-polls, so the flag clears itself
+            // without this screen owning a timer.
+            fresh: Date.now() - new Date(event.at).getTime() < 900,
+          },
+        ];
+  });
+
+  // The four acts this screen offers, and what each one says when it does not land. The title is
+  // OUR sentence about what failed; the machine's own words are quoted beneath it rather than
+  // paraphrased (DESIGN-SYSTEM §4.3, §7.4).
+  const failures: { key: string; title: string; error: Error | null; clear: () => void }[] = [
+    { key: "stop", title: "Could not stop this execution", error: stop.error, clear: () => stop.reset() },
+    { key: "pause", title: "Could not pause this execution", error: pause.error, clear: () => pause.reset() },
+    { key: "resume", title: "Could not pick this execution back up", error: resume.error, clear: () => resume.reset() },
+    { key: "round", title: "Could not send another round", error: round.error, clear: () => round.reset() },
+  ];
+
+  const state: StateKind | undefined = live.isError ? "failed" : run === undefined ? "loading" : undefined;
+  const heading = run === undefined ? "Live" : headingOf(run, abandoned);
+
+  const meta: MetaFact[] =
+    run === undefined
+      ? []
+      : [
+          {
+            key: "lasted",
+            node:
+              run.startedAt === null ? (
+                "not started yet"
+              ) : going ? (
+                `going for ${lasted(run.startedAt, null)}`
+              ) : (
+                `ran for ${lasted(run.startedAt, run.endedAt)}`
+              ),
+          },
+          {
+            key: "visits",
+            node:
+              run.mode === "longitudinal"
+                ? `${plural(run.visitsDone, "visit")} so far`
+                : `${String(run.visitsDone)} of ${String(run.visitsPlanned)} visits done`,
+          },
+          { key: "cost", node: <Money usd={run.costUsd} precision={4} /> },
+          { key: "findings", node: `${plural(run.findings, "finding")} filed` },
+        ];
+
+  const controls =
+    run === undefined ? null : going ? (
+      <Inline gap={2} align="center">
+        {run.mode === "ephemeral" ? (
+          <Button
+            variant="secondary"
+            pending={round.isPending}
+            disabled={busy}
+            onClick={() => {
+              round.mutate();
+            }}
+          >
+            Send one more round
+          </Button>
+        ) : null}
+        {run.mode === "longitudinal" ? (
+          <Button
+            variant="secondary"
+            pending={pause.isPending}
+            disabled={busy}
+            onClick={() => {
+              pause.mutate();
+            }}
+          >
+            Pause
+          </Button>
+        ) : (
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() => {
+              stop.mutate("drain");
+            }}
+          >
+            Let them finish, then stop
+          </Button>
+        )}
+        <Button
+          variant="danger"
+          disabled={busy}
+          onClick={() => {
+            stop.mutate("now");
+          }}
+        >
+          Stop everything now
+        </Button>
+      </Inline>
+    ) : run.status === "paused" ? (
+      <Button
+        variant="primary"
+        pending={resume.isPending}
+        disabled={busy}
+        onClick={() => {
+          resume.mutate();
+        }}
+      >
+        Pick it back up
+      </Button>
+    ) : (
+      <Link size="ui" to={href()}>
+        Read what they found
+      </Link>
+    );
 
   return (
-    <div>
-      <header className="mb-7 flex items-start justify-between gap-6">
-        <div>
-          <div className="flex items-center gap-3 mb-1">
-            <h1 className="t-title">{heading}</h1>
-            {going ? <Chip tone="live">live</Chip> : null}
-          </div>
-          <p className="t-body text-ink-soft">
-            {elapsed(run.startedAt, run.endedAt)} · {run.visitsDone} of {run.mode === "longitudinal" ? "no fixed number of" : run.visitsPlanned} visits done ·{" "}
-            {usd4(run.costUsd)} spent · {run.findings} filed
-          </p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {going ? (
-            <>
-              {run.mode === "ephemeral" ? (
-                <Button onClick={() => round.mutate()} disabled={busy}>
-                  Send one more round
-                </Button>
-              ) : null}
-              {run.mode === "longitudinal" ? (
-                <Button onClick={() => pause.mutate()} disabled={busy}>
-                  Pause
-                </Button>
-              ) : (
-                <Button onClick={() => stop.mutate("drain")} disabled={busy}>
-                  Let them finish, then stop
-                </Button>
-              )}
-              <Button tone="stop" onClick={() => stop.mutate("now")} disabled={busy}>
-                Stop everything now
-              </Button>
-            </>
-          ) : run.status === "paused" ? (
-            <Button tone="go" onClick={() => resume.mutate()} disabled={busy}>
-              Pick it back up
+    <>
+      <InstrumentPage
+        header={
+          <PageHeader
+            title={heading}
+            meta={meta}
+            status={going ? <Chip tone="live">live</Chip> : null}
+            actions={controls}
+            lede="Everyone who is in this execution right now, and everything that has happened since this page opened."
+          />
+        }
+        toolbar={
+          // Suppressed for a longitudinal execution, which is unbounded by definition (§6.3 row
+          // 25): there is no denominator to draw a proportion against, and inventing one would be
+          // a promise about how it ends.
+          run === undefined || run.mode === "longitudinal" ? undefined : (
+            <Stack gap={1} className="w-full">
+              <Inline gap={3} align="baseline">
+                <Text size="label" tone="muted">
+                  visits
+                </Text>
+                <Text size="meta" tone="muted">
+                  {`${String(run.visitsDone)} of ${String(run.visitsPlanned)} done`}
+                </Text>
+              </Inline>
+              <Meter
+                value={run.visitsDone}
+                of={run.visitsPlanned}
+                label={`${String(run.visitsDone)} of ${String(run.visitsPlanned)} visits done in this execution.`}
+                size="sm"
+              />
+            </Stack>
+          )
+        }
+        state={state}
+        loading={
+          <StateBlock
+            kind="loading"
+            what="the execution"
+            skeleton={<Skeleton variant="row" count={8} label="Reading the execution" />}
+          />
+        }
+        error={
+          <StateBlock kind="failed" what="the execution" error={live.error}>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                void live.refetch();
+              }}
+            >
+              Try again
             </Button>
-          ) : (
-            <Link to={href()} className="t-body text-accent">
-              Read what they found →
-            </Link>
-          )}
-        </div>
-      </header>
+          </StateBlock>
+        }
+      >
+        {run === undefined ? null : (
+          <Stack gap={8}>
+            {abandoned ? (
+              <Card tone="sunk" pad="default">
+                <Stack gap={1}>
+                  <Text size="read-sm" tone="ink" as="p">
+                    This stopped when populace was last closed. Nothing failed and nothing was lost.
+                  </Text>
+                  <Text size="read-sm" tone="soft" as="p">
+                    Everyone still has their memory, their account and their visit number, because all three are kept against this
+                    execution. Pick it back up and they carry on from where they were.
+                  </Text>
+                </Stack>
+              </Card>
+            ) : null}
 
-      {stop.isError ? <Problem>{stop.error.message}</Problem> : null}
-      {pause.isError ? <Problem>{pause.error.message}</Problem> : null}
-      {resume.isError ? <Problem>{resume.error.message}</Problem> : null}
-      {round.isError ? <Problem>{round.error.message}</Problem> : null}
+            {run.status === "killed" ? (
+              <Card pad="default">
+                <Stack gap={3}>
+                  <Stack gap={1}>
+                    <div>
+                      <Badge variant="bad">Stopped</Badge>
+                    </div>
+                    <Text size="read-sm" tone="ink" as="p">
+                      Everything is stopped, and it stays stopped until you release it.
+                    </Text>
+                    <Text size="read-sm" tone="soft" as="p">
+                      Nothing else can start an execution on this machine in the meantime.
+                    </Text>
+                  </Stack>
+                  <Inline gap={2} align="center">
+                    <Button
+                      variant="secondary"
+                      onClick={() => void api.setKillSwitch(false).then(() => queries.invalidateQueries())}
+                    >
+                      Release the stop
+                    </Button>
+                  </Inline>
+                </Stack>
+              </Card>
+            ) : null}
 
-      {abandoned ? (
-        <Card className="p-4 mb-6">
-          <p className="t-body text-ink">This stopped when populace was last closed. Nothing failed and nothing was lost.</p>
-          <p className="t-body text-ink-soft mt-1">
-            Everyone still has their memory, their account and their visit number, because all three are kept against this execution. Pick it back up and they
-            carry on from where they were.
-          </p>
-        </Card>
-      ) : null}
+            <Section
+              title="Where everyone is"
+              trailing={going ? `${people(here.length)} mid-visit` : people(run.participants.length)}
+            >
+              {run.participants.length === 0 ? (
+                <StateBlock kind="empty" what="the roster">
+                  Nobody has arrived yet.
+                </StateBlock>
+              ) : (
+                <CohortGrid
+                  participants={run.participants}
+                  names={cohortNames}
+                  visitPath={(wakeId) => href(`visits/${encodeURIComponent(wakeId)}`)}
+                  going={going}
+                  theOne={theOne}
+                />
+              )}
+            </Section>
 
-      {run.status === "killed" ? (
-        <Card className="p-4 mb-6 border-critical/30">
-          <p className="t-body text-ink">Everything is stopped, and it stays stopped until you release it.</p>
-          <p className="t-body text-ink-soft mt-1">Nothing else can start an execution on this machine in the meantime.</p>
-          <div className="mt-3">
-            <Button onClick={() => void api.setKillSwitch(false).then(() => queries.invalidateQueries())}>Release the stop</Button>
-          </div>
-        </Card>
-      ) : null}
-
-      <Section title="Where everyone is" sub={going ? `${here.length} mid-visit` : "as they finished"}>
-        {run.participants.length === 0 ? (
-          <Card className="p-4">
-            <Empty>Nobody has arrived yet.</Empty>
-          </Card>
-        ) : (
-          <CohortGrid participants={run.participants} names={cohortNames} base={href()} going={going} />
+            <Section title="As it happens" trailing={plural(events.length, "event")}>
+              <LiveActivityFeed events={events} label="findings, stops and visits, newest first" />
+            </Section>
+          </Stack>
         )}
-      </Section>
+      </InstrumentPage>
 
-      <Section title="As it happens" sub="findings, stops and visits, newest first">
-        <Card className="p-0 max-h-[26rem] overflow-y-auto">
-          {rows.length === 0 ? (
-            <p className="t-body text-ink-muted italic p-4">
-              {going ? "Waiting for the first thing to happen…" : "Nothing has arrived on the feed since this page opened."}
-            </p>
-          ) : (
-            <ul className="divide-y divide-rule">
-              {rows.map((event) => (
-                <li key={event.seq} className="px-4 py-2 flex items-baseline gap-3">
-                  <span className="t-meta text-ink-muted tabular-nums shrink-0">{clock(event.at)}</span>
-                  <FeedLine event={event} names={names} />
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      </Section>
-    </div>
+      {/*
+        One dismissible region instead of four strips that never cleared. React Query drops each
+        error the moment that act is tried again, so a toast leaves on its own when the next
+        attempt succeeds; `reset()` is what the reader's dismissal does.
+      */}
+      {failures.map((act) =>
+        act.error === null ? null : (
+          <Toast
+            key={act.key}
+            tone="bad"
+            title={act.title}
+            body={<Mono size="code-sm">{act.error.message}</Mono>}
+            onDismiss={act.clear}
+          />
+        ),
+      )}
+    </>
   );
+}
+
+interface GridProps {
+  participants: readonly ParticipantLive[];
+  names: Map<string, string>;
+  visitPath: (wakeId: string) => string;
+  going: boolean;
+  theOne: string | null;
 }
 
 /**
@@ -222,163 +433,217 @@ export function LiveRun({ runId }: { runId: string }) {
  * all still away and the first-timers are all here" is the thing a person watching this wants to
  * see, and it is invisible in one undifferentiated wall of cards.
  */
-function CohortGrid({ participants, names, base, going }: { participants: ParticipantLive[]; names: Map<string, string>; base: string; going: boolean }) {
+function CohortGrid({ participants, names, visitPath, going, theOne }: GridProps) {
   const slugs = [...new Set(participants.map((person) => person.cohortSlug))];
   return (
-    <div className="flex flex-col gap-6">
+    <Stack gap={6}>
       {slugs.map((slug) => (
-        <CohortBlock key={slug} slug={slug} name={names.get(slug) ?? slug} members={participants.filter((person) => person.cohortSlug === slug)} base={base} going={going} />
+        <CohortBlock
+          key={slug}
+          name={names.get(slug) ?? slug}
+          members={participants.filter((person) => person.cohortSlug === slug)}
+          visitPath={visitPath}
+          going={going}
+          theOne={theOne}
+        />
       ))}
-    </div>
+    </Stack>
   );
 }
 
-function CohortBlock({ slug, name, members, base, going }: { slug: string; name: string; members: ParticipantLive[]; base: string; going: boolean }) {
-  const [all, setAll] = useState(false);
-  const here = members.filter((person) => person.status === "here").length;
-  const shown = all ? members : members.slice(0, FOLD_AT);
+interface BlockProps {
+  name: string;
+  members: readonly ParticipantLive[];
+  visitPath: (wakeId: string) => string;
+  going: boolean;
+  theOne: string | null;
+}
+
+function CohortBlock({ name, members, visitPath, going, theOne }: BlockProps) {
+  const present = members.filter((person) => person.status === "here").length;
+  const shown = members.slice(0, FOLD_AT);
+  const rest = members.slice(FOLD_AT);
+
+  const facts: MetaFact[] = [
+    { key: "size", node: people(members.length) },
+    ...(going ? [{ key: "here", node: `${String(present)} here now` }] : []),
+  ];
+
   return (
-    <div>
-      <div className="flex items-baseline gap-3 mb-2">
-        <h3 className="t-label text-ink-muted">{name}</h3>
-        <Mono className="text-[11px] text-ink-muted">{slug}</Mono>
-        <span className="t-meta text-ink-muted ml-auto tabular-nums">
-          {members.length} {members.length === 1 ? "person" : "people"}
-          {going ? ` · ${here} here now` : ""}
-        </span>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        {shown.map((person) => (
-          <PersonCard key={person.participantId} person={person} base={base} going={going} />
-        ))}
-      </div>
-      {members.length > FOLD_AT ? (
-        <button type="button" onClick={() => setAll(!all)} className="mt-2 t-meta text-accent hover:underline">
-          {all ? `Fold ${name} back to ${FOLD_AT}` : `Show the other ${members.length - FOLD_AT}`}
-        </button>
-      ) : null}
-    </div>
+    <Stack gap={2}>
+      <Inline gap={3} align="baseline" className="justify-between">
+        <Text size="label" tone="muted">
+          {name}
+        </Text>
+        <MetaLine facts={facts} />
+      </Inline>
+
+      <PeopleGrid people={shown} cohort={name} visitPath={visitPath} going={going} theOne={theOne} />
+
+      {rest.length === 0 ? null : (
+        <Disclosure label={`The rest of ${name}`} count={rest.length}>
+          <PeopleGrid people={rest} cohort={name} visitPath={visitPath} going={going} theOne={theOne} />
+        </Disclosure>
+      )}
+    </Stack>
   );
 }
 
-function PersonCard({ person, base, going }: { person: ParticipantLive; base: string; going: boolean }) {
-  const body = (
-    <Card className={`p-3.5 h-full ${person.status === "here" ? "border-accent/40" : ""}`}>
-      <div className="flex items-center gap-2.5 mb-2">
-        <Avatar name={person.name} />
-        <div className="flex-1 min-w-0">
-          <div className="t-body text-ink truncate">{person.name}</div>
-          <div className="t-meta text-ink-muted">
-            visit {person.visitNumber}
-            {person.maxVisits === null ? "" : ` of ${person.maxVisits}`}
-            {person.status === "here" ? ` · turn ${person.turn}` : ""}
-          </div>
-        </div>
-        <Chip tone={person.status === "here" ? "live" : "neutral"}>{person.status === "here" ? "here now" : person.status === "away" ? "away" : "gone"}</Chip>
-      </div>
-      <div className="t-meta text-ink-muted flex items-baseline justify-between gap-2">
-        <span>
-          {person.status === "here" ? (
-            person.lastCall === null ? (
-              "thinking"
-            ) : (
-              <Mono className="text-[11.5px] text-evidence">{person.lastCall}</Mono>
-            )
-          ) : going ? (
-            countdown(person.nextVisitAt)
-          ) : (
-            "not coming back"
-          )}
-        </span>
-        <span className="tabular-nums">
-          {usd4(person.costUsd)}
-          {person.findings > 0 ? ` · ${person.findings} filed` : ""}
-        </span>
-      </div>
-    </Card>
+interface PeopleGridProps {
+  people: readonly ParticipantLive[];
+  cohort: string;
+  visitPath: (wakeId: string) => string;
+  going: boolean;
+  theOne: string | null;
+}
+
+function PeopleGrid({ people: members, cohort, visitPath, going, theOne }: PeopleGridProps) {
+  return (
+    <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 xl:grid-cols-3">
+      {members.map((person) => (
+        <li key={person.participantId}>
+          <PersonCell person={person} cohort={cohort} visitPath={visitPath} going={going} theOne={theOne} />
+        </li>
+      ))}
+    </ul>
   );
-  return person.wakeId === null ? body : <Link to={`${base}/visits/${encodeURIComponent(person.wakeId)}`}>{body}</Link>;
+}
+
+/** What somebody is doing, in the four words the live card knows (§3, organism 29). */
+function stateOf(person: ParticipantLive): PersonLiveState {
+  if (person.status !== "here") return "away";
+  return person.lastCall === null ? "thinking" : "calling";
+}
+
+interface CellProps {
+  person: ParticipantLive;
+  cohort: string;
+  visitPath: (wakeId: string) => string;
+  going: boolean;
+  theOne: string | null;
 }
 
 /**
- * One line per event, in the feed's own words. An event type this build does not know yet should
- * show as a plain line, not break the screen.
+ * One person, and the figures that belong to them. `PersonLiveCard` draws who they are and what
+ * they are doing; the line beneath carries what the cell has always also carried — which visit
+ * this is, what it has cost, what they have filed — and the visit number is the way into the
+ * transcript, exactly as the start time is on the visits log.
  */
-function FeedLine({ event, names }: { event: LiveEvent; names: Map<string, string> }) {
+function PersonCell({ person, cohort, visitPath, going, theOne }: CellProps) {
+  const state = stateOf(person);
+  // Away, and coming back: the card counts down to it. Away with nowhere to be — retired, or an
+  // execution that has finished — has no countdown, so the line beneath says so in words.
+  const returning = going && person.status === "away" && person.nextVisitAt !== null;
+  const visit = `visit ${String(person.visitNumber)}${person.maxVisits === null ? "" : ` of ${String(person.maxVisits)}`}`;
+
+  const facts: MetaFact[] = [
+    {
+      key: "visit",
+      node:
+        person.wakeId === null ? (
+          visit
+        ) : (
+          <Link size="meta" to={visitPath(person.wakeId)}>
+            {visit}
+          </Link>
+        ),
+    },
+    ...(person.status === "here" ? [{ key: "turn", node: `turn ${String(person.turn)}` }] : []),
+    { key: "cost", node: <Money usd={person.costUsd} precision={4} /> },
+    ...(person.findings === 0 ? [] : [{ key: "filed", node: `${plural(person.findings, "finding")} filed` }]),
+    ...(returning || person.status === "here" ? [] : [{ key: "back", node: "not coming back" }]),
+  ];
+
+  return (
+    <Stack gap={2}>
+      <PersonLiveCard
+        name={person.name}
+        cohort={cohort}
+        state={state}
+        theOne={person.participantId === theOne}
+        {...(state === "calling" && person.lastCall !== null ? { tool: person.lastCall } : {})}
+        {...(returning && person.nextVisitAt !== null ? { nextAt: person.nextVisitAt } : {})}
+      />
+      <MetaLine facts={facts} />
+    </Stack>
+  );
+}
+
+/**
+ * One event, as a sentence, in the feed's own words. The feed sets the row; this composes what
+ * goes in it, which is how a person's name keeps its weight inside the line without the organism
+ * knowing what a person is. An event kind this build does not know yet is a plain line, not a
+ * broken screen.
+ */
+function sentenceOf(event: LiveEvent, names: Map<string, string>): ReactNode {
   const text = (key: string): string => payloadText(event, key);
   const num = (key: string): number => payloadNumber(event, key);
   // Their name in prose when we know it; the persona slug in the trace's own ochre monospace when
   // the join misses, because then it really is all we have.
-  const who = (): React.ReactNode => {
+  const who = (): ReactNode => {
     const name = names.get(text("agentId"));
-    return name === undefined ? <Mono className="text-[11.5px] text-evidence">{text("personaId")}</Mono> : <span className="text-ink">{name}</span>;
+    return name === undefined ? <Mono size="code-sm">{text("personaId")}</Mono> : <Text size="name">{name}</Text>;
   };
 
   switch (event.type) {
     case "run.started":
-      return (
-        <span className="t-body text-ink">
-          It started with {num("agents")} {num("agents") === 1 ? "person" : "people"}.
-        </span>
-      );
+      return `It started with ${people(num("agents"))}.`;
     case "run.ended":
-      return <span className="t-body text-ink">It ended: {text("status")}.</span>;
+      return `It ended: ${text("status")}.`;
     case "run.status":
-      return (
-        <span className="t-body text-ink-soft">
-          {text("action") === "paused"
-            ? text("reason") === "process-ended"
-              ? "It stopped, because populace was closed."
-              : "It was paused."
-            : text("action") === "resumed"
-              ? "It was picked back up."
-              : text("action") === "reset"
-                ? "The target was put back to a clean state."
-                : "Everyone was asked back for another round."}
-        </span>
-      );
+      return text("action") === "paused"
+        ? text("reason") === "process-ended"
+          ? "It stopped, because populace was closed."
+          : "It was paused."
+        : text("action") === "resumed"
+          ? "It was picked back up."
+          : text("action") === "reset"
+            ? "The target was put back to a clean state."
+            : "Everyone was asked back for another round.";
     case "run.config":
-      return <span className="t-body text-ink-soft">The configuration it runs was replaced.</span>;
+      return "The configuration it runs was replaced.";
     case "wake.started":
       return (
-        <span className="t-body text-ink-soft">
+        <>
           {who()} arrived for visit {num("wakeNumber")}.
-        </span>
+        </>
       );
     case "wake.ended":
       return (
-        <span className="t-body text-ink-soft">
-          {who()}{" "}
-          {text("status") === "gave-up" ? "gave up" : text("status") === "done" ? "finished" : text("status")}
-          {text("summary") ? `: ${text("summary")}` : ""} <span className="text-ink-muted tabular-nums">{usd4(num("costUsd"))}</span>
-        </span>
+        <>
+          {who()} {text("status") === "gave-up" ? "gave up" : text("status") === "done" ? "finished" : text("status")}
+          {text("summary") ? `: ${text("summary")}` : ""}{" "}
+          <Text size="meta" tone="muted">
+            <Money usd={num("costUsd")} precision={4} />
+          </Text>
+        </>
       );
-    case "finding.filed":
+    case "finding.filed": {
+      const level = severityOf(text("severity"));
       return (
-        <span className="t-body text-ink">
-          <span className="t-label text-high">{text("severity")}</span> {text("title")}
-        </span>
+        <>
+          {level === null ? <Text size="label" tone="muted">{text("severity")}</Text> : <SeverityTag level={level} />}{" "}
+          <Text size="name">{text("title")}</Text>
+        </>
       );
+    }
     case "guardrail.tripped":
       return (
-        <span className="t-body text-critical">
+        <Text size="ui" tone="critical">
           Guardrail: {text("rule")} — {text("detail")}
-        </span>
+        </Text>
       );
     case "identity.created":
-      return (
-        <span className="t-body text-ink-soft">
-          An account was created{text("email") ? ` for ${text("email")}` : ""}.
-        </span>
-      );
+      return `An account was created${text("email") ? ` for ${text("email")}` : ""}.`;
     case "job.updated":
       return (
-        <span className="t-body text-critical">
-          {text("kind") === "digest" ? "The digest" : text("kind") === "sweep" ? "The clean-up" : "Starting the execution"} did not finish
+        <Text size="ui" tone="critical">
+          {text("kind") === "digest" ? "The digest" : text("kind") === "sweep" ? "The clean-up" : "Starting the execution"} did not
+          finish
           {text("error") ? `: ${text("error")}` : ""}
-        </span>
+        </Text>
       );
     default:
-      return <span className="t-body text-ink-muted">{event.type}</span>;
+      return text("action") || event.type;
   }
 }

@@ -1,84 +1,847 @@
+/* ============================================================================================
+   The Populace design system — token layer, type scale, focus ring, base.
+
+   Authority: docs/design/DESIGN-SYSTEM.md §2 (tokens), §3 (type), §5 (motion/elevation/density),
+   §8 (brand assets). Structure follows §2.1's four layers and §2.7's file skeleton, in order:
+
+     @import tailwindcss
+     @custom-variant dark
+     @font-face  (1 self-hosted + 3 metric-matched fallbacks)
+     :root                          brand constants
+     :root, [data-theme=light]      semantic values, light
+     [data-theme=dark]              semantic values, dark
+     @media (prefers-color-scheme)  the same dark values, for "system"
+     @theme inline                  republish into Tailwind's namespace BY REFERENCE
+     @utility focus-ring
+     @utility t-* / eyebrow-* / skeleton-line
+     @layer base
+     reduced motion
+
+   The single most important line in this file is `@theme inline`. A plain `@theme` inlines the
+   hex into every generated utility, which makes the runtime theme flip a silent no-op.
+   ============================================================================================ */
+
 @import "tailwindcss";
 
-/**
- * The design's foundations, verbatim. One product, two ways of reading it: prose is what we
- * found, monospace is how we know. There is no expert mode and no role switch, so the split is
- * carried by typeface and colour rather than by navigation.
- */
-@theme {
-  --color-paper: #f9f6f2;
-  --color-card: #fefdfb;
-  --color-well: #f3f0ea;
-  --color-ink: #1a1510;
-  --color-ink-soft: #57514c;
-  --color-ink-muted: #857f79;
-  --color-accent: #236292;
-  --color-accent-wash: #dbeefe;
-  /* Ochre marks everything the machine said or is named by. It is the seam between the two
-     surfaces: wherever a call ref appears, the instrument is one click away. */
-  --color-evidence: #864e18;
-  --color-evidence-wash: #fde9d4;
-  --color-rule: #e1ded7;
-  --color-rule-strong: #cecac2;
+/* --------------------------------------------------------------------------------------------
+   0. The dark variant, so `dark:` utilities follow data-theme rather than the media query.
 
-  --color-critical: #a3242f;
-  --color-high: #b4551b;
-  --color-medium: #8a6d1f;
-  --color-low: #6b6560;
-  --color-confirmed: #2f6b3c;
-
-  --font-sans: "Instrument Sans", system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+   CORRECTION to §2.1, which prints a single-selector variant matching only the attribute. The
+   attribute is ABSENT in "system" mode — that is how §2.9's script spells "system" — so the
+   one-liner leaves every `dark:` utility dead for the default setting while the tokens
+   underneath flip correctly. Both arms are declared here so `dark:` means the same thing as the
+   cascade does, in all three modes.
+   -------------------------------------------------------------------------------------------- */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(
+        :root:not([data-theme="light"]):not([data-theme="dark"]),
+        :root:not([data-theme="light"]):not([data-theme="dark"]) *
+      ) {
+      @slot;
+    }
+  }
 }
 
-html,
-body,
-#root {
-  height: 100%;
+/* --------------------------------------------------------------------------------------------
+   Fonts (§8.4). Space Grotesk is self-hosted and same-origin, so on a local-first dashboard
+   every name, number, label, button and nav item is exactly right even with no network. The
+   serif and the mono come from the font service unless VITE_FONT_SOURCE=local, in which case
+   they resolve to the metric-matched fallbacks below.
+
+   The three fallbacks' size-adjust / ascent-override / descent-override were MEASURED from the
+   shipped faces rather than taken from §8.4; §8.4's serif and mono numbers are derived from
+   metrics those fonts do not have. Working shown beside each block.
+   -------------------------------------------------------------------------------------------- */
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/fonts/SpaceGrotesk-Variable.woff2") format("woff2-variations");
+  font-weight: 300 700; /* the fvar wght axis, verified 300–700. There is no italic axis. */
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+2190-2193, U+2212, U+2022,
+    U+25CF;
 }
 
-body {
-  margin: 0;
-  background: var(--color-paper);
-  color: var(--color-ink);
-  font-family: var(--font-sans);
-  font-size: 13.5px;
-  -webkit-font-smoothing: antialiased;
+/* Metric-matched fallbacks, so `swap` causes no layout shift.
+   Space Grotesk:   upm 1000, x-height 486, hhea asc 984 / desc −292, lineGap 0   [measured]
+   reference local: Helvetica Neue, x-height 0.5170                               [measured]
+   size-adjust      0.486 / 0.5170 = 94.0%
+   ascent-override  0.984 / 0.940  = 104.7%
+   descent-override 0.292 / 0.940  = 31.1%                                        (§8.4 agrees) */
+@font-face {
+  font-family: "Space Grotesk Fallback";
+  src:
+    local("Helvetica Neue"), local("Arial"), local("Segoe UI"), local("Liberation Sans");
+  size-adjust: 94%;
+  ascent-override: 104.7%;
+  descent-override: 31.1%;
+  line-gap-override: 0%;
 }
 
-/* The design's type scale, as named styles rather than repeated utility strings. */
-@utility t-display {
-  font-size: 27px;
-  font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: -0.01em;
+/* Source Serif 4:   upm 1000, x-height 475, hhea asc 1036 / desc −335, lineGap 0 [measured]
+   reference local:  Iowan Old Style, x-height 0.4790 (glyph-measured; no OS/2 sxHeight)
+   size-adjust       0.475 / 0.4790 = 99.2%     (§8.4 said 98%, from a misquoted Georgia 0.4841;
+                                                 Georgia measures 0.4814)
+   ascent-override   1.036 / 0.992  = 104.4%    (§8.4 said 104.5%, from asc 1024)
+   descent-override  0.335 / 0.992  = 33.8%     (§8.4 said 40.8%, from desc −400 — the face's
+                                                 real descent is −335, so the spec's fallback
+                                                 line box was ~6.5% of font-size too tall) */
+@font-face {
+  font-family: "Source Serif 4 Fallback";
+  src:
+    local("Iowan Old Style"), local("Charter"), local("Georgia"), local("Times New Roman");
+  size-adjust: 99.2%;
+  ascent-override: 104.4%;
+  descent-override: 33.8%;
+  line-gap-override: 0%;
 }
-@utility t-title {
-  font-size: 22px;
-  font-weight: 600;
-  line-height: 1.25;
+
+/* IBM Plex Mono:    upm 1000, x-height 516, hhea asc 1025 / desc −275, lineGap 0 [measured]
+   reference local:  SF Mono (PostScript SFMono-Regular), x-height 0.5288         [measured]
+   size-adjust       0.516 / 0.5288 = 97.6%     (§8.4 said 95%, from an unattributable 0.5405)
+   ascent-override   1.025 / 0.976  = 105.0%    (§8.4 said 82.1%, from asc 780 — Plex Mono's
+   descent-override  0.275 / 0.976  = 28.2%      own hhea and typo metrics are both 1025/−275) */
+@font-face {
+  font-family: "IBM Plex Mono Fallback";
+  src:
+    local("SFMono-Regular"), local("Menlo"), local("Consolas"), local("DejaVu Sans Mono");
+  size-adjust: 97.6%;
+  ascent-override: 105%;
+  descent-override: 28.2%;
+  line-gap-override: 0%;
 }
-@utility t-section {
-  font-size: 16px;
-  font-weight: 600;
+
+/* --------------------------------------------------------------------------------------------
+   1. Brand constants — identical in both themes, never used directly by a component.
+   -------------------------------------------------------------------------------------------- */
+:root {
+  --pop-ink: #202823;
+  --pop-paper: #f4f1e9;
+  --pop-forest: #254b3e;
+  --pop-signal: #d7f56b;
+  --pop-clay: #c46d51; /* decorative only — deliberately NOT in the colour namespace */
+}
+
+/* --------------------------------------------------------------------------------------------
+   2. Semantic values, light (the default). Ratios in §2.2.
+   -------------------------------------------------------------------------------------------- */
+:root,
+[data-theme="light"] {
+  --c-bg: #f4f1e9;
+  --c-surface: #ffffff;
+  --c-sunk: #e9e7df;
+  --c-hover: #eeebe3;
+
+  --c-text: #202823;
+  --c-text-soft: #39453d;
+  --c-text-muted: #566259;
+
+  --c-rule: #cbd2c7;
+  --c-rule-strong: #6e8579;
+
+  --c-primary: #254b3e;
+  --c-on-primary: #f4f1e9;
+  --c-accent: #d7f56b;
+  --c-on-accent: #202823;
+  --c-accent-wash: #ecf2c6;
+  --c-primary-wash: #e1e2da;
+  --c-mark-ring: #202823;
+  --c-focus: #254b3e;
+  --c-link: #254b3e;
+
+  --c-evidence: #285c88;
+  --c-evidence-wash: #e3eaf0;
+
+  --c-critical: #a33132;
+  --c-high: #8c4527;
+  --c-medium: #785600;
+  --c-low: #566259;
+  --c-confirmed: #2d6345;
+  --c-on-critical: #ffffff;
+  --c-graph: #6e8579;
+
+  /* Elevation is composite and flips per theme, so it is declared here, not in @theme (§2.5). */
+  --c-shadow-card: 0 1px 2px rgb(32 40 35 / 0.055);
+  --c-shadow-over:
+    0 10px 28px -6px rgb(32 40 35 / 0.18), 0 2px 6px rgb(32 40 35 / 0.07);
+
+  /* The serif's optical-size and tracking flip per theme too (§3.8), so they are tokens rather
+     than a duplicated block of `[data-theme="dark"] .t-read` rules that would miss "system". */
+  --opsz-statement: 24;
+  --opsz-lede: 16;
+  --opsz-finding: 14;
+  --opsz-read: 12;
+  --opsz-read-sm: 10;
+  --opsz-voice: 14;
+  --ls-statement: -0.008em;
+  --ls-lede: 0;
+  --ls-finding: -0.003em;
+  --ls-read: 0;
+  --ls-read-sm: 0.002em;
+  --ls-voice: 0;
+  --ls-serif-static: 0; /* the static-face degradation, §3.8 item 3 */
+}
+
+/* --------------------------------------------------------------------------------------------
+   3. Semantic values, dark. Ratios in §2.3. Written out twice — once for the explicit choice,
+   once for the system preference — because §2.1 sanctions the repetition over indirection.
+   -------------------------------------------------------------------------------------------- */
+[data-theme="dark"] {
+  --c-bg: #202823;
+  --c-surface: #2c3730;
+  --c-sunk: #191f1b;
+  --c-hover: #2a342d;
+
+  --c-text: #f4f1e9;
+  --c-text-soft: #d8e0d6;
+  --c-text-muted: #bcc9bc;
+
+  --c-rule: #526357;
+  --c-rule-strong: #8b968b;
+
+  --c-primary: #d7f56b;
+  --c-on-primary: #202823;
+  --c-accent: #254b3e;
+  --c-on-accent: #f4f1e9;
+  --c-accent-wash: #3d492f;
+  --c-primary-wash: #233b32;
+  --c-mark-ring: transparent;
+  --c-focus: #d7f56b;
+  --c-link: #d7f56b;
+
+  --c-evidence: #a5cfff;
+  --c-evidence-wash: #333f42;
+
+  --c-critical: #ff9a93;
+  --c-high: #f2b180;
+  --c-medium: #e8ce7a;
+  --c-low: #bcc9bc;
+  --c-confirmed: #a6d9a9;
+  --c-on-critical: #202823;
+  --c-graph: #8b968b;
+
+  --c-shadow-card: none; /* dark elevation is border-led — surface over bg is 1.22:1 */
+  --c-shadow-over: 0 12px 32px -8px rgb(0 0 0 / 0.55);
+
+  --opsz-statement: 18;
+  --opsz-lede: 13;
+  --opsz-finding: 11;
+  --opsz-read: 9;
+  --opsz-read-sm: 8;
+  --opsz-voice: 11;
+  --ls-statement: -0.004em;
+  --ls-lede: 0;
+  --ls-finding: 0.001em;
+  --ls-read: 0.004em;
+  --ls-read-sm: 0.006em;
+  --ls-voice: 0.004em;
+  --ls-serif-static: 0.006em;
+}
+
+/* 3b. System preference, only when the user has not chosen. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    --c-bg: #202823;
+    --c-surface: #2c3730;
+    --c-sunk: #191f1b;
+    --c-hover: #2a342d;
+
+    --c-text: #f4f1e9;
+    --c-text-soft: #d8e0d6;
+    --c-text-muted: #bcc9bc;
+
+    --c-rule: #526357;
+    --c-rule-strong: #8b968b;
+
+    --c-primary: #d7f56b;
+    --c-on-primary: #202823;
+    --c-accent: #254b3e;
+    --c-on-accent: #f4f1e9;
+    --c-accent-wash: #3d492f;
+    --c-primary-wash: #233b32;
+    --c-mark-ring: transparent;
+    --c-focus: #d7f56b;
+    --c-link: #d7f56b;
+
+    --c-evidence: #a5cfff;
+    --c-evidence-wash: #333f42;
+
+    --c-critical: #ff9a93;
+    --c-high: #f2b180;
+    --c-medium: #e8ce7a;
+    --c-low: #bcc9bc;
+    --c-confirmed: #a6d9a9;
+    --c-on-critical: #202823;
+    --c-graph: #8b968b;
+
+    --c-shadow-card: none;
+    --c-shadow-over: 0 12px 32px -8px rgb(0 0 0 / 0.55);
+
+    --opsz-statement: 18;
+    --opsz-lede: 13;
+    --opsz-finding: 11;
+    --opsz-read: 9;
+    --opsz-read-sm: 8;
+    --opsz-voice: 11;
+    --ls-statement: -0.004em;
+    --ls-lede: 0;
+    --ls-finding: 0.001em;
+    --ls-read: 0.004em;
+    --ls-read-sm: 0.006em;
+    --ls-voice: 0.004em;
+    --ls-serif-static: 0.006em;
+  }
+}
+
+/* --------------------------------------------------------------------------------------------
+   4. Republish into Tailwind's namespace BY REFERENCE (§2.4, verbatim).
+
+   `inline` is what makes `bg-surface` emit `background-color: var(--c-surface)` instead of a
+   literal hex. Remove the word and the theme switch stops working, silently.
+   -------------------------------------------------------------------------------------------- */
+@theme static inline {
+  /* ---- colour ---- */
+  --color-bg: var(--c-bg);
+  --color-surface: var(--c-surface);
+  --color-sunk: var(--c-sunk);
+  --color-hover: var(--c-hover);
+  --color-ink: var(--c-text);
+  --color-ink-soft: var(--c-text-soft);
+  --color-ink-muted: var(--c-text-muted);
+  --color-rule: var(--c-rule);
+  --color-rule-strong: var(--c-rule-strong);
+  --color-primary: var(--c-primary);
+  --color-on-primary: var(--c-on-primary);
+  --color-accent: var(--c-accent);
+  --color-on-accent: var(--c-on-accent);
+  --color-accent-wash: var(--c-accent-wash);
+  --color-primary-wash: var(--c-primary-wash);
+  --color-mark-ring: var(--c-mark-ring);
+  --color-focus: var(--c-focus);
+  --color-link: var(--c-link);
+  --color-evidence: var(--c-evidence);
+  --color-evidence-wash: var(--c-evidence-wash);
+  --color-critical: var(--c-critical);
+  --color-high: var(--c-high);
+  --color-medium: var(--c-medium);
+  --color-low: var(--c-low);
+  --color-confirmed: var(--c-confirmed);
+  --color-on-critical: var(--c-on-critical);
+  --color-graph: var(--c-graph);
+  /* NOTE: --pop-clay is deliberately absent. bg-clay must not be generatable. */
+  /* NOTE: --color-info is deliberately absent. The system has one blue and it means
+     "the machine is speaking". info-as-a-status is retired; use `medium` for a notice. */
+
+  /* ---- type families ---- */
+  --font-display:
+    "Space Grotesk", "Space Grotesk Fallback", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-text:
+    "Source Serif 4", "Source Serif 4 Fallback", "Iowan Old Style", Charter, Georgia,
+    "Times New Roman", serif;
+  --font-mono:
+    "IBM Plex Mono", "IBM Plex Mono Fallback", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+
+  /* ---- spacing: 4px base. Tailwind's numeric utilities derive from this. ---- */
+  --spacing: 4px;
+
+  /* ---- radius: by KIND, not by size (§5.2) ---- */
+  --radius-none: 0px; /* data */
+  --radius-sm: 6px; /* controls */
+  --radius-md: 12px; /* containers */
+  --radius-lg: 20px; /* the landing route only */
+  --radius-full: 9999px; /* people and states */
+
+  /* ---- layout constants ---- */
+  --w-stub: 72px; /* the ledger stub — 18 spacing units */
+  --w-rail: 236px; /* the sidebar */
+  --w-inspector: 264px; /* the sticky instrument rail on document-class screens */
+  --w-page: 1100px; /* the app content measure */
+  --w-page-narrow: 860px; /* railless screens: Projects */
+  --w-landing: 1080px; /* the marketing route */
+  --measure-read: 62ch; /* serif prose */
+  --measure-statement: 34ch; /* t-statement */
+  --measure-lede: 52ch; /* t-lede */
+  --measure-wide: 78ch; /* payload wells and transcripts */
+
+  /* ---- the lattice module: the mark's own geometry, dot/pitch = 26/31 = 0.839 ---- */
+  --lat-dot-sm: 6px;
+  --lat-pitch-sm: 7px; /* inline, in a row */
+  --lat-dot: 10px;
+  --lat-pitch: 12px; /* the default, in panels */
+  --lat-dot-lg: 15px;
+  --lat-pitch-lg: 18px; /* the landing hero, the live field */
+  --lat-rows: 4; /* the mark is four high; so is every lattice */
+
+  /* ---- elevation: composite, redefined per theme above ---- */
+  --shadow-card: var(--c-shadow-card);
+  --shadow-over: var(--c-shadow-over);
+
+  /* ---- motion ---- */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --dur-press: 90ms;
+  --dur-state: 140ms;
+  --dur-disclose: 160ms;
+  --dur-enter: 240ms;
+  --dur-hero: 900ms;
+
+  /* ---- z-index. Seven steps, and nothing may invent an eighth. ---- */
+  --z-base: 0;
+  --z-raised: 10; /* sticky rails, sticky detail panes, sticky table headers */
+  --z-rail: 20; /* the sidebar */
+  --z-overlay: 40; /* dropdown, select, popover, tooltip */
+  --z-dialog: 50; /* dialog + its backdrop */
+  --z-toast: 60;
+  --z-skip: 70; /* the skip link, which must outrank everything */
+
+  /* ---- breakpoints. The app has zero today; these are the only four. ---- */
+  --breakpoint-sm: 40rem; /* 640  — phone / stacked */
+  --breakpoint-md: 53.75rem; /* 860  — the stub collapses below this */
+  --breakpoint-lg: 62.5rem; /* 1000 — two-column splits stack below this */
+  --breakpoint-xl: 77.5rem; /* 1240 — the instrument rail appears at or above this */
+}
+
+/* --------------------------------------------------------------------------------------------
+   5. The focus ring (§4.6). --color-focus equals --color-primary in both themes, so a plain
+   ring on a primary button would be invisible. One two-part ring, built once, applied by every
+   focusable atom, never re-rolled. box-shadow inherits border-radius, so it is correct on square
+   rows, 6px controls, 12px cards and full-round avatars with no per-shape work.
+
+   A component on a non-page ground sets --focus-sep on its container so the separator band is
+   the colour immediately behind the control: var(--color-surface) in a card, var(--color-sunk)
+   in a well.
+   -------------------------------------------------------------------------------------------- */
+@utility focus-ring {
+  &:focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 2px var(--focus-sep, var(--color-bg)),
+      0 0 0 4px var(--color-focus);
+  }
+}
+
+/* --------------------------------------------------------------------------------------------
+   6. The type scale (§3).
+
+     If the text is a name, a number, a label or a control  → Space Grotesk.
+     If it is a sentence the product or a person is saying  → Source Serif 4.
+     If it is what the machine emitted or is named by       → IBM Plex Mono.
+
+   The family follows from the step. Every figure carries tabular lining figures and a slashed
+   zero by construction, so no component ever writes `tabular-nums` (§4.4).
+   -------------------------------------------------------------------------------------------- */
+
+/* ---- serif — "saying" (§3.2). opsz and tracking come from the theme tokens so the dark-mode
+   optical correction in §3.8 happens in the cascade rather than in a duplicated rule block. ---- */
+@utility t-statement {
+  font-family: var(--font-text);
+  font-size: 30px;
+  line-height: 38px;
+  font-weight: 400;
+  letter-spacing: var(--ls-statement);
+  font-optical-sizing: none;
+  font-variation-settings: "opsz" var(--opsz-statement);
+}
+@utility t-lede {
+  font-family: var(--font-text);
+  font-size: 18px;
+  line-height: 28px;
+  font-weight: 400;
+  letter-spacing: var(--ls-lede);
+  font-optical-sizing: none;
+  font-variation-settings: "opsz" var(--opsz-lede);
 }
 @utility t-finding {
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.35;
+  font-family: var(--font-text);
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 500;
+  letter-spacing: var(--ls-finding);
+  font-optical-sizing: none;
+  font-variation-settings: "opsz" var(--opsz-finding);
 }
-@utility t-body {
-  font-size: 13.5px;
+@utility t-read {
+  font-family: var(--font-text);
+  font-size: 15px;
+  line-height: 24px;
   font-weight: 400;
-  line-height: 1.55;
+  letter-spacing: var(--ls-read);
+  font-optical-sizing: none;
+  font-variation-settings: "opsz" var(--opsz-read);
+}
+@utility t-read-sm {
+  font-family: var(--font-text);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: var(--ls-read-sm);
+  font-optical-sizing: none;
+  font-variation-settings: "opsz" var(--opsz-read-sm);
+}
+/* The only italic in the system. Italic belongs to people (§4.7). */
+@utility t-voice {
+  font-family: var(--font-text);
+  font-size: 16px;
+  line-height: 26px;
+  font-weight: 400;
+  font-style: italic;
+  letter-spacing: var(--ls-voice);
+  font-optical-sizing: none;
+  font-variation-settings: "opsz" var(--opsz-voice);
+}
+
+/* Static-fallback degradation (§3.8 item 3): with Georgia there is no opsz axis, so opening the
+   counters is the only lever a static face offers. --ls-serif-static is 0 in light. */
+@supports not (font-variation-settings: normal) {
+  .t-read,
+  .t-read-sm,
+  .t-voice,
+  .t-finding {
+    letter-spacing: var(--ls-serif-static);
+  }
+}
+
+/* ---- sans — "naming" (§3.3). Weight ceiling 700; the shipped variable TTF has one wght axis,
+   300–700, and no italic file. `zero` (the slashed zero), `tnum`, `lnum` and `case` are all
+   verified present in the shipped GSUB. ---- */
+@utility t-masthead {
+  font-family: var(--font-display);
+  font-size: clamp(2.75rem, 6.4vw, 4.25rem);
+  line-height: 1.02;
+  font-weight: 300;
+  letter-spacing: -0.03em;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1,
+    "zero" 1,
+    "case" 1;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+@utility t-title {
+  font-family: var(--font-display);
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1,
+    "zero" 1,
+    "case" 1;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+@utility t-figure {
+  font-family: var(--font-display);
+  font-size: 32px;
+  line-height: 36px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1,
+    "zero" 1,
+    "case" 1;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+@utility t-figure-sm {
+  font-family: var(--font-display);
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1,
+    "zero" 1,
+    "case" 1;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+@utility t-name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1,
+    "zero" 1,
+    "case" 1;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+/* The chrome default. */
+@utility t-ui {
+  font-family: var(--font-display);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 450;
+  letter-spacing: 0;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1,
+    "zero" 1,
+    "case" 1;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+/* Sentence case, deliberately: Space Grotesk's personality lives in its lowercase, and tracked
+   caps at 12px render as a grey stripe. Caps are confined to t-label's four data roles. */
+@utility t-eyebrow {
+  font-family: var(--font-display);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1,
+    "zero" 1,
+    "case" 1;
+  font-variant-numeric: tabular-nums slashed-zero;
 }
 @utility t-meta {
+  font-family: var(--font-display);
   font-size: 12px;
+  line-height: 16px;
   font-weight: 400;
+  letter-spacing: 0.005em;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1,
+    "zero" 1,
+    "case" 1;
+  font-variant-numeric: tabular-nums slashed-zero;
 }
+/* Field labels, stat labels, table column heads, stub unit labels — these four roles only. */
 @utility t-label {
+  font-family: var(--font-display);
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1,
+    "zero" 1,
+    "case" 1;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+/* ---- mono — "the machine" (§3.4). The one family allowed below the 12px sans floor, because
+   its x-height (0.516) exceeds the sans's (0.486). ---- */
+@utility t-code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+/* Mono inside t-read: leading pinned to the serif's so a tool name never disturbs the
+   paragraph's line box. 13.5px lands a shade under x-height parity, which reads as a quieter
+   register rather than a mistake. */
+@utility t-code-inline {
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 24px;
+  font-weight: 400;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+@utility t-code-sm {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 18px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+@utility t-ref {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+/* Inside the serif floor, inline mono drops to 12/20 so the denser line box still holds (§3.4). */
+.t-read-sm .t-code-inline {
+  font-size: 12px;
+  line-height: 20px;
+}
+
+/* --------------------------------------------------------------------------------------------
+   7. Baselines (§3.7). text-box trims a heading's box to cap-top → baseline so the gap above it
+   becomes a literal margin instead of the sum of two faces' half-leadings.
+   -------------------------------------------------------------------------------------------- */
+.t-masthead,
+.t-title,
+.t-statement,
+.t-lede,
+.t-finding,
+.t-figure,
+.t-eyebrow {
+  text-box: trim-both cap alphabetic;
+}
+
+/* Source Serif 4's capitals carry a larger left side-bearing than Space Grotesk's, so at or above
+   24px the SERIF is pulled left to put the two optical edges in line. `t-statement` at 30px is the
+   only serif step that clears the threshold; below 24px the correction is sub-pixel and the
+   rounding does more harm than the misalignment. Applying it to the sans steps too would shift
+   both families equally and leave them exactly as misaligned as before. */
+.t-statement {
+  margin-inline-start: -0.012em;
+}
+
+.t-eyebrow + .t-statement {
+  margin-top: 20px;
+}
+.t-eyebrow + .t-masthead {
+  margin-top: 24px;
+}
+.t-eyebrow + .t-lede {
+  margin-top: 14px;
+}
+.t-eyebrow + .t-finding {
+  margin-top: 13px;
+}
+.t-eyebrow + .t-title {
+  margin-top: 12px;
+} /* sans over sans */
+.t-label + .t-figure {
+  margin-top: 6px;
+}
+
+/* The four named utilities, for the common case where the eyebrow and the heading are not DOM
+   siblings. Applied to the HEADING. */
+@utility eyebrow-statement {
+  margin-top: 20px;
+}
+@utility eyebrow-masthead {
+  margin-top: 24px;
+}
+@utility eyebrow-lede {
+  margin-top: 14px;
+}
+@utility eyebrow-finding {
+  margin-top: 13px;
+}
+
+/* Fallback where text-box is unsupported — nothing is computed at runtime. Recomputed from the
+   MEASURED metrics; §3.7's table used Source Serif 4 asc 1024 / desc −400 (real: 1036 / −335)
+   and an eyebrow below-baseline of 4.85 (its own formula gives 3.85), so three of its five rows
+   were wrong. Working, with S = font-size and L = line-height:
+     sans space below baseline = L − [ (L − 1.276·S)/2 + 0.984·S ]
+     serif cap-top from box top =     (L − 1.371·S)/2 + 0.366·S
+   eyebrow 12/16 below-baseline = 3.85.
+     → statement 30/38: cap-top 9.42, inherent 13.27, target 20 → 7px
+     → masthead  68/69: cap-top 12.77, inherent 16.62, target 24 → 7px
+     → lede      18/28: cap-top  8.25, inherent 12.10, target 14 → 2px
+     → finding   17/24: cap-top  6.57, inherent 10.42, target 13 → 3px
+     → label 11/16 → figure 32/36 is sans over sans and already lands; 0px. */
+@supports not (text-box: trim-both cap alphabetic) {
+  .t-eyebrow + .t-statement,
+  .eyebrow-statement {
+    margin-top: 7px;
+  }
+  .t-eyebrow + .t-masthead,
+  .eyebrow-masthead {
+    margin-top: 7px;
+  }
+  .t-eyebrow + .t-lede,
+  .eyebrow-lede {
+    margin-top: 2px;
+  }
+  .t-eyebrow + .t-finding,
+  .eyebrow-finding {
+    margin-top: 3px;
+  }
+  .t-eyebrow + .t-title {
+    margin-top: 12px;
+  }
+  .t-label + .t-figure {
+    margin-top: 0px;
+  }
+}
+
+/* --------------------------------------------------------------------------------------------
+   8. Skeleton line. Skeletons are built to the exact height of what they replace, so there is no
+   reflow to hide and no cross-fade (§5.1). Square, `sunk`, and deliberately motionless.
+   -------------------------------------------------------------------------------------------- */
+@utility skeleton-line {
+  display: block;
+  border-radius: var(--radius-none);
+  background-color: var(--color-sunk);
+  color: transparent;
+  user-select: none;
+}
+
+/* --------------------------------------------------------------------------------------------
+   9. Base layer (§2.8).
+   -------------------------------------------------------------------------------------------- */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  html {
+    color-scheme: light dark;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-display); /* chrome is the default; prose opts in */
+    font-size: 13px;
+    line-height: 18px;
+    font-synthesis: none; /* Space Grotesk has no italic; never oblique it */
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Grayscale AA thins glyphs — the exact wrong move light-on-dark. Turn it off in dark BEFORE
+     any weight or optical-size compensation; on macOS this alone recovers most of the apparent
+     stroke weight a serif loses on an ink ground. */
+  [data-theme="dark"] body {
+    -webkit-font-smoothing: auto;
+    -moz-osx-font-smoothing: auto;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]):not([data-theme="dark"]) body {
+      -webkit-font-smoothing: auto;
+      -moz-osx-font-smoothing: auto;
+    }
+  }
+
+  /* Every atom supplies focus-ring instead. */
+  :focus-visible {
+    outline: none;
+  }
+}
+
+/* --------------------------------------------------------------------------------------------
+   10. Reduced motion (§5.1). The three deliberate substitutions that keep meaning when motion is
+   off — the live dot's static lime ring, the hero rendering its final state, the live feed's
+   freshness edge being left in place rather than decayed — belong to the components that own
+   those elements, because a blanket override cannot express them.
+   -------------------------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

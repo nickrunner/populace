@@ -1,28 +1,79 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type PopulationView, type Settings as SettingsView } from "../api.js";
-import { q } from "../queries.js";
+import { keys, q } from "../queries.js";
 import { useProject } from "../context.jsx";
-import { Button, Card, Chip, Failed, Field, Loading, NumberInput, Problem, Saved, Section, Select } from "../components/ui.jsx";
-import { usd } from "../format.js";
+import {
+  AlertDialog,
+  Badge,
+  Card,
+  CardHeader,
+  Code,
+  DurationField,
+  Field,
+  FieldError,
+  FieldGrid,
+  FormPage,
+  NumberInput,
+  PageHeader,
+  PayloadBlock,
+  RelativeTime,
+  Section,
+  Select,
+  Skeleton,
+  Stack,
+  StateBlock,
+  Switch,
+  Text,
+  type StateKind,
+} from "../design/index.js";
 
-const seconds = (ms: number): number => Math.round(ms / 1000);
-const toMs = (s: number): number => Math.max(0, Math.round(s)) * 1000;
+const MODELS: readonly { value: string; label: string }[] = [
+  { value: "claude-opus-5", label: "Opus 5 — the most capable, and the most expensive" },
+  { value: "claude-sonnet-5", label: "Sonnet 5 — a good default for the people" },
+  { value: "claude-haiku-4-5", label: "Haiku 4.5 — cheapest, for wide populations" },
+];
+
+const EFFORTS: readonly { value: string; label: string }[] = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+].map((effort) => ({ value: effort, label: effort }));
+
+const JUDGES: readonly { value: string; label: string }[] = [
+  { value: "model", label: "Ask a model to judge the replay" },
+  { value: "heuristic", label: "Compare the replay mechanically (free)" },
+];
+
+/**
+ * What this form actually sends. `updatedAt` and `hasApiKey` are read-only and would make the
+ * page permanently dirty the moment a save came back with a newer timestamp, so the comparison
+ * is over the four blocks the mutation writes and nothing else.
+ */
+const savedShape = (settings: SettingsView): string =>
+  JSON.stringify([settings.model, settings.guardrails, settings.verifier, settings.daemon]);
+
+/** The three fields `savePopulation` is given below; composition is edited elsewhere. */
+const populationShape = (population: PopulationView): string =>
+  JSON.stringify([population.cadence, population.maxWakes, population.seed]);
 
 /**
  * Settings: limits and spending, project-scoped. Every field here is a guardrail the runner
- * enforces, not a hint to the model (ADR-0009): the ceilings below are what actually stop a run,
- * whatever any estimate says.
+ * enforces, not a hint to the model (ADR-0009): the ceilings below are what actually stop an
+ * execution, whatever any estimate says.
  */
 export function Settings() {
   const { key } = useProject();
   const queries = useQueryClient();
   const settings = useQuery(q.settings(key));
   const populations = useQuery(q.populations(key));
-  const spendToday = useQuery(q.setup(key));
+  const setup = useQuery(q.setup(key));
 
   const [draft, setDraft] = useState<SettingsView | null>(null);
   const [pop, setPop] = useState<PopulationView | null>(null);
+  const [confirmingStop, setConfirmingStop] = useState(false);
   const population = populations.data?.items[0];
 
   useEffect(() => {
@@ -32,6 +83,13 @@ export function Settings() {
     if (pop === null && population) setPop(population);
   }, [pop, population]);
 
+  /**
+   * What a save actually changes, named. `invalidateQueries()` with no key refetches every live
+   * query in the app — every findings page, every trace, the live execution somebody is watching
+   * in another tab — to write four numbers. These are the three that hold them: the settings
+   * themselves, the population whose cadence was written beside them, and the project overview,
+   * which prints the daily ceiling on its own screen.
+   */
   const save = useMutation({
     mutationFn: async () => {
       if (!draft || !pop) return;
@@ -39,118 +97,378 @@ export function Settings() {
       await api.savePopulation(key, pop.id, { cadence: pop.cadence, maxWakes: pop.maxWakes, seed: pop.seed });
     },
     onSuccess: async () => {
-      await queries.invalidateQueries();
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: keys.settings(key) }),
+        queries.invalidateQueries({ queryKey: keys.populations(key) }),
+        queries.invalidateQueries({ queryKey: keys.project(key) }),
+      ]);
     },
   });
 
-  if (settings.isPending || populations.isPending) return <Loading what="your limits" />;
-  if (settings.isError) return <Failed error={settings.error} />;
-  if (populations.isError) return <Failed error={populations.error} />;
-  if (!draft || !pop) return <Loading what="your limits" />;
+  const stopEverything = useMutation({
+    mutationFn: (engaged: boolean) => api.setKillSwitch(engaged),
+    // The switch is machine-wide, and `setup` is where its state lives; the project overview
+    // reads it too, for the banner that says nothing is going anywhere. Nothing else on the
+    // machine changes the moment the switch moves — executions stop at their next turn, and the
+    // screens watching one are already watching it.
+    onSuccess: async () => {
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: keys.setup(key) }),
+        queries.invalidateQueries({ queryKey: keys.project(key) }),
+      ]);
+    },
+    // Either way the question has been answered; a failure is reported beside the switch, where
+    // the reader can see what the machine said rather than reading it through a scrim.
+    onSettled: () => {
+      setConfirmingStop(false);
+    },
+  });
 
-  const guard = draft.guardrails;
-  const setGuard = (patch: Partial<SettingsView["guardrails"]>): void => setDraft({ ...draft, guardrails: { ...guard, ...patch } });
-  const setPerWake = (patch: Partial<SettingsView["guardrails"]["perWake"]>): void => setGuard({ perWake: { ...guard.perWake, ...patch } });
+  const state: StateKind | undefined =
+    settings.isError || populations.isError
+      ? "failed"
+      : settings.isPending || populations.isPending || draft === null || pop === null
+        ? "loading"
+        : undefined;
 
-  const models = [
-    { value: "claude-opus-5", label: "Opus 5 — the most capable, and the most expensive" },
-    { value: "claude-sonnet-5", label: "Sonnet 5 — a good default for the people" },
-    { value: "claude-haiku-4-5", label: "Haiku 4.5 — cheapest, for wide populations" },
-  ];
-  const efforts = ["low", "medium", "high", "xhigh", "max"].map((e) => ({ value: e, label: e }));
+  const dirty =
+    (draft !== null && settings.data !== undefined && savedShape(draft) !== savedShape(settings.data)) ||
+    (pop !== null && population !== undefined && populationShape(pop) !== populationShape(population));
+
+  const guard = draft === null ? null : draft.guardrails;
+  const setGuard = (patch: Partial<SettingsView["guardrails"]>): void => {
+    if (draft === null) return;
+    setDraft({ ...draft, guardrails: { ...draft.guardrails, ...patch } });
+  };
+  const setPerWake = (patch: Partial<SettingsView["guardrails"]["perWake"]>): void => {
+    if (draft === null) return;
+    setGuard({ perWake: { ...draft.guardrails.perWake, ...patch } });
+  };
+
+  const stopped = setup.data?.killSwitch.engaged === true;
+
+  const body =
+    draft === null || pop === null || guard === null ? null : (
+      <Stack gap={8}>
+        {save.isError ? (
+          <Stack gap={2}>
+            <FieldError id="settings-save-error">
+              Saving failed. Nothing on this page was written; the values below are still yours to
+              send again.
+            </FieldError>
+            <PayloadBlock caption="What came back" value={save.error.message} error />
+          </Stack>
+        ) : null}
+
+        {draft.hasApiKey ? null : (
+          <Card>
+            <Stack gap={2} align="start">
+              <Badge tone="bad">No key</Badge>
+              <Text size="read" as="p">
+                This install has no <Code inProse>ANTHROPIC_API_KEY</Code>.
+              </Text>
+              <Text size="read" tone="soft" as="p">
+                The dashboard works without one, but nobody can visit anything: a person is a
+                sequence of model calls. Set it in the environment and restart.
+              </Text>
+            </Stack>
+          </Card>
+        )}
+
+        <Section title="Spending">
+          <Card>
+            <FieldGrid cols={3}>
+              <Field label="Per visit, dollars" hint="A visit that reaches this stops where it is.">
+                {({ id, describedBy, invalid }) => (
+                  <NumberInput
+                    id={id}
+                    describedBy={describedBy}
+                    invalid={invalid}
+                    value={guard.perWake.maxUsd}
+                    onChange={(v) => setPerWake({ maxUsd: v })}
+                    step={0.5}
+                  />
+                )}
+              </Field>
+              <Field
+                label="Per visit, turns"
+                hint="How many times someone may think before they have to stop."
+              >
+                {({ id, describedBy, invalid }) => (
+                  <NumberInput
+                    id={id}
+                    describedBy={describedBy}
+                    invalid={invalid}
+                    value={guard.perWake.maxTurns}
+                    onChange={(v) => setPerWake({ maxTurns: v })}
+                  />
+                )}
+              </Field>
+              <Field
+                label="Daily, dollars"
+                hint="Trailing 24 hours, across every execution on this machine."
+              >
+                {({ id, describedBy, invalid }) => (
+                  <NumberInput
+                    id={id}
+                    describedBy={describedBy}
+                    invalid={invalid}
+                    value={guard.dailyUsd}
+                    onChange={(v) => setGuard({ dailyUsd: v })}
+                    step={5}
+                  />
+                )}
+              </Field>
+            </FieldGrid>
+          </Card>
+        </Section>
+
+        <Section title="Stopping everything">
+          <Stack gap={4}>
+            <Text size="read-sm" tone="soft" as="p">
+              One switch for the whole machine. While it is on, nothing spends: visits in flight
+              stop at their next turn and no execution starts.
+            </Text>
+
+            <Card>
+              <Stack gap={3} align="start">
+                <Switch
+                  label="Stop everything"
+                  checked={stopped}
+                  onChange={(next) => {
+                    if (next) setConfirmingStop(true);
+                    else stopEverything.mutate(false);
+                  }}
+                  onLabel="stopped"
+                  offLabel="running"
+                  tone="danger"
+                  disabled={setup.data === undefined || stopEverything.isPending}
+                />
+
+                {stopped && setup.data !== undefined ? (
+                  <Text size="meta" tone="muted" as="p">
+                    Stopped <RelativeTime at={setup.data.killSwitch.at} mode="ago" />
+                    {setup.data.killSwitch.reason === null
+                      ? "."
+                      : `, because: ${setup.data.killSwitch.reason}`}
+                  </Text>
+                ) : null}
+
+                {stopEverything.isError ? (
+                  <Stack gap={2} align="start">
+                    <FieldError id="kill-switch-error">
+                      The switch did not move. It is still showing what the machine last told us.
+                    </FieldError>
+                    <PayloadBlock
+                      caption="What came back"
+                      value={stopEverything.error.message}
+                      error
+                    />
+                  </Stack>
+                ) : null}
+              </Stack>
+            </Card>
+          </Stack>
+        </Section>
+
+        <Section title="How often they come back">
+          <Stack gap={4}>
+            <Text size="read-sm" tone="soft" as="p">
+              The default a new simulation starts from, and applied to the simulations already
+              composed from this population.
+            </Text>
+
+            <Card>
+              <FieldGrid cols={3}>
+                <DurationField
+                  label="A visit every"
+                  unit="s"
+                  valueMs={pop.cadence.every}
+                  min={5000}
+                  onChange={(ms) => setPop({ ...pop, cadence: { ...pop.cadence, every: ms } })}
+                />
+                <DurationField
+                  label="Give or take"
+                  hint="Random extra delay, so they do not all arrive at once."
+                  unit="s"
+                  valueMs={pop.cadence.jitter}
+                  onChange={(ms) => setPop({ ...pop, cadence: { ...pop.cadence, jitter: ms } })}
+                />
+                <Field
+                  label="Stop each person after"
+                  hint="Visits. Zero means they keep coming back until you stop the execution."
+                >
+                  {({ id, describedBy, invalid }) => (
+                    <NumberInput
+                      id={id}
+                      describedBy={describedBy}
+                      invalid={invalid}
+                      value={pop.maxWakes ?? 0}
+                      onChange={(v) => setPop({ ...pop, maxWakes: v > 0 ? v : null })}
+                    />
+                  )}
+                </Field>
+              </FieldGrid>
+            </Card>
+          </Stack>
+        </Section>
+
+        <Section title="Who does the thinking">
+          <Stack gap={4}>
+            <Text size="read-sm" tone="soft" as="p">
+              The people, and the judge that checks what they file.
+            </Text>
+
+            <FieldGrid cols={2}>
+              <Card>
+                <CardHeader title="The people" />
+                <Stack gap={4}>
+                  <Field label="Model">
+                    {({ id, describedBy, invalid }) => (
+                      <Select
+                        id={id}
+                        describedBy={describedBy}
+                        invalid={invalid}
+                        value={draft.model.model}
+                        onChange={(v) => setDraft({ ...draft, model: { ...draft.model, model: v } })}
+                        options={MODELS}
+                      />
+                    )}
+                  </Field>
+                  <Field label="Effort">
+                    {({ id, describedBy, invalid }) => (
+                      <Select
+                        id={id}
+                        describedBy={describedBy}
+                        invalid={invalid}
+                        value={draft.model.effort}
+                        onChange={(v) =>
+                          setDraft({
+                            ...draft,
+                            model: { ...draft.model, effort: v as SettingsView["model"]["effort"] },
+                          })
+                        }
+                        options={EFFORTS}
+                      />
+                    )}
+                  </Field>
+                </Stack>
+              </Card>
+
+              <Card>
+                <CardHeader title="The judge" />
+                <Stack gap={4}>
+                  <Field
+                    label="How findings are checked"
+                    hint="The judge replays a finding's tool calls against the target and rules on what came back."
+                  >
+                    {({ id, describedBy, invalid }) => (
+                      <Select
+                        id={id}
+                        describedBy={describedBy}
+                        invalid={invalid}
+                        value={draft.verifier.judge}
+                        onChange={(v) =>
+                          setDraft({
+                            ...draft,
+                            verifier: {
+                              ...draft.verifier,
+                              judge: v as SettingsView["verifier"]["judge"],
+                            },
+                          })
+                        }
+                        options={JUDGES}
+                      />
+                    )}
+                  </Field>
+                  <Field
+                    label="Model"
+                    hint="The judge decides what reaches the digest, so it is worth running stronger than the people it judges."
+                  >
+                    {({ id, describedBy, invalid }) => (
+                      <Select
+                        id={id}
+                        describedBy={describedBy}
+                        invalid={invalid}
+                        value={draft.verifier.model.model ?? draft.model.model}
+                        onChange={(v) =>
+                          setDraft({
+                            ...draft,
+                            verifier: {
+                              ...draft.verifier,
+                              model: { ...draft.verifier.model, model: v },
+                            },
+                          })
+                        }
+                        options={MODELS}
+                      />
+                    )}
+                  </Field>
+                </Stack>
+              </Card>
+            </FieldGrid>
+          </Stack>
+        </Section>
+      </Stack>
+    );
 
   return (
-    <div>
-      <header className="mb-7 flex items-start justify-between gap-6">
-        <div>
-          <h1 className="t-title">Settings</h1>
-          <p className="t-body text-ink-soft mt-2 max-w-[68ch]">
-            What a run is allowed to cost, how often the people come back, and which models they and the judge run on. These are enforced while a run is going, not suggested to it.
-          </p>
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          <Saved at={draft.updatedAt} />
-          <Button tone="go" onClick={() => save.mutate()} disabled={save.isPending}>
-            {save.isPending ? "Saving…" : "Save"}
-          </Button>
-        </div>
-      </header>
+    <>
+      <FormPage
+        header={
+          <PageHeader
+            title="Settings"
+            lede="What an execution is allowed to cost, how often the people come back, and which models they and the judge run on. These are enforced while an execution is going, not suggested to it."
+          />
+        }
+        state={state}
+        loading={
+          <StateBlock
+            kind="loading"
+            what="your limits"
+            skeleton={
+              <Skeleton variant="block" height={132} count={3} label="Reading your limits" />
+            }
+          />
+        }
+        error={
+          <StateBlock
+            kind="failed"
+            what="your limits"
+            error={settings.isError ? settings.error : populations.error}
+          />
+        }
+        dirty={dirty}
+        saving={save.isPending}
+        onSave={() => save.mutate()}
+        savedAt={settings.data?.updatedAt ?? null}
+      >
+        {body}
+      </FormPage>
 
-      {save.isError ? <Problem>{save.error.message}</Problem> : null}
-      {!draft.hasApiKey ? (
-        <Card className="p-4 mb-6 border-critical/30">
-          <p className="t-body text-ink">This install has no <code className="font-mono text-[12.5px] text-evidence">ANTHROPIC_API_KEY</code>.</p>
-          <p className="t-body text-ink-soft mt-1">The dashboard works without one, but nobody can visit anything: a person is a sequence of model calls. Set it in the environment and restart.</p>
-        </Card>
-      ) : null}
-
-      <Section title="Spending">
-        <Card className="p-4">
-          <div className="mb-4 flex items-center gap-3">
-            <Chip tone={spendToday.data && spendToday.data.killSwitch.engaged ? "bad" : "neutral"}>
-              {spendToday.data?.killSwitch.engaged ? "everything is stopped" : "running normally"}
-            </Chip>
-            <span className="t-meta text-ink-muted">the daily ceiling is {usd(guard.dailyUsd)} across every run on this machine</span>
-          </div>
-          <div className="grid grid-cols-3 gap-4">
-            <Field label="Per visit, dollars" hint="A visit that reaches this stops where it is.">
-              <NumberInput value={guard.perWake.maxUsd} onChange={(v) => setPerWake({ maxUsd: v })} step={0.5} />
-            </Field>
-            <Field label="Per visit, turns" hint="How many times someone may think before they have to stop.">
-              <NumberInput value={guard.perWake.maxTurns} onChange={(v) => setPerWake({ maxTurns: v })} />
-            </Field>
-            <Field label="Daily, dollars" hint="Trailing 24 hours, across the whole population.">
-              <NumberInput value={guard.dailyUsd} onChange={(v) => setGuard({ dailyUsd: v })} step={5} />
-            </Field>
-          </div>
-        </Card>
-      </Section>
-
-      <Section title="How often they come back" sub="the default a new simulation starts from, and applied to the simulations that already run this population">
-        <Card className="p-4">
-          <div className="grid grid-cols-3 gap-4">
-            <Field label="A visit every… (seconds)">
-              <NumberInput value={seconds(pop.cadence.every)} onChange={(v) => setPop({ ...pop, cadence: { ...pop.cadence, every: toMs(v) } })} min={5} />
-            </Field>
-            <Field label="Give or take… (seconds)" hint="Random extra delay, so they do not all arrive at once.">
-              <NumberInput value={seconds(pop.cadence.jitter)} onChange={(v) => setPop({ ...pop, cadence: { ...pop.cadence, jitter: toMs(v) } })} />
-            </Field>
-            <Field label="Stop each person after… (visits)" hint="Zero means they keep coming back until you stop the run.">
-              <NumberInput value={pop.maxWakes ?? 0} onChange={(v) => setPop({ ...pop, maxWakes: v > 0 ? v : null })} />
-            </Field>
-          </div>
-        </Card>
-      </Section>
-
-      <Section title="Who does the thinking" sub="the people, and the judge that checks what they file">
-        <div className="grid grid-cols-2 gap-4">
-          <Card className="p-4">
-            <div className="t-label text-ink-muted mb-3">The people</div>
-            <Field label="Model">
-              <Select value={draft.model.model} onChange={(v) => setDraft({ ...draft, model: { ...draft.model, model: v } })} options={models} />
-            </Field>
-            <Field label="Effort">
-              <Select value={draft.model.effort} onChange={(v) => setDraft({ ...draft, model: { ...draft.model, effort: v as SettingsView["model"]["effort"] } })} options={efforts} />
-            </Field>
-          </Card>
-          <Card className="p-4">
-            <div className="t-label text-ink-muted mb-3">The judge</div>
-            <Field label="How findings are checked" hint="The judge replays a finding's tool calls against the target and rules on what came back.">
-              <Select
-                value={draft.verifier.judge}
-                onChange={(v) => setDraft({ ...draft, verifier: { ...draft.verifier, judge: v as SettingsView["verifier"]["judge"] } })}
-                options={[
-                  { value: "model", label: "Ask a model to judge the replay" },
-                  { value: "heuristic", label: "Compare the replay mechanically (free)" },
-                ]}
-              />
-            </Field>
-            <Field label="Model" hint="The judge decides what reaches the digest, so it is worth running stronger than the people it judges.">
-              <Select value={draft.verifier.model.model ?? draft.model.model} onChange={(v) => setDraft({ ...draft, verifier: { ...draft.verifier, model: { ...draft.verifier.model, model: v } } })} options={models} />
-            </Field>
-          </Card>
-        </div>
-      </Section>
-    </div>
+      {/*
+        The confirm before the machine goes quiet, and the product's most destructive control, so
+        it is announced as `alertdialog` and does not close on a click on the scrim. It shipped as
+        a `Dialog` only because the thing that opens it is a `Switch` rather than a slotted
+        button; `AlertDialog` now takes a controlled `open`, which is exactly that case, and
+        `confirmPending` keeps the panel up while the switch is in flight — `onSettled` closes it
+        either way, so a failure is read beside the switch rather than through a scrim.
+      */}
+      <AlertDialog
+        open={confirmingStop}
+        onOpenChange={setConfirmingStop}
+        title="Stop everything on this machine?"
+        body={
+          <>
+            Every execution stops at its next turn and none starts again until you turn this back
+            off. Findings already filed stay where they are, and turning it back off does not
+            resume anything on its own — you send the people in again yourself.
+          </>
+        }
+        confirmLabel="Stop everything"
+        confirmPending={stopEverything.isPending}
+        onConfirm={() => stopEverything.mutate(true)}
+      />
+    </>
   );
 }

@@ -3,15 +3,62 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>populace</title>
-    <!-- The design's two typefaces, with the fallbacks it names. The dashboard is local-first:
-         if these never load, system-ui and ui-monospace carry the same distinction. -->
+
+    <!-- The pre-paint theme script (DESIGN-SYSTEM §2.9). It runs before the stylesheet so there
+         is no flash of the wrong theme. `light` and `dark` are explicit choices; the attribute
+         being ABSENT is how "system" is spelled, and system is the default. The toggle writes
+         the key or removes it; nothing else may set this attribute. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("populace:theme");
+          if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+        } catch (e) {
+          /* storage off: system preference applies, which is the default anyway */
+        }
+      })();
+    </script>
+
+    <!-- Space Grotesk is self-hosted and same-origin, so on a local-first dashboard every name,
+         number, label, button and nav item is right even with no network at all. -->
+    <link
+      rel="preload"
+      href="/fonts/SpaceGrotesk-Variable.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+
+    <!-- VITE_FONT_SOURCE=local strips everything between these markers at build time, and the
+         serif and the mono resolve to their metric-matched fallbacks instead (§8.4). The
+         dashboard routinely runs against localhost with no network; without the flag the first
+         air-gapped install would silently ship Georgia and nobody would have decided that. -->
+    <!--FONT_CDN_START-->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap"
       rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300..600;1,8..60,300..600&family=IBM+Plex+Mono:wght@400;500&display=swap"
     />
+    <!--FONT_CDN_END-->
+
+    <!-- §8.3's browser-tab row is the SVG, the ICO and the three PNGs. The PNGs carry the kit's
+         own tighter padding for 16–48px, which is why they are not the mark scaled down; a
+         browser that will not take the SVG lands on them rather than on the 48px ICO. -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-16.png" type="image/png" sizes="16x16" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="/favicon-48.png" type="image/png" sizes="48x48" />
+    <link rel="alternate icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="Populace deploys a population of AI people who use your app through its MCP server, uncover bugs, and reveal usability and discoverability problems."
+    />
+    <title>Populace — Autonomous testing for MCP apps</title>
   </head>
   <body>
     <div id="root"></div>
