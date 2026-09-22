@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { api, type TargetCheck } from "../api.js";
+import { api } from "../api.js";
 import { q } from "../queries.js";
 import { useProject } from "../context.jsx";
 import { people as peopleWord, plural } from "../format.js";
@@ -21,14 +21,12 @@ import {
   MetaSentence,
   Mono,
   NumberInput,
-  PayloadBlock,
   Radio,
   RadioGroup,
   Spacer,
   Stack,
   Stepper,
   Text,
-  ToolName,
   Tooltip,
   visitPlanOf,
   WhatWentWrong,
@@ -175,115 +173,33 @@ function TargetSummary() {
   );
 }
 
-/** Step 1. One address and one button; what comes back is the tool list, which is the answer. */
+/**
+ * Step 1, as a link.
+ *
+ * This used to be the connect form itself — and it was the SECOND one on this screen's own route,
+ * because `Target.tsx` carried another at `:t === "new"`. Two target-creation UIs reachable from
+ * one place, one of which asked for identity fields nobody can answer before they have seen a
+ * tool list. The good one was this one, and it has been promoted to `library/targets/new` where
+ * it can also offer first contact and a name. A panel step that duplicates a screen is a third
+ * voice; this one points at the screen.
+ */
 function ConnectStep() {
-  const { key } = useProject();
-  const queries = useQueryClient();
-  const [url, setUrl] = useState("");
-  const [check, setCheck] = useState<TargetCheck | null>(null);
-  const connectErrorId = useId();
-
-  const connect = useMutation({
-    mutationFn: async () => {
-      const result = await api.checkDraftTarget(key, { mcp: [{ name: "default", url }] });
-      setCheck(result);
-      if (!result.ok) return null;
-      // A check that succeeded IS the connection: the tool list is what the identity fields are
-      // guessed from, and guessing them here saves a form nobody can fill in before they have it.
-      return api.saveTarget(key, null, {
-        name: result.server?.name || new URL(url).host,
-        mcp: [{ name: "default", url }],
-        identity:
-          result.identity.signupTool === null
-            ? { strategy: "self-signup", signupTool: "", tokenPath: "token", emailDomain: "populace.test" }
-            : {
-                strategy: "self-signup",
-                signupTool: result.identity.signupTool,
-                tokenPath: result.identity.tokenPath ?? "token",
-                ...(result.identity.userIdPath === null ? {} : { userIdPath: result.identity.userIdPath }),
-                ...(result.identity.teardownTool === null ? {} : { teardownTool: result.identity.teardownTool }),
-                emailDomain: "populace.test",
-              },
-      });
-    },
-    onSuccess: async () => {
-      await queries.invalidateQueries();
-    },
-  });
-
+  const { href } = useProject();
   return (
     <Stack gap={3}>
-      <Field label="Its MCP address" hint="Nothing is asked of it until you press Check.">
-        {(ids) => (
-          <Input
-            value={url}
-            onChange={setUrl}
-            placeholder="http://127.0.0.1:4310/mcp"
-            mono
-            id={ids.id}
-            describedBy={ids.describedBy}
-            invalid={ids.invalid}
-          />
-        )}
-      </Field>
-
+      <Text size="read" as="p">
+        Paste the address your product answers on. Nothing is asked of it until you press Check,
+        and nothing is sent anywhere until somebody is picked.
+      </Text>
       <Inline gap={3} align="center">
-        <Button
-          variant="primary"
-          onClick={() => {
-            connect.mutate();
-          }}
-          pending={connect.isPending}
-          disabled={connect.isPending || url === ""}
-          aria-describedby={connect.isError ? connectErrorId : undefined}
-        >
-          Check
+        <Button asChild variant="primary">
+          <Link to={href("library/targets/new")}>Connect a target</Link>
         </Button>
       </Inline>
-
-      {connect.isError ? (
-        <WhatWentWrong
-          id={connectErrorId}
-          says="Nothing was saved, and nobody has been sent anywhere."
-          error={connect.error}
-        />
-      ) : null}
-
-      {check === null ? null : check.ok ? (
-        <Stack gap={1}>
-          <Text size="read" as="p">
-            {plural(check.tools.length, "tool")}
-            {check.identity.signupTool === null ? (
-              ", and nothing here looks like a sign-up, so nobody will have an account."
-            ) : (
-              <>
-                , and they sign up with <ToolName name={check.identity.signupTool} />.
-              </>
-            )}
-          </Text>
-          {check.undescribed.length > 0 ? (
-            <Text size="read-sm" tone="soft" as="p">
-              {check.undescribed.length === 1
-                ? "One of them has no description"
-                : `${check.undescribed.length} of them have no description`}
-              . People decide what to try from descriptions alone, so those will most likely never
-              be touched.
-            </Text>
-          ) : null}
-        </Stack>
-      ) : (
-        <Stack gap={2}>
-          <Text size="read" tone="critical" as="p">
-            Could not reach it. Nothing was saved; the address is still yours to fix.
-          </Text>
-          {check.errors.length === 0 ? null : (
-            <PayloadBlock caption="What came back" value={check.errors.join("\n")} error />
-          )}
-        </Stack>
-      )}
     </Stack>
   );
 }
+
 
 /** Step 2. Six people who find different things; tick two or three and say how many of each. */
 function PickStep() {

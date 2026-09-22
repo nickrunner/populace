@@ -27,6 +27,7 @@ import { NewSimulation } from "./screens/NewSimulation.jsx";
 import { Preflight } from "./screens/Preflight.jsx";
 import { Targets } from "./screens/library/Targets.jsx";
 import { Target } from "./screens/library/Target.jsx";
+import { ConnectTarget } from "./screens/library/ConnectTarget.jsx";
 import { Personas } from "./screens/library/Personas.jsx";
 import { PersonaEditor } from "./screens/library/PersonaEditor.jsx";
 import { Cohorts } from "./screens/library/Cohorts.jsx";
@@ -173,6 +174,14 @@ function ProjectShell() {
             rail's trailing figure.
           */}
           <Route path="library/targets" element={<Targets />} />
+          {/*
+            Connecting is its own flow, and it comes BEFORE `:t` so that `new` is a verb rather
+            than a target id. It used to be a `:t === "new"` branch inside the editor — every
+            field at once, including identity fields nobody can fill in before they have seen a
+            tool list — while FirstRun's step 1 had a second, better one. Two target-creation UIs
+            from one screen; this is the good one, promoted.
+          */}
+          <Route path="library/targets/new" element={<ConnectTarget />} />
           <Route path="library/targets/:t" element={<Target />} />
           <Route path="library/personas" element={<Personas />} />
           <Route path="library/personas/:x" element={<PersonaEditor />} />

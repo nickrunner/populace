@@ -189,11 +189,18 @@ const TABS = [
  */
 export function Target() {
   const { key: projectKey, project, href } = useProject();
-  const { t = "new" } = useParams();
+  const { t = "" } = useParams();
   const navigate = useNavigate();
   const queries = useQueryClient();
   const targets = useQuery(q.targets(projectKey));
-  const existing = t === "new" ? undefined : targets.data?.items.find((target) => target.id === t);
+  /*
+    A SAVED target, always. This screen used to double as the create form on `:t === "new"` —
+    every field at once, including identity fields (`signupTool`, `tokenPath`, `userIdPath`)
+    that nobody can fill in before they have seen the target's tool list. Connecting is its own
+    flow at `library/targets/new` now, which asks for an address, checks it, and guesses those
+    fields from what came back. There is one way to make a target and one screen to edit one.
+  */
+  const existing = targets.data?.items.find((target) => target.id === t);
 
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [loaded, setLoaded] = useState(false);
@@ -282,7 +289,7 @@ export function Target() {
     ? "loading"
     : targets.isError
       ? "failed"
-      : t !== "new" && existing === undefined && save.isIdle
+      : existing === undefined && save.isIdle
         ? "gone"
         : undefined;
 
@@ -292,8 +299,8 @@ export function Target() {
     <FormPage
       header={
         <PageHeader
-          title={existing?.name ?? "Connect a target"}
-          crumbs={[{ label: "Targets", to: href("library/targets") }, { label: existing?.name ?? "New target" }]}
+          title={existing?.name ?? "This target"}
+          crumbs={[{ label: "Targets", to: href("library/targets") }, { label: existing?.name ?? t }]}
           lede="Where the people go. Everything here is what they are told before their first visit, and what they are allowed to reach when they get there."
         />
       }
