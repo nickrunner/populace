@@ -114,6 +114,14 @@ export const SimulationSummaryViewSchema = z.object({
   fixedSinceLast: z.number().int().nonnegative(),
   costUsd: z.number().nonnegative(),
   nextVisitAt: z.iso.datetime().nullable(),
+  /**
+   * Which blocks of the project's settings this simulation sets for itself, in the words the
+   * Settings screen uses for them. A simulation that overrides nothing reports nothing, and a
+   * screen that shows a limit can say whether editing Settings would move it — otherwise a
+   * simulation quietly running on its own ceilings looks exactly like one running on the
+   * project's.
+   */
+  overriding: z.array(z.enum(["spending", "verification", "model"])),
 });
 export type SimulationSummaryView = z.infer<typeof SimulationSummaryViewSchema>;
 

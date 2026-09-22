@@ -412,7 +412,7 @@ export async function resolveSimulationConfig(store: Store, process: ProcessConf
     // persona's model override layers over the global one. An unset field falls through.
     model: resolveModel(settings.model, overrides.model),
     guardrails: { ...settings.guardrails, ...overrides.guardrails, perWake: { ...settings.guardrails.perWake, ...overrides.guardrails.perWake } },
-    verifier: { ...settings.verifier, ...overrides.verifier },
+    verifier: { ...settings.verifier, ...overrides.verifier, model: { ...settings.verifier.model, ...overrides.verifier.model } },
     daemon: settings.daemon,
     store: process.store,
     digestDir: process.digestDir,

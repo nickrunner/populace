@@ -21,6 +21,7 @@ import {
   Ledger,
   LedgerRow,
   MetaLine,
+  MetaSentence,
   Money,
   Mono,
   PageHeader,
@@ -70,6 +71,23 @@ import {
  * Nothing here promises what will come back. The estimate names its own basis, the mode paragraph
  * says outright that the numbers move between executions, and neither is softened (§7.3).
  */
+
+/**
+ * The Settings blocks a simulation sets for itself, in the words the Settings screen uses for
+ * them. It asks each override block what it HOLDS rather than comparing it to a set of defaults,
+ * so it carries no fingerprint of the old ones to go stale on a row written before the fix.
+ */
+const OVERRIDE_WORDS: Record<string, string> = {
+  spending: "spending limits",
+  verification: "verification settings",
+  model: "model",
+};
+
+/** "spending limits", or "spending limits and the model" — an English list, not a comma-join. */
+function listOf(blocks: readonly string[]): string {
+  const words = blocks.map((block) => OVERRIDE_WORDS[block] ?? block);
+  return words.length < 2 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
+}
 
 /**
  * One dot per person going, none of whom has been anywhere yet. The sample names the wire already
@@ -213,6 +231,19 @@ export function Preflight() {
               />
             }
           />
+
+          {/*
+            Under the estimate, because the figure above is exactly what it qualifies: a ceiling
+            of $7 in Settings and a run held to $50 are indistinguishable on screen without it,
+            and this is the last screen before the money. A `MetaSentence`, not a `Card` — it is
+            a qualification of the number above, not an aside beside it (§3, organism 1).
+          */}
+          {view.simulation.overriding.length === 0 ? null : (
+            <MetaSentence>
+              This simulation carries its own {listOf(view.simulation.overriding)}, so what
+              Settings says is not what this run is held to.
+            </MetaSentence>
+          )}
 
           <Section title="Who is going" trailing={people(view.totalPeople)}>
             <Stack gap={6}>

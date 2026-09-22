@@ -62,6 +62,19 @@ function sum(values: number[]): number {
   return values.reduce((total, value) => total + value, 0);
 }
 
+/**
+ * The blocks of the project's settings a simulation sets for itself, named as the Settings screen
+ * names them. It asks each override block what it holds rather than comparing it to anything: a
+ * block with no fields in it overrides nothing, whoever wrote it and whenever.
+ */
+function overriding(simulation: Simulation): SimulationSummaryView["overriding"] {
+  const out: SimulationSummaryView["overriding"] = [];
+  if (Object.keys(simulation.overrides.guardrails).length > 0) out.push("spending");
+  if (Object.keys(simulation.overrides.verifier).length > 0) out.push("verification");
+  if (Object.keys(simulation.overrides.model).length > 0) out.push("model");
+  return out;
+}
+
 export class ProjectReadModel {
   private readonly read: ReadModel;
 
@@ -251,6 +264,7 @@ export class ProjectReadModel {
       fixedSinceLast: reported.length < 2 ? 0 : [...previousSignatures].filter((s) => !latestSignatures.has(s)).length,
       costUsd: round(sum(wakes.map((w) => w.costUsd))),
       nextVisitAt: upcoming.length ? upcoming.reduce((a, b) => (a < b ? a : b)) : null,
+      overriding: overriding(simulation),
     };
   }
 
