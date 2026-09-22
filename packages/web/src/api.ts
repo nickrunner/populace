@@ -180,7 +180,9 @@ export const api = {
     id === null ? send("POST", routes.personas(p), body, PersonaViewSchema) : send("PUT", routes.persona(p, id), body, PersonaViewSchema),
   removePersona: (p: string, id: string) => send("DELETE", routes.persona(p, id), undefined, nothing),
   /** The system prompt this persona would produce, rendered by the runner rather than guessed at. */
-  personaPreview: (p: string, x: string) => send("POST", routes.personaPreview(p, x), undefined, promptPreview),
+  /** `target` says WHICH target the prompt is a preview of; the server refuses to guess above one. */
+  personaPreview: (p: string, x: string, target: string | null) =>
+    send("POST", `${routes.personaPreview(p, x)}${target === null ? "" : `?target=${encodeURIComponent(target)}`}`, undefined, promptPreview),
 
   cohorts: (p: string) => get(routes.cohorts(p), cohorts),
   cohort: (p: string, c: string) => get(routes.cohort(p, c), CohortViewSchema),

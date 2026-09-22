@@ -20,7 +20,7 @@ export const keys = {
   personas: (p: string) => ["personas", p] as const,
   persona: (p: string, x: string) => ["persona", p, x] as const,
   starters: (p: string) => ["starters", p] as const,
-  personaPreview: (p: string, x: string) => ["persona-preview", p, x] as const,
+  personaPreview: (p: string, x: string, target: string | null) => ["persona-preview", p, x, target] as const,
 
   cohorts: (p: string) => ["cohorts", p] as const,
   cohort: (p: string, c: string) => ["cohort", p, c] as const,
@@ -88,7 +88,7 @@ export const q = {
   persona: (p: string, x: string) => ({ queryKey: keys.persona(p, x), queryFn: () => api.persona(p, x) }),
   starters: (p: string) => ({ queryKey: keys.starters(p), queryFn: () => api.starters(p) }),
   /** A POST that spends nothing: it renders the prompt, it does not send it anywhere. */
-  personaPreview: (p: string, x: string) => ({ queryKey: keys.personaPreview(p, x), queryFn: () => api.personaPreview(p, x) }),
+  personaPreview: (p: string, x: string, target: string | null) => ({ queryKey: keys.personaPreview(p, x, target), queryFn: () => api.personaPreview(p, x, target) }),
 
   cohorts: (p: string) => ({ queryKey: keys.cohorts(p), queryFn: () => api.cohorts(p) }),
   cohort: (p: string, c: string) => ({ queryKey: keys.cohort(p, c), queryFn: () => api.cohort(p, c) }),

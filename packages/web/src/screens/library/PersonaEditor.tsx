@@ -125,6 +125,19 @@ export function PersonaEditor() {
   const personas = useQuery(q.personas(key));
   const existing = x === "new" ? undefined : personas.data?.items.find((persona) => persona.id === x);
 
+  /*
+    Which target the prompt preview and the tool policy are ABOUT.
+
+    Both used to read `project.simulations[0]?.target.id` — the first simulation's target, which is
+    a guess twice over: it picks a simulation arbitrarily and then takes its target. A project with
+    a dev and a qa endpoint previewed whichever one the first simulation happened to name, and a
+    project with no simulations at all previewed nothing. The targets themselves are the right
+    source, and the first of THEM is a defensible default only because the server refuses to guess
+    when there are several — so the choice is visible rather than silent.
+  */
+  const targets = useQuery(q.targets(key));
+  const target = targets.data?.items[0] ?? null;
+
   const [draft, setDraft] = useState<Spec>(EMPTY);
   const [loaded, setLoaded] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -426,7 +439,7 @@ export function PersonaEditor() {
           policy={draft.tools}
           onChange={(tools) => set("tools", tools)}
           projectKey={key}
-          targetId={project.simulations[0]?.target.id ?? null}
+          targetId={target?.id ?? null}
           simulationSlug={project.simulations[0]?.slug ?? null}
         />
 
@@ -539,7 +552,7 @@ export function PersonaEditor() {
         </StateBlock>
       }
       left={form}
-      right={<PromptPreview projectKey={key} personaId={existing?.id ?? null} dirty={dirty} />}
+      right={<PromptPreview projectKey={key} personaId={existing?.id ?? null} dirty={dirty} targetId={target?.id ?? null} />}
     />
   );
 }
@@ -667,9 +680,30 @@ function PersonaToolPolicy({
   );
 }
 
-/** The prompt, as the runner renders it. Everything above is only ever a way of writing this. */
-function PromptPreview({ projectKey, personaId, dirty }: { projectKey: string; personaId: string | null; dirty: boolean }) {
-  const preview = useQuery({ ...q.personaPreview(projectKey, personaId ?? ""), enabled: personaId !== null });
+/**
+ * The prompt, as the runner renders it. Everything above is only ever a way of writing this.
+ *
+ * **It is a preview OF A TARGET.** The system prompt carries the target's own description and its
+ * tool list, so which target it is changes what comes back — and the server now refuses to pick
+ * one when a project holds several, because `listTargets[0]` meant "whichever you edited last".
+ * The target is chosen here, from the list this screen already loads, and it is part of the query
+ * key so switching target refetches rather than showing a cached prompt for the other one.
+ */
+function PromptPreview({
+  projectKey,
+  personaId,
+  dirty,
+  targetId,
+}: {
+  projectKey: string;
+  personaId: string | null;
+  dirty: boolean;
+  targetId: string | null;
+}) {
+  const preview = useQuery({
+    ...q.personaPreview(projectKey, personaId ?? "", targetId),
+    enabled: personaId !== null,
+  });
 
   return (
     <Section title="What the model is told">

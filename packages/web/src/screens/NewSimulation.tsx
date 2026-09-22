@@ -133,13 +133,28 @@ export function NewSimulation() {
   const priced = project.simulations[0];
   const estimate = useQuery({ ...q.estimate(key, priced?.slug ?? ""), enabled: priced !== undefined });
 
+  const pops = populations.data?.items ?? [];
+  const tgts = targets.data?.items ?? [];
+  const chosenPopulation = populationId ?? pops[0]?.id ?? "";
+  const chosenTarget = targetId ?? tgts[0]?.id ?? "";
+
   const create = useMutation({
+    /*
+      Both ids, always — `chosenTarget`/`chosenPopulation`, which is what the radio groups are
+      actually showing, not the raw state.
+
+      These used to be sent only when the reader had clicked one, on the reasoning that an unsent
+      field means "you decide". The form pre-selects the first of each, so accepting the default
+      without clicking sent neither — and the server has stopped guessing between several targets,
+      which would have made the happy path on a two-target project a 400. Send what the screen
+      says; a form that displays a choice has made one.
+    */
     mutationFn: () =>
       api.createSimulation(key, {
         name: name.trim(),
         visitsPerPerson: bounded ? visits : null,
-        ...(populationId === null ? {} : { populationId }),
-        ...(targetId === null ? {} : { targetId }),
+        populationId: chosenPopulation,
+        targetId: chosenTarget,
       }),
     onSuccess: async (simulation) => {
       await queries.invalidateQueries();
@@ -147,10 +162,6 @@ export function NewSimulation() {
     },
   });
 
-  const pops = populations.data?.items ?? [];
-  const tgts = targets.data?.items ?? [];
-  const chosenPopulation = populationId ?? pops[0]?.id ?? "";
-  const chosenTarget = targetId ?? tgts[0]?.id ?? "";
   const population = pops.find((option) => option.id === chosenPopulation);
   const headcount = population === undefined ? 0 : headcountOf(population);
   const plannedVisits = bounded ? headcount * visits : headcount;

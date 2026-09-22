@@ -22,6 +22,7 @@ import {
   SetupStatusSchema,
   StarterPersonaViewSchema,
   FirstContactSchema,
+  SimulationSummaryViewSchema,
   StoredTargetViewSchema,
   TargetCheckSchema,
   TargetPromisesSchema,
@@ -2514,6 +2515,42 @@ describe("taking things out again", () => {
     expect(refused.status).toBe(409);
     expect(await refused.text()).toContain("simulation");
     expect(await h.store.getTarget(targetId)).toBeDefined();
+    await h.close();
+  });
+
+  /**
+   * `listTargets` orders `updated_at DESC`, so "the first target" always meant "whichever you
+   * edited last" — a coin flip that got frozen onto a simulation row forever. One target still
+   * defaults, because with one there is nothing to choose; several without a `targetId` is a
+   * refusal that names them, because a 400 saying "ambiguous" is a puzzle.
+   */
+  it("refuses to guess which target a simulation visits, and names the choices", async () => {
+    const h = await harness();
+    const identity = { strategy: "self-signup" as const, signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", emailDomain: "populace.test" };
+
+    // One target: it still defaults, and nothing has to say so.
+    const one = await post(h.app, routes.simulations(P), { name: "First" });
+    expect(one.status).toBe(201);
+
+    // A second, and the guess stops.
+    const qa = StoredTargetViewSchema.parse(await json(await post(h.app, routes.targets(P), { name: "Tasklet — qa", mcp: [{ name: "default", url: target.mcpUrl }], identity })));
+    const refused = await post(h.app, routes.simulations(P), { name: "Second" });
+    expect(refused.status).toBe(400);
+    const why = await refused.text();
+    expect(why).toContain("2 targets");
+    expect(why).toContain("Tasklet — qa");
+
+    // Saying which is all it wants.
+    const said = await post(h.app, routes.simulations(P), { name: "Second", targetId: qa.id });
+    expect(said.status).toBe(201);
+    expect(SimulationSummaryViewSchema.parse(await json(said)).target.id).toBe(qa.id);
+
+    // The prompt preview is a preview OF a target, so it keeps the same rule.
+    const persona = (await h.store.listPersonas("default"))[0]!;
+    const blind = await post(h.app, routes.personaPreview(P, persona.id));
+    expect(blind.status).toBe(400);
+    expect(await blind.text()).toContain("?target=");
+    expect((await post(h.app, `${routes.personaPreview(P, persona.id)}?target=${qa.id}`)).status).toBe(200);
     await h.close();
   });
 

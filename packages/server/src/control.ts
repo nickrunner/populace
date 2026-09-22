@@ -590,7 +590,20 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const persona = owned(await deps.store.getPersona(param(c, "x")), s.project.id);
     if (!persona) return fail(c, "not_found", "no such person");
-    const target = (await deps.store.listTargets(s.project.id))[0];
+    /*
+      A prompt preview is a preview OF A TARGET: the system prompt carries the target's own
+      description and its tool list, so which target it is changes what comes back. Picking
+      `listTargets[0]` meant the preview silently described whichever target was edited last.
+      `?target=` says which; one target still defaults; several without it is a refusal that names
+      them, exactly as `POST /simulations` does.
+    */
+    const targets = await deps.store.listTargets(s.project.id);
+    const asked = c.req.query("target");
+    if (asked === undefined && targets.length > 1) {
+      return fail(c, "bad_request", `this project has ${targets.length} targets and a preview is of one of them — add ?target= : ${targets.map((t) => `${t.name} (${t.id})`).join(", ")}`);
+    }
+    const target = asked === undefined ? targets[0] : targets.find((t) => t.id === asked || t.slug === asked);
+    if (asked !== undefined && !target) return fail(c, "not_found", `no target called ${asked} in this project`);
     const seed = `preview:${persona.slug}:0`;
     const agent: Agent = {
       id: `preview/${persona.slug}#1`,
@@ -1142,8 +1155,35 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const settings = await ensureSettings(deps.store, s.project.id);
     const population = body.value.populationId ? owned(await deps.store.getPopulation(body.value.populationId), s.project.id) : await ensurePopulation(deps.store, s.project.id);
     if (!population) return fail(c, "bad_request", "that population is not in this project");
-    const target = body.value.targetId ? owned(await deps.store.getTarget(body.value.targetId), s.project.id) : (await deps.store.listTargets(s.project.id))[0];
+
+    /*
+      **With several targets, say which. Do not guess.**
+
+      This was `listTargets(projectId)[0]` — and `listTargets` orders `updated_at DESC`, so "the
+      first" meant "whichever you edited last". A project with a dev and a qa endpoint got a
+      simulation pointed at whichever of them had most recently been touched, silently, and the
+      row froze that choice forever.
+
+      One target still defaults, because with one there is nothing to choose and making every
+      caller say so would be ceremony. Zero keeps the refusal it always had. Two or more without
+      a `targetId` is a refusal that NAMES the choices, because a 400 saying "ambiguous" is a
+      puzzle and a 400 listing the two targets is an answer. `SimulationInputSchema.targetId`
+      stays optional, so this is a runtime refusal rather than a contract break.
+    */
+    const targets = await deps.store.listTargets(s.project.id);
+    if (!body.value.targetId && targets.length > 1) {
+      return fail(c, "bad_request", `this project has ${targets.length} targets — say which one this simulation visits: ${targets.map((t) => `${t.name} (${t.id})`).join(", ")}`);
+    }
+    const target = body.value.targetId ? owned(await deps.store.getTarget(body.value.targetId), s.project.id) : targets[0];
     if (!target) return fail(c, "conflict", "connect a target before making a simulation; a simulation names the target its runs go to");
+
+    // Same rule for the cast. `ensurePopulation` above resolves the default, which is right while
+    // there is one; with several, a simulation that does not say who goes is a guess about the
+    // most expensive thing on the row.
+    const populations = await deps.store.listPopulations(s.project.id);
+    if (!body.value.populationId && populations.length > 1) {
+      return fail(c, "bad_request", `this project has ${populations.length} populations — say which cast this simulation sends: ${populations.map((p) => `${p.name} (${p.id})`).join(", ")}`);
+    }
     const taken = new Set((await deps.store.listSimulations({ projectId: s.project.id, includeArchived: true })).map((sim) => sim.slug));
     const base = body.value.slug ?? (slugify(body.value.name) || "simulation");
     let slug = base;
