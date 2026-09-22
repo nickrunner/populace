@@ -187,6 +187,12 @@ importers:
         specifier: ^4.1.0
         version: 4.6.5
 
+  packages/tdk:
+    dependencies:
+      zod:
+        specifier: ^4.1.0
+        version: 4.6.5
+
   packages/web:
     dependencies:
       '@populace/contract':

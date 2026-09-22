@@ -1,0 +1,31 @@
+{
+  "name": "@populace/tdk",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "description": "Target Development Kit: the app-side half of populace. Mount one route, implement one function, and a population of strangers can make accounts on your product.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "zod": "^4.1.0"
+  },
+  "peerDependencies": {
+    "firebase-admin": ">=12"
+  },
+  "peerDependenciesMeta": {
+    "firebase-admin": {
+      "optional": true
+    }
+  }
+}

@@ -17,6 +17,9 @@
       "path": "packages/mock-target"
     },
     {
+      "path": "packages/tdk"
+    },
+    {
       "path": "packages/runner"
     },
     {
