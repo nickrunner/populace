@@ -1020,6 +1020,34 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const population = await populationOf(c, s.project.id);
     if (!population) return fail(c, "not_found", "no such population");
+    /*
+      The last one does not go, and neither does the default.
+
+      `ensurePopulation` resolves the row whose slug is `everyone` and falls back to
+      `populations[0]` when there is none (`config-store.ts`). Five surfaces lean on it — the
+      setup status, the persona-keyed composition path, `cohortsOf`, `ensureSimulation` and the
+      first-run panel — so deleting the default silently retargets every one of them at whichever
+      population happens to be first, and deleting the last one leaves them creating a fresh empty
+      "Everyone" behind the reader's back. Neither is a thing a Remove button should be able to do
+      quietly, and the Populations screen puts a Remove button on exactly this row.
+
+      A project always has somewhere for a cohort to go. Rename it if you do not like the name.
+    */
+    const all = await deps.store.listPopulations(s.project.id);
+    if (all.length <= 1) {
+      return fail(c, "conflict", `${population.name} is the only population in ${s.project.name}; a project keeps one. Compose another first, or empty this one.`);
+    }
+    /*
+      Asked the way `ensurePopulation` answers it, not by comparing the slug. The default is the
+      row slugged `everyone` OR, when there is none — which is every YAML-seeded project, since an
+      import names its population whatever the file says — `populations[0]`. A slug comparison
+      guards the first case and misses the second entirely, which is the case a real install is
+      most likely to be in.
+    */
+    const fallback = await ensurePopulation(deps.store, s.project.id);
+    if (fallback.id === population.id) {
+      return fail(c, "conflict", `${population.name} is this project's default population — new cohorts land in it, and anything that has not been told which cast to use reads it. Empty it instead, or make another the default by removing this one's cohorts.`);
+    }
     // The store refuses a population a simulation still names, and naming the referrer is the
     // point of that refusal (SPEC §2.14). Uncaught it was a 500, which tells the user nothing.
     try {

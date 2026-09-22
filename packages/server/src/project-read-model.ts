@@ -98,11 +98,12 @@ export class ProjectReadModel {
   }
 
   async summary(project: Project): Promise<ProjectSummaryView> {
-    const [simulations, targets, personas, cohorts, people, runs] = await Promise.all([
+    const [simulations, targets, personas, cohorts, populations, people, runs] = await Promise.all([
       this.store.listSimulations({ projectId: project.id }),
       this.store.listTargets(project.id),
       this.store.listPersonas(project.id),
       this.store.listCohorts(project.id),
+      this.store.listPopulations(project.id),
       this.store.listPeople({ projectId: project.id }),
       this.store.listRuns({ projectId: project.id }),
     ]);
@@ -120,7 +121,7 @@ export class ProjectReadModel {
       archived: project.archived,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
-      counts: { simulations: simulations.length, targets: targets.length, personas: personas.length, cohorts: cohorts.length, people: people.length },
+      counts: { simulations: simulations.length, targets: targets.length, personas: personas.length, cohorts: cohorts.length, populations: populations.length, people: people.length },
       runningRunIds: runs.filter((run) => running.has(run.id)).map((run) => run.id),
       lastActivityAt: stamps.length ? stamps.reduce((a, b) => (a > b ? a : b)) : null,
       costLast7dUsd: round(recent),

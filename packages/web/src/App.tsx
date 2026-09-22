@@ -31,6 +31,8 @@ import { Personas } from "./screens/library/Personas.jsx";
 import { PersonaEditor } from "./screens/library/PersonaEditor.jsx";
 import { Cohorts } from "./screens/library/Cohorts.jsx";
 import { Cohort } from "./screens/library/Cohort.jsx";
+import { Populations } from "./screens/library/Populations.jsx";
+import { PopulationEditor } from "./screens/library/PopulationEditor.jsx";
 import { Settings } from "./screens/Settings.jsx";
 import { SimulationResults } from "./screens/SimulationResults.jsx";
 import { SimulationSettings } from "./screens/SimulationSettings.jsx";
@@ -176,6 +178,12 @@ function ProjectShell() {
           <Route path="library/personas/:x" element={<PersonaEditor />} />
           <Route path="library/cohorts" element={<Cohorts />} />
           <Route path="library/cohorts/:cohortSlug" element={<Cohort />} />
+          {/*
+            The casts. A population has been in the store, the contract, the API and the resolver
+            since ADR-0029; these are the first two screens that can make or compose one.
+          */}
+          <Route path="library/populations" element={<Populations />} />
+          <Route path="library/populations/:pop" element={<PopulationEditor />} />
           {/*
             The singular addresses these moved off, kept as redirects because they have been in
             the product's URL bar and a bookmark is a promise. `replace`, so Back does not bounce

@@ -146,12 +146,28 @@ export async function ensureSettings(store: Store, projectId = DEFAULT_PROJECT_I
  *
  * A project may hold several: a population is composition, and a simulation names the one it runs
  * (`simulation.populationId`). This is only the fallback for the surfaces that have not been given
- * a population to work with yet, and it is looked up BY SLUG rather than "whichever row came back
- * first", so a second population cannot silently become the default.
+ * a population to work with yet.
+ *
+ * **The fallback is the OLDEST, and that is a fix, not a detail.** It used to be
+ * `find(slug === "everyone") ?? populations[0]`, and the comment above it claimed that looking up
+ * by slug meant "a second population cannot silently become the default". Only the first half of
+ * that expression is by slug. A YAML-seeded project has no row slugged `everyone` — an import
+ * names its population whatever the file says — so those installs fell through to
+ * `populations[0]`, and `listPopulations` is `ORDER BY slug`. **Composing a population whose slug
+ * sorts earlier therefore made it the project's default**, silently retargeting `cohortsOf`, the
+ * setup status, `ensureSimulation` and the first-run panel at a cast the reader had just invented.
+ * Nothing would have reported it; the headcount would simply have changed.
+ *
+ * Oldest-first is stable under anything added later, which is the only property this fallback
+ * actually needs. `createdAt` ties break on id, so two rows written in the same millisecond still
+ * resolve the same way on every call.
  */
 export async function ensurePopulation(store: Store, projectId = DEFAULT_PROJECT_ID): Promise<StoredPopulation> {
   const populations = await store.listPopulations(projectId);
-  const existing = populations.find((population) => population.slug === DEFAULT_POPULATION_SLUG) ?? populations[0];
+  const oldest = [...populations].sort((a, b) =>
+    a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt),
+  )[0];
+  const existing = populations.find((population) => population.slug === DEFAULT_POPULATION_SLUG) ?? oldest;
   if (existing) return existing;
   const at = now();
   const population: StoredPopulation = {

@@ -2517,10 +2517,37 @@ describe("taking things out again", () => {
     await h.close();
   });
 
-  it("refuses a population a simulation still names, and names the simulation", async () => {
+  /**
+   * Three different refusals, and the order matters. Everything that has not been told which cast
+   * to use resolves the population slugged `everyone` and falls back to `populations[0]` when
+   * there is none, so deleting the default silently retargets five surfaces and deleting the last
+   * one leaves them creating a fresh empty cast behind the reader's back. The Populations screen
+   * puts a Remove button on exactly that row.
+   */
+  it("keeps the last population, keeps the default, and names the simulation that holds the rest", async () => {
     const h = await harness();
     await ensureSimulation(h.store);
-    const refused = await del(h, await populationRoute(h));
+    const everyone = await ensurePopulation(h.store, "default");
+
+    // The only one does not go — before anything about simulations is considered.
+    const onlyOne = await del(h, routes.population_(P, everyone.id));
+    expect(onlyOne.status).toBe(409);
+    expect(await onlyOne.text()).toContain("only population");
+
+    // With a second one, the default still does not go, and the refusal says why.
+    const spare = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Soak cast" })));
+    const stillDefault = await del(h, routes.population_(P, everyone.id));
+    expect(stillDefault.status).toBe(409);
+    expect(await stillDefault.text()).toContain("default population");
+
+    // A non-default population with nothing pointing at it goes.
+    expect((await del(h, routes.population_(P, spare.id))).status).toBe(204);
+
+    // ...and one a simulation names does not, with the simulation named.
+    const used = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Used cast" })));
+    const simulation = await ensureSimulation(h.store);
+    await h.store.saveSimulation({ ...simulation, populationId: used.id, updatedAt: new Date().toISOString() });
+    const refused = await del(h, routes.population_(P, used.id));
     expect(refused.status).toBe(409);
     expect(await refused.text()).toContain("simulation");
     await h.close();

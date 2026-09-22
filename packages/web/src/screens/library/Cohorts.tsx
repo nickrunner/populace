@@ -372,11 +372,19 @@ export function Cohorts() {
                 )}
 
                 <MetaSentence>
-                  {pops.length > 1
-                    ? `These cohorts are shared out between ${String(pops.length)} populations.`
-                    : usedBy === 0
-                      ? "No simulation sends them anywhere yet."
-                      : `Used by ${plural(usedBy, "simulation")}.`}
+                  {pops.length > 1 ? (
+                    <>
+                      These cohorts are shared out between{" "}
+                      <Link to={href("library/populations")} size="meta">
+                        {plural(pops.length, "population")}
+                      </Link>
+                      .
+                    </>
+                  ) : usedBy === 0 ? (
+                    "No simulation sends them anywhere yet."
+                  ) : (
+                    `Used by ${plural(usedBy, "simulation")}.`
+                  )}
                 </MetaSentence>
               </Stack>
             </Card>
@@ -462,31 +470,6 @@ export function Cohorts() {
             </Card>
           </Section>
 
-          {pops.length <= 1 ? null : (
-            <Section id="populations" title="Populations" trailing={plural(pops.length, "population")}>
-              <Ledger>
-                {pops.map((population, index) => (
-                  <LedgerRow
-                    key={population.id}
-                    density="tight"
-                    stub={
-                      <Text size="meta" tone="muted">
-                        {index + 1}
-                      </Text>
-                    }
-                  >
-                    <Inline gap={3} align="baseline">
-                      <Text size="ui">{population.name}</Text>
-                      <Spacer />
-                      <Text size="meta" tone="muted">
-                        {people(population.members.reduce((sum, member) => sum + member.count, 0))}
-                      </Text>
-                    </Inline>
-                  </LedgerRow>
-                ))}
-              </Ledger>
-            </Section>
-          )}
         </Stack>
       }
     />

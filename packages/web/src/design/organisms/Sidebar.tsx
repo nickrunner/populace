@@ -163,12 +163,10 @@ export interface SidebarProps {
   target: RailTarget | null;
   /** How many targets the project has; above one the foot reports the count and names none. */
   targetCount: number;
-  /** How many populations the project has. The row appears only above one. */
-  populationCount: number;
 }
 
 export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
-  { collapsed = false, onNavigate, project, projects, href, target, targetCount, populationCount },
+  { collapsed = false, onNavigate, project, projects, href, target, targetCount },
   ref,
 ) {
   const inSimulation = useMatch("/p/:proj/s/:sim/*");
@@ -323,14 +321,21 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
             */}
             <NavItem to={href("library/cohorts")} label="Cohorts" count={project.counts.cohorts} />
             {/*
-              Populations stays gated for now — nothing in the browser can create a second one
-              yet, so `populationCount > 1` is unreachable and this row is dead code until the
-              population editor lands. It keeps its place in the order so that when it appears it
-              appears where it belongs. The dead `library/people#populations` anchor it used to
-              point at is gone with the screen section it jumped to.
+              Populations appears at the SECOND COHORT, not the second population.
+
+              It used to gate on `populationCount > 1`, which was unreachable: nothing in the
+              browser could create a second population, so the row was dead code and the section
+              it jumped to was never seen. The threshold was on the wrong noun anyway. ADR-0029
+              keeps the concept implicit "until there are two", and the first moment a subset is a
+              real choice is when there are two cohorts to choose between — with one cohort, every
+              cast is the same cast. The ADR is amended to say so.
             */}
-            {populationCount > 1 ? (
-              <NavItem to={href("library/populations")} label="Populations" count={populationCount} />
+            {project.counts.cohorts > 1 || project.counts.populations > 1 ? (
+              <NavItem
+                to={href("library/populations")}
+                label="Populations"
+                count={project.counts.populations}
+              />
             ) : null}
           </NavGroup>
 

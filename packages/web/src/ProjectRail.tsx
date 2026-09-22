@@ -25,6 +25,10 @@ import { useProject } from "./context.jsx";
  * answers to "where does this take me". The rail starts at the project's name again, which is
  * what DESIGN-SYSTEM §7.2 asks of it: the *project* is the heading of this rail.
  *
+ * **It reads two queries, not three.** The populations query went when `counts.populations`
+ * arrived on the project payload: the rail was fetching a whole list to learn its length, for a
+ * row that gated on a condition nothing could satisfy.
+ *
  * **The frame is the container's, and only the container's.** The mark needed a box to sit in, so
  * this component wrapped `Sidebar` in one — and that box carried `w-[var(--w-rail)]` and
  * `border-r` while the shell's own rail column carried them too, which is a second 236px width
@@ -41,7 +45,6 @@ export function ProjectRail({ onNavigate }: ProjectRailProps) {
   const { key, project, href } = useProject();
   const projects = useQuery(q.projects());
   const targets = useQuery(q.targets(key));
-  const populations = useQuery(q.populations(key));
 
   const first = targets.data?.items[0];
 
@@ -60,7 +63,6 @@ export function ProjectRail({ onNavigate }: ProjectRailProps) {
           : { id: first.id, name: first.name, endpoint: first.mcp[0]?.url ?? null }
       }
       targetCount={targets.data?.items.length ?? 0}
-      populationCount={populations.data?.items.length ?? 0}
     />
   );
 }

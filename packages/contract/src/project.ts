@@ -65,6 +65,12 @@ export const ProjectCountsSchema = z.object({
   targets: z.number().int().nonnegative(),
   personas: z.number().int().nonnegative(),
   cohorts: z.number().int().nonnegative(),
+  /**
+   * Saved casts. Added when populations became something a user can author: the rail's
+   * Populations row gated on a count it had no way of getting, so it ran a query of its own and
+   * the row was unreachable anyway because nothing in the browser could make a second population.
+   */
+  populations: z.number().int().nonnegative(),
   people: z.number().int().nonnegative(),
 });
 
