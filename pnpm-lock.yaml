@@ -35,6 +35,10 @@ importers:
       zod:
         specifier: ^4.1.0
         version: 4.6.5
+    devDependencies:
+      '@populace/tdk':
+        specifier: workspace:*
+        version: link:../tdk
 
   packages/cli:
     dependencies:

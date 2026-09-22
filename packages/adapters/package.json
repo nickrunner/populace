@@ -19,6 +19,10 @@
     "./firebase-admin": {
       "types": "./dist/firebase-admin/index.d.ts",
       "import": "./dist/firebase-admin/index.js"
+    },
+    "./provision-url": {
+      "types": "./dist/provision-url/index.d.ts",
+      "import": "./dist/provision-url/index.js"
     }
   },
   "files": [
@@ -38,5 +42,8 @@
     "firebase-admin": {
       "optional": true
     }
+  },
+  "devDependencies": {
+    "@populace/tdk": "workspace:*"
   }
 }

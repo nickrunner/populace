@@ -40,3 +40,4 @@ One record per fixed decision from the kickoff brief, plus the routine calls mad
 | [0034](0034-first-contact-check.md) | First contact — one account, one read-only call, before a run |
 | [0035](0035-a-project-holds-several-targets-and-several-populations.md) | A project holds several targets and several populations; a simulation is the pairing |
 | [0036](0036-signing-in-to-a-target.md) | Connecting is a sign-in, and your sign-in is not the population's |
+| [0037](0037-the-app-makes-its-own-people.md) | The app makes its own people, behind an endpoint it owns (`@populace/tdk`) |

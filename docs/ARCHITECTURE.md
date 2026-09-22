@@ -176,6 +176,16 @@ is minted, not at construction, because `teardown` and `listByTag` go through th
 service account alone: a sweep must still be able to delete the users a
 misconfigured run left behind.
 
+`provision-url` is the fourth, and the one to reach for on a product whose accounts are not made
+through an MCP tool (ADR-0037). The app mounts `@populace/tdk`, implements one function that makes
+a user, and populace calls it with one shared secret — holding no vendor credential at all. The
+provider is the client half of that wire: it provisions, renews with whichever of the user id and
+refresh token the app wants, tears down idempotently, and follows the listing's cursor to the last
+page, because a sweep that stops at the first one reports success while leaving the rest of a large
+run's accounts on somebody's product. Both halves are tested against each other rather than against
+a fixture apiece, which is what caught populace's long-standing habit of building an email address
+with a colon in the local part.
+
 A credential is redeemable, not permanent. `Credential` carries `expiresAt` and a
 `redeemable` (a refresh token, a ticket, a password), and a wake whose bearer is
 expired or within ten minutes of it — a margin sized to a whole wake, not to an

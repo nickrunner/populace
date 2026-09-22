@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const IdentityStrategySchema = z.enum(["self-signup", "admin-mint", "static"]);
+export const IdentityStrategySchema = z.enum(["self-signup", "admin-mint", "static", "provision-url"]);
 export type IdentityStrategy = z.infer<typeof IdentityStrategySchema>;
 
 /**

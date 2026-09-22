@@ -405,6 +405,9 @@ function rejectedSummary(strategy: FirstContact["strategy"], handle: string, whe
     return `${base} This is the case where the account is real but your backend does not accept this issuer's tokens: it is minting a Firebase ID token for your project, and the product may only accept tokens its own /token endpoint issued. Point identity.exchangeUrl at whatever mints the token your product expects, or make the product verify this issuer.`;
   }
   if (strategy === "static") return `${base} The token in the accounts file is not one this target accepts — it may have expired or belong to another environment.`;
+  if (strategy === "provision-url") {
+    return `${base} The account exists, so the endpoint made one — but the bearer it handed back is not one this target accepts. The usual cause is an endpoint pointed at a different environment than the address above, or a \`createPerson\` that returns a token the product's own API does not verify.`;
+  }
   return `${base} The sign-up worked, so the token is coming back from a different place than \`tokenPath\` points at, or the target does not accept it on other tools.`;
 }
 
@@ -424,6 +427,10 @@ function provisionFailureSummary(strategy: FirstContact["strategy"], created: st
       return "The target answered, but no account could be drawn from the accounts file. Nothing was left behind.";
     case "admin-mint":
       return "The target answered, but the admin SDK could not mint an account. Nothing was left behind on the target.";
+    case "provision-url":
+      // The endpoint is the app's own, so the sentence points at the app rather than at populace:
+      // whatever `createPerson` did or refused to do is what a reader has to go and look at.
+      return "The target's provisioning endpoint answered, but no account came back out of it. Whether anything was left behind is the endpoint's to say — check what `createPerson` did before it failed.";
   }
 }
 

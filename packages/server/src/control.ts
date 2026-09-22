@@ -144,21 +144,36 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   });
 
   /**
-   * admin-mint's Firebase Web API key is what mints and renews a person's session, so it leaves
-   * the same way a bearer token does: never. The form is told one is stored, not what it is.
+   * The two secrets a target can hold go up and never come back down, exactly as a bearer token
+   * does: admin-mint's Firebase Web API key, which mints and renews a person's session, and
+   * provision-url's shared secret, which is the whole authority populace has over that endpoint.
+   * The form is told one is stored, never what it is.
    */
   const identityView = (identity: IdentityConfig): IdentityConfigView => {
-    if (identity.strategy !== "admin-mint") return identity;
-    const { apiKey, ...rest } = identity;
-    return { ...rest, apiKeySet: apiKey !== undefined };
+    if (identity.strategy === "admin-mint") {
+      const { apiKey, ...rest } = identity;
+      return { ...rest, apiKeySet: apiKey !== undefined };
+    }
+    if (identity.strategy === "provision-url") {
+      const { secret, ...rest } = identity;
+      return { ...rest, secretSet: secret !== undefined };
+    }
+    return identity;
   };
 
-  /** The write-only rule, the other way round: absent keeps the stored key, blank clears it. */
+  /** The write-only rule, the other way round: absent keeps the stored secret, blank clears it. */
   const mergeIdentity = (input: IdentityConfigInput, existing: IdentityConfig | undefined): IdentityConfig => {
-    if (input.strategy !== "admin-mint") return input;
-    const previous = existing?.strategy === "admin-mint" ? existing.apiKey : undefined;
-    const apiKey = input.apiKey === undefined ? previous : input.apiKey === "" ? undefined : input.apiKey;
-    return { ...input, ...(apiKey === undefined ? { apiKey: undefined } : { apiKey }) };
+    if (input.strategy === "admin-mint") {
+      const previous = existing?.strategy === "admin-mint" ? existing.apiKey : undefined;
+      const apiKey = input.apiKey === undefined ? previous : input.apiKey === "" ? undefined : input.apiKey;
+      return { ...input, ...(apiKey === undefined ? { apiKey: undefined } : { apiKey }) };
+    }
+    if (input.strategy === "provision-url") {
+      const previous = existing?.strategy === "provision-url" ? existing.secret : undefined;
+      const secret = input.secret === undefined ? previous : input.secret === "" ? undefined : input.secret;
+      return { ...input, ...(secret === undefined ? { secret: undefined } : { secret }) };
+    }
+    return input;
   };
 
   /**

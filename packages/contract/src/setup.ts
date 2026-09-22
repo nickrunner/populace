@@ -9,6 +9,7 @@ import {
   ModelConfigSchema,
   PauseReasonSchema,
   PersonaSpecSchema,
+  ProvisionUrlConfigSchema,
   RunStatusSchema,
   SelfSignupConfigSchema,
   SimulationModeSchema,
@@ -54,6 +55,9 @@ export const IdentityConfigViewSchema = z.discriminatedUnion("strategy", [
   SelfSignupConfigSchema,
   StaticIdentityConfigSchema,
   FirebaseAdminConfigSchema.omit({ apiKey: true }).extend({ apiKeySet: z.boolean() }),
+  // The provisioning secret obeys the same rule as every other credential: it goes up and never
+  // comes back down. `secretSet` is how the form knows one is stored without being shown it.
+  ProvisionUrlConfigSchema.omit({ secret: true }).extend({ secretSet: z.boolean() }),
 ]);
 export type IdentityConfigView = z.infer<typeof IdentityConfigViewSchema>;
 
@@ -66,6 +70,7 @@ export const IdentityConfigInputSchema = z.discriminatedUnion("strategy", [
   SelfSignupConfigSchema,
   StaticIdentityConfigSchema,
   FirebaseAdminConfigSchema.extend({ apiKey: z.string().optional() }),
+  ProvisionUrlConfigSchema.extend({ secret: z.string().optional() }),
 ]);
 export type IdentityConfigInput = z.infer<typeof IdentityConfigInputSchema>;
 

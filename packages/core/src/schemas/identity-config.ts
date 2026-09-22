@@ -68,8 +68,38 @@ export const FirebaseAdminConfigSchema = z.object({
   exchangeUrl: z.url().optional(),
 });
 
-export const IdentityConfigSchema = z.discriminatedUnion("strategy", [SelfSignupConfigSchema, StaticIdentityConfigSchema, FirebaseAdminConfigSchema]);
+/**
+ * The app makes its own people, behind an endpoint it owns: `@populace/tdk` mounted in the target,
+ * and one secret populace holds (ADR-0037).
+ *
+ * This is the way in that asks the least of everyone. The other three each hand somebody a whole
+ * mechanism: `self-signup` needs an account-making tool on the MCP surface, which is impossible
+ * when a server authenticates at the transport before it dispatches; `static` needs N accounts
+ * made by hand and cannot renew any of them; `admin-mint` needs a vendor service account, which
+ * for Firebase can mint a token for ANY uid, including an admin's. Here the app keeps its own
+ * credentials and populace holds a revocable, dev-scoped secret that can do exactly one thing.
+ *
+ * It is also the only strategy that can serve a product whose API resolves callers against its own
+ * database, because creating the vendor user and creating the app's row are one operation on the
+ * app's side of the wire, where they belong.
+ */
+export const ProvisionUrlConfigSchema = z.object({
+  strategy: z.literal("provision-url"),
+  /** Where the kit is mounted — the base, not a route: `https://dev.example.com/populace`. */
+  url: z.url(),
+  /**
+   * The shared secret, sent as a bearer. Optional for the same reason admin-mint's `apiKey` is:
+   * absent means "leave whatever is stored alone" on the way up, so a form can round-trip without
+   * ever having been shown the secret it is editing. A config with none refuses at provision.
+   */
+  secret: z.string().min(1).optional(),
+  /** Domain for generated emails; the run tag is embedded in the local part, as everywhere else. */
+  emailDomain: z.string().min(1).default("populace.test"),
+});
+
+export const IdentityConfigSchema = z.discriminatedUnion("strategy", [SelfSignupConfigSchema, StaticIdentityConfigSchema, FirebaseAdminConfigSchema, ProvisionUrlConfigSchema]);
 export type IdentityConfig = z.infer<typeof IdentityConfigSchema>;
 export type SelfSignupConfig = z.infer<typeof SelfSignupConfigSchema>;
 export type StaticIdentityConfig = z.infer<typeof StaticIdentityConfigSchema>;
 export type FirebaseAdminConfig = z.infer<typeof FirebaseAdminConfigSchema>;
+export type ProvisionUrlConfig = z.infer<typeof ProvisionUrlConfigSchema>;

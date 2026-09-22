@@ -40,7 +40,7 @@ export interface IdentityDraft {
    * `whatIdentityNeeds` refuses the save until one of them is answered. It matches no branch, so
    * `ConditionalFieldset` renders no fields for it, which is exactly the shape of "nothing picked".
    */
-  strategy: "undecided" | "self-signup" | "static" | "admin-mint";
+  strategy: "undecided" | "self-signup" | "static" | "admin-mint" | "provision-url";
   signupTool: string;
   tokenPath: string;
   userIdPath: string;
@@ -53,6 +53,11 @@ export interface IdentityDraft {
   serviceAccountFile: string;
   firebaseProjectId: string;
   exchangeUrl: string;
+  /** provision-url: where `@populace/tdk` is mounted in the target, and the secret it expects. */
+  provisionUrl: string;
+  /** Empty means "leave whatever is stored alone", exactly as the Firebase key does. */
+  provisionSecret: string;
+  provisionSecretSet: boolean;
 }
 
 export const EMPTY_IDENTITY: IdentityDraft = {
@@ -68,6 +73,9 @@ export const EMPTY_IDENTITY: IdentityDraft = {
   serviceAccountFile: "",
   firebaseProjectId: "",
   exchangeUrl: "",
+  provisionUrl: "",
+  provisionSecret: "",
+  provisionSecretSet: false,
 };
 
 /** A stored target's identity, as a draft. The API key is never among it: it is not sent down. */
@@ -85,6 +93,8 @@ export function identityDraftFrom(identity: IdentityConfigView): IdentityDraft {
     serviceAccountFile: identity.strategy === "admin-mint" ? (identity.serviceAccountFile ?? "") : "",
     firebaseProjectId: identity.strategy === "admin-mint" ? (identity.projectId ?? "") : "",
     exchangeUrl: identity.strategy === "admin-mint" ? (identity.exchangeUrl ?? "") : "",
+    provisionUrl: identity.strategy === "provision-url" ? identity.url : "",
+    provisionSecretSet: identity.strategy === "provision-url" ? identity.secretSet : false,
   };
 }
 
@@ -128,6 +138,14 @@ export function identityFrom(draft: IdentityDraft): TargetInput["identity"] | nu
       };
     case "static":
       return { strategy: "static", file: draft.staticFile };
+    case "provision-url":
+      return {
+        strategy: "provision-url",
+        url: draft.provisionUrl,
+        emailDomain: draft.emailDomain || "populace.test",
+        // Absent leaves the stored secret alone; the form only sends one when it was typed.
+        ...(draft.provisionSecret ? { secret: draft.provisionSecret } : {}),
+      };
     case "admin-mint":
       return {
         strategy: "admin-mint",
@@ -155,6 +173,10 @@ export function whatIdentityNeeds(draft: IdentityDraft): string | null {
   if (draft.strategy === "undecided") return "a way in";
   if (draft.strategy === "self-signup" && draft.signupTool.trim() === "") return "the name of the tool that makes an account";
   if (draft.strategy === "static" && draft.staticFile.trim() === "") return "a file of accounts to hand out";
+  if (draft.strategy === "provision-url") {
+    if (draft.provisionUrl.trim() === "") return "the address your app answers provisioning on";
+    if (draft.provisionSecret.trim() === "" && !draft.provisionSecretSet) return "the secret your app expects";
+  }
   return null;
 }
 
@@ -190,6 +212,12 @@ type WayIn = Exclude<IdentityDraft["strategy"], "undecided">;
 
 const WAYS_IN: readonly Omit<ConditionalBranch<WayIn>, "fields">[] = [
   {
+    value: "provision-url",
+    label: "My app makes them",
+    hint: "Your app answers on an address populace calls. Nothing of yours is handed over but one secret.",
+    note: "Mount @populace/tdk in your app, implement one function that makes a user, and point this at it. It is the only way in that works when your product's accounts are not made through an MCP tool — and the only one where populace holds no credential of your vendor's.",
+  },
+  {
     value: "self-signup",
     label: "They sign themselves up",
     hint: "Recommended: each person makes their own account through the target's own tool.",
@@ -218,6 +246,51 @@ function identityFields(
   onChange: (patch: Partial<IdentityDraft>) => void,
 ): ReactNode {
   switch (strategy) {
+    case "provision-url":
+      return (
+        <Stack gap={6}>
+          <Field
+            label="Provisioning address"
+            hint="Where @populace/tdk is mounted in your app — the base, not a route."
+          >
+            {({ id, describedBy, invalid }) => (
+              <Input
+                id={id}
+                describedBy={describedBy}
+                invalid={invalid}
+                value={draft.provisionUrl}
+                onChange={(v) => onChange({ provisionUrl: v })}
+                placeholder="https://dev.example.com/populace"
+                mono
+              />
+            )}
+          </Field>
+          <SecretField
+            label="Shared secret"
+            stored={draft.provisionSecretSet}
+            value={draft.provisionSecret}
+            onChange={(v) => onChange({ provisionSecret: v })}
+            hint="The same value your app reads as POPULACE_SECRET. It is the whole authority populace has over that endpoint, and it is yours to rotate."
+          />
+          <Field
+            label="Email domain"
+            // The execution's ID and not its tag: a tag carries a colon, which is not legal in an
+            // email local part, and the kit refuses the address outright (ADR-0037).
+            hint="Every address carries the execution's id, so a sweep can find them again. The tag itself is sent alongside it."
+          >
+            {({ id, describedBy, invalid }) => (
+              <Input
+                id={id}
+                describedBy={describedBy}
+                invalid={invalid}
+                value={draft.emailDomain}
+                onChange={(v) => onChange({ emailDomain: v })}
+                mono
+              />
+            )}
+          </Field>
+        </Stack>
+      );
     case "self-signup":
       return (
         <Stack gap={6}>
