@@ -827,6 +827,37 @@
   :focus-visible {
     outline: none;
   }
+
+  /*
+    The pointer, back on anything you press.
+
+    Tailwind v3's Preflight carried `button { cursor: pointer }`. **v4 dropped it** in favour of
+    the user-agent default, which for `<button>` is `default` — the arrow. Nothing in this system
+    asked for that, and nothing noticed: the product shipped with every `Button`, every Radix
+    trigger and every hand-rolled `<button>` reading as inert under the mouse, beside `<a>`s that
+    read as links, on the same row. `New project` on `/projects` is where it was caught; it was
+    never one screen's bug.
+
+    It is here, in `base`, and not in `Button`'s CVA, for two reasons. A cursor is a platform
+    default being restored rather than a design decision being made — the base layer is what that
+    layer is for. And a great deal of what a reader presses in this product is not `Button`: the
+    theme toggle's segments, the project switcher's trigger, a tab, a dialog's close, a select —
+    all of them Radix, all of them rendering a `<button>` this system never spells a class onto.
+    One rule reaches them; twenty CVAs would have to each remember, and the twenty-first would
+    not.
+
+    The three disabled spellings are excluded here rather than left to the utility that overrides
+    them, because not every control in the tree spells one: `disabled` for a native control,
+    `aria-disabled` for §6's control-at-a-bound (inert but focusable, and `Button`'s `atBound`
+    prop), `data-disabled` for a Radix item. Where a component DOES spell `cursor-not-allowed` it
+    still wins regardless — a utility is a later cascade layer than `base`.
+  */
+  button:not(:disabled, [aria-disabled="true"], [data-disabled]),
+  [role="button"]:not([aria-disabled="true"], [data-disabled]),
+  input:where([type="button"], [type="reset"], [type="submit"]):not(:disabled),
+  summary:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
 }
 
 /* --------------------------------------------------------------------------------------------

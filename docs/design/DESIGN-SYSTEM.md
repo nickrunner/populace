@@ -433,7 +433,7 @@ is no 2px border in the system except the focus ring, the payload well's evidenc
 @utility t-*              /* §3 */
 @utility eyebrow-*        /* §3.5 */
 @utility skeleton-line
-@layer base               /* html/body/reset, reduced motion, dark font-smoothing */
+@layer base               /* html/body/reset, the button cursor, reduced motion, dark font-smoothing */
 ```
 
 ### 2.8 Base layer
@@ -461,6 +461,18 @@ is no 2px border in the system except the focus ring, the payload well's evidenc
     -moz-osx-font-smoothing: auto;
   }
   :focus-visible { outline: none; }     /* every atom supplies focus-ring instead */
+
+  /* AMENDED. Tailwind v3's Preflight carried `button { cursor: pointer }` and v4 dropped it, so
+     the product shipped with every button — `Button`, every Radix trigger, every hand-rolled
+     one — wearing the arrow beside `<a>`s wearing the hand. It is restored here rather than in
+     `Button`'s CVA: a cursor is a platform default, not a design decision, and most of what a
+     reader presses is a Radix `<button>` no CVA in this system reaches. The three disabled
+     spellings are excluded because not every control spells one — `disabled` natively,
+     `aria-disabled` for §6's control-at-a-bound, `data-disabled` for a Radix item. */
+  button:not(:disabled, [aria-disabled="true"], [data-disabled]),
+  [role="button"]:not([aria-disabled="true"], [data-disabled]),
+  input:where([type="button"], [type="reset"], [type="submit"]):not(:disabled),
+  summary:not([aria-disabled="true"]) { cursor: pointer; }
 }
 ```
 
