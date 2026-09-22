@@ -51,8 +51,10 @@ import { DiagramFigure, EXECUTIONS_ARE_INDEPENDENT, type DiagramSize } from "./F
  *
  * **Real parts, not a drawing of them.** The stub holds a real `SeverityStack`, the tool is a
  * real `ToolName` (with the coverage gap's `— not exposed`), the rows are a real `Ledger` with
- * the product's own 72px stub and continuous spine, and the roster folds by `RosterLattice`'s
- * own ladder so one dot never means five people here and one person there (§1.2 M4).
+ * the product's own 72px stub, and the roster folds by `RosterLattice`'s own ladder so one dot
+ * never means five people here and one person there (§1.2 M4). **The spine is off** — a 144px
+ * row is a block rather than a line, so there is no column to scan and the rule was reading as
+ * the page-long hairline §9.2 withdrew; see the note at the `Ledger` below.
  *
  * **Degradation.** Below `md` the ledger stub collapses and the severity stack becomes a leading
  * line above its row (M2), the execution labels stay beside their lattices, and the figure is a
@@ -270,7 +272,18 @@ export const VarianceDiagram = forwardRef<HTMLElement, VarianceDiagramProps>(
         }
       >
         <div className="grid gap-4">
-          <Ledger as="ul" stubKind="mark">
+          {/*
+            `spine={false}`, and the stub stays. A spine is the right edge of a column a reader
+            SCANS, and scanning is a function of row height: `ChainDiagram`'s links are 48–65px
+            and `CoverageDiagram`'s capabilities 46px, so their columns of glyphs read as one
+            list and their rules stop at 366px and 276px. A row here is **144px** — a tag, a tool
+            name, a sentence, two execution lattices and a `MetaLine` — five blocks, not five
+            lines, with nothing to run an eye down. Drawn, the rule measured **720px** on
+            `/why-agents`, which is the page-long hairline §9.2 withdrew wearing a figure as a
+            disguise. The severity stacks keep their 72px column and keep aligning; only the line
+            beside them goes.
+          */}
+          <Ledger as="ul" spine={false} stubKind="mark">
             {problems.map((problem) => (
               <LedgerRow key={problem.signature} stub={<SeverityStack level={problem.severity} />}>
                 <div className="grid gap-2">

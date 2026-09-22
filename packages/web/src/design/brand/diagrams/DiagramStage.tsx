@@ -22,7 +22,7 @@ import { Heading, Mono, Stack } from "../../atoms/index.js";
  * beside five in-figure headings, and on `/use-cases` **1,183px**; it cleared the headings by an
  * 11px gutter, which is the letter of the fix and not its point.
  *
- * So there is **no rule here at all**, and nothing on these pages indents to `--w-stub`. What the
+ * So there is **no rule here at all**, and a stage indents to nothing. What the
  * rail was actually for — *this is step 01 of a sequence* — is carried by a **numbered eyebrow**:
  * the ordinal set in the machine's face at the `ref` step, directly above the name it numbers.
  * That is not a new device. `StepStrip` already heads the landing page with exactly it, for
@@ -37,7 +37,13 @@ import { Heading, Mono, Stack } from "../../atoms/index.js";
  *
  * `LedgerSpine` itself is untouched and stays right where it is earning its keep — the
  * transcript, the findings list, the executions history — where a stub column of locators
- * genuinely needs an alignment edge. This is the removal of its use from the *figures*.
+ * genuinely needs an alignment edge. **Nor is every figure spine gone**, and the distinction is
+ * row height rather than the word `figure`: where a figure embeds a real `Ledger` whose rows are
+ * a line or two, the spine is still the edge of something a reader scans, and `ChainDiagram`'s
+ * seven 48–65px links (366px) and `CoverageDiagram`'s six 46px capabilities (276px) keep it.
+ * `VarianceDiagram`'s 144px rows did not, and it is drawn `spine={false}`. A stage is the extreme
+ * case of that — a stage is a heading with an artefact under it, hundreds of pixels tall — so it
+ * is not a ledger row at all. §9.2 states the threshold a reviewer measures.
  * ---------------------------------------------------------------------------------------------
  *
  * **`n` decides the element, and that is the whole of the variance.** With a position — `"01"`,

@@ -1623,9 +1623,34 @@ this section wins.
    the landing and the product are visibly the same instrument" — is **withdrawn**. A spine is
    the right edge of a column of locators; these pages have none, so the line aligned nothing and
    crossed every section heading at a fixed offset, reading as a stray rule rather than as
-   structure. `MarketingShell` draws no spine and nothing on these pages indents to `--w-stub`.
-   Left-aligned throughout: a centred page is a brochure and this product is a readout. Prose
-   measure 62ch.
+   structure. `MarketingShell` draws no spine and the page's own prose never indents to
+   `--w-stub`. Left-aligned throughout: a centred page is a brochure and this product is a
+   readout. Prose measure 62ch.
+
+   **A `<figure>` is not an exemption, and this is the second half of the same fix.** When the
+   shell's hairline came off, `DiagramStage` still drew one inside the figures — a `STAGE / 01`
+   stub column beside five in-figure headings, **1,673px** down `/how-it-works` and **1,183px**
+   down `/use-cases`. It cleared each heading by an 11px gutter, so it intersected nothing and
+   read on screen as exactly the rule this clause withdrew. Moving a page rule inside a `<figure>`
+   makes it shorter, not different. So: **a stage is never a ledger row.** Stages are a
+   `Stack as="ol"` and each prints its ordinal as a `t-ref` eyebrow above its name, which is how
+   `StepStrip` already sequences the landing page (§1.2 M2) and what §3.4 names `t-ref` for. No
+   glyph joins the number — §8.6's grammar has a word for a person, a cohort, a population, a
+   finding and a severity, and none for a step, and §1.3 rule 4 forbids a glyph carrying meaning
+   alone.
+
+   **Where a figure embeds a real `Ledger`, the stub stays and the spine is a function of row
+   height.** These pages show the product's own components rather than drawings of them (§9.3),
+   and a ledger without its stub is a falsified one. But the spine is the right edge of a column
+   a reader *scans*, and a reader scans lines, not blocks. Measured: `ChainDiagram`'s seven links
+   are 48–65px a row and its rule is 366px; `CoverageDiagram`'s six capabilities are 46px and its
+   rule is 276px — both read as one list, and both keep the spine. `VarianceDiagram`'s rows are
+   **144px** — a tag, a tool, a sentence, two lattices and a `MetaLine` — so its rule measured
+   **720px** with nothing to scan beside it, and it is drawn `spine={false}`. The rule of thumb
+   that follows, and what a reviewer measures: **rows past ~64px lose the spine, and no vertical
+   rule under a marketing page's `<main>` exceeds ~400px.** Nested ledgers lose it too — two
+   hairlines 72px apart read as a mistake. `LedgerSpine` itself is untouched and keeps earning its
+   keep in the dense product screens, where a stub column of locators genuinely needs an edge.
 3. **A graphic first, a short caption under it, and only then any prose.** These pages explain a
    mechanism, and a mechanism is easier to see than to read. Every section opens with a diagram
    from `design/brand/diagrams/`; the caption is a line, not a paragraph; a section that needs
