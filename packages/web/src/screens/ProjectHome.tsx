@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 
-import type { ProjectOverview, SimulationSummary } from "../api.js";
+import type { Need, ProjectOverview, SimulationSummary } from "../api.js";
 import { q } from "../queries.js";
 import { useProject } from "../context.jsx";
 import { people, plural } from "../format.js";
-import { GetStarted } from "./GetStarted.jsx";
+import { FirstRun } from "./FirstRun.jsx";
 import {
   Badge,
   Chip,
@@ -76,10 +76,11 @@ import {
  *
  * **What the page always shows now, in whatever state the project is in:**
  *
- *  1. The setup panel, while nothing has ever run. `GetStarted` is unchanged: it already
- *     collapses a finished step to a line carrying its own answer, so as the project fills in it
- *     becomes a band of ticks with the one remaining step open — which is what it should have
- *     looked like all along.
+ *  1. The first-run panel, on a project that has not begun — no target and nobody in it. It used
+ *     to be gated on `everRan`, which took it away the moment an execution finished (exactly when
+ *     a second simulation is being set up) and left it standing through the whole of a
+ *     configured-but-unsent project. Once it is gone, "What needs doing" is what says what is
+ *     left, and it says it about the thing it is about.
  *  2. **The lay of the land** — the target, the people, the spend — as one ruled strip with the
  *     way into each underneath it. All three of those lived *only* in the rail: the target and
  *     the meter at its foot, the headcount as an 11px number beside a nav row. The page itself
@@ -127,12 +128,24 @@ function headline(project: ProjectOverview): string {
 }
 
 export function ProjectHome() {
-  const { project, href } = useProject();
-  // The panel stands until the project HAS got started, which is an execution behind it and not a
-  // form filled in: step 3 is the only place it sends anybody, and gating on the headcount alone
-  // took it away the moment people were picked, leaving its last step unreachable (SPEC §7.5).
-  // The old `simulations.length <= 1` clause went with the takeover it was compensating for.
-  const everRan = project.simulations.some((simulation) => simulation.latest !== null);
+  const { key, project, href } = useProject();
+  const needs = useQuery(q.setup(key));
+  /*
+    "Begun" is not "has run". A project with a target and three people in it has begun, whether or
+    not anybody has been sent yet — it has somewhere to go and somebody to send, and what is left
+    is a sentence, not a three-step panel. The gate was `everRan`, which is a different question
+    and got both ends wrong: it kept the panel up through the whole of a configured-but-unsent
+    project, and took it away the instant one execution finished, which is precisely when a second
+    simulation is being set up and the panel would have had something to say.
+  */
+  const begun = project.counts.targets > 0 || project.counts.people > 0;
+  /*
+    Project-wide leftovers go in a list; everything else is rendered on the row it names, by the
+    band that draws that row. A need with nothing left to say renders nothing at all — there is no
+    permanent checklist here, because on a project that has run forty times a "step 1 of 4" strip
+    is a fourth voice saying what three other things already say.
+  */
+  const projectNeeds = (needs.data?.needs ?? []).filter((need) => need.scope.kind === "project");
 
   return (
     <DocumentPage
@@ -174,18 +187,30 @@ export function ProjectHome() {
           </Text>
         </Measure>
 
+        {projectNeeds.length === 0 ? null : (
+          <Section title="What needs doing" trailing={plural(projectNeeds.length, "thing")}>
+            <Ledger>
+              {projectNeeds.map((need) => (
+                <LedgerRow key={need.id} stub={<Ring size="sm" />}>
+                  <Text size="read" as="div">
+                    {need.sentence}
+                  </Text>
+                </LedgerRow>
+              ))}
+            </Ledger>
+          </Section>
+        )}
+
         <TargetsBand />
 
         <WhoCanGoBand />
 
         {/*
-          Until something has run, the panel — and it is a panel now, sitting on the page rather
-          than standing in front of it. It is BELOW the strip deliberately: the reader's first
-          question on opening a project is what is in it, and the panel's open step is a form
-          that would push the answer under the fold. What is left to do comes after where you
-          are. Once an execution is behind the project the panel has nothing to say and goes.
+          The panel, on a project that has not begun. Below the bands deliberately: the reader's
+          first question on opening a project is what is in it, and the panel's open step is a
+          form tall enough to push that answer under the fold.
         */}
-        {everRan ? null : <GetStarted />}
+        {begun ? null : <FirstRun />}
 
         {/*
           The simulations. With one target this is one flat ledger, exactly as before. With two it
@@ -292,6 +317,23 @@ export function ProjectHome() {
 }
 
 /**
+ * The need the server has recorded about one thing, or null.
+ *
+ * The bands call this instead of writing their own copy for the same condition. Before it, the
+ * Targets band said "never checked" and the server's own need said "Nobody has checked that
+ * Tasklet answers. It costs nothing to find out." — the same fact, in two voices, one of which
+ * was in a payload nothing rendered. This stage is called "one voice for what is left"; two
+ * spellings of one leftover is the thing it exists to remove.
+ */
+function needFor(
+  needs: readonly Need[],
+  kind: Need["scope"]["kind"],
+  id: string,
+): Need | undefined {
+  return needs.find((need) => need.scope.kind === kind && need.scope.id === id);
+}
+
+/**
  * The Targets band — what this project is pointed at, one row per target.
  *
  * **This replaces a three-cell strip whose first cell was `targets.data?.items[0]`.** That cell
@@ -315,6 +357,8 @@ export function ProjectHome() {
 function TargetsBand() {
   const { key, project, href } = useProject();
   const targets = useQuery(q.targets(key));
+  const setup = useQuery(q.setup(key));
+  const needs = setup.data?.needs ?? [];
   const items = targets.data?.items ?? [];
 
   return (
@@ -336,6 +380,7 @@ function TargetsBand() {
           {items.map((target) => {
             const used = project.simulations.filter((s) => s.target.id === target.id);
             const contact = target.firstContact;
+            const need = needFor(needs, "target", target.id);
             return (
               <LedgerRow key={target.id} stub={contact === null ? <Ring size="sm" /> : <Dot size="sm" />}>
                 <Stack gap={1}>
@@ -345,12 +390,9 @@ function TargetsBand() {
                         {target.name}
                       </Link>
                     </Heading>
-                    {/* The word, never the hue alone (§4.2). Null means nobody has checked. */}
-                    {contact === null ? (
-                      <Text size="meta" tone="muted">
-                        never checked
-                      </Text>
-                    ) : (
+                    {/* The word, never the hue alone (§4.2). Nothing at all when nobody has
+                        checked — the need below says that, in the server's words. */}
+                    {contact === null ? null : (
                       <Badge tone={OUTCOME_TONES[contact.outcome]}>
                         {OUTCOME_WORDS[contact.outcome]}
                       </Badge>
@@ -361,6 +403,11 @@ function TargetsBand() {
                     {target.mcp[0]?.url ?? "no endpoint"}
                   </Mono>
                   <MetaLine facts={usedByFacts(used)} />
+                  {need === undefined ? null : (
+                    <Text size="meta" tone="soft">
+                      {need.sentence}
+                    </Text>
+                  )}
                 </Stack>
               </LedgerRow>
             );
@@ -403,6 +450,8 @@ function usedByFacts(used: readonly SimulationSummary[]): readonly MetaFact[] {
 function WhoCanGoBand() {
   const { key, project, href } = useProject();
   const populations = useQuery(q.populations(key));
+  const setup = useQuery(q.setup(key));
+  const needs = setup.data?.needs ?? [];
   const items = populations.data?.items ?? [];
 
   return (
@@ -424,6 +473,7 @@ function WhoCanGoBand() {
           {items.map((population) => {
             const headcount = population.members.reduce((n, m) => n + m.count, 0);
             const used = project.simulations.filter((s) => s.population.name === population.name);
+            const need = needFor(needs, "population", population.id);
             return (
               <LedgerRow key={population.id} stub={<Dot size="sm" />}>
                 <Stack gap={1}>
@@ -437,13 +487,16 @@ function WhoCanGoBand() {
                   </Inline>
                   <MetaLine
                     facts={[
-                      {
-                        key: "cohorts",
-                        node:
-                          population.members.length === 0
-                            ? "no cohorts in it yet"
-                            : population.members.map((m) => m.cohortName).join(", "),
-                      },
+                      // An empty population has a need of its own that says so; the fact line
+                      // does not say it twice.
+                      ...(population.members.length === 0
+                        ? []
+                        : [
+                            {
+                              key: "cohorts",
+                              node: population.members.map((m) => m.cohortName).join(", "),
+                            },
+                          ]),
                       {
                         key: "used",
                         node:
@@ -453,6 +506,11 @@ function WhoCanGoBand() {
                       },
                     ]}
                   />
+                  {need === undefined ? null : (
+                    <Text size="meta" tone="soft">
+                      {need.sentence}
+                    </Text>
+                  )}
                 </Stack>
               </LedgerRow>
             );

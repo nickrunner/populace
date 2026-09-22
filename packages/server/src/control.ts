@@ -84,6 +84,7 @@ import {
   type ResolvedSimulation,
 } from "./config-store.js";
 import { estimateRun } from "./estimate.js";
+import { needsOf } from "./needs.js";
 import { fail, page, param, parseBody, parseQuery } from "./http.js";
 import type { JobHandler, JobReport, JobSpend } from "./jobs.js";
 import { ProjectReadModel } from "./project-read-model.js";
@@ -254,6 +255,15 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     // A project that CAN run has something to run. A simulation row is otherwise created only by a
     // YAML import or by an explicit POST, so a project set up entirely in the browser reached
     // `ready: true` with no simulation and its go button posted to `/simulations//runs` — a 404.
+    //
+    // KNOWN WART, deliberately left: this is a GET that writes a row, which is wrong, and it is
+    // not the only one (`GET /populations` calls `ensurePopulation` for the same sort of reason).
+    // Removing it costs more than it saves today: the first-run panel's cost estimate is keyed by
+    // simulation id, so with no row there is no estimate, and "3 people × 4 visits ≈ $1.44" is the
+    // most useful sentence on that step. The fix is an estimate that takes a target and a
+    // population rather than a simulation, and it belongs with that change, not here. The panel
+    // below no longer DEPENDS on this having happened — it creates the simulation itself when
+    // there is none — so this is now a convenience rather than the only path.
     if (target) {
       try {
         await ensureSimulation(deps.store, projectId);
@@ -264,17 +274,26 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const simulations = await deps.store.listSimulations({ projectId });
     const peopleCount = (await cohortsOf(deps.store, projectId)).reduce((sum, cohort) => sum + cohort.size, 0);
     const killSwitch = await deps.store.getKillSwitch();
-    const blockers: string[] = [];
-    if (!target) blockers.push("Connect a target so the people have somewhere to go.");
-    if (target && simulations.length === 0) blockers.push("Make a simulation: it is the population, the target and the mode a run executes.");
-    if (peopleCount === 0) blockers.push("Add at least one person to the population.");
-    if (!deps.hasApiKey()) blockers.push("Set ANTHROPIC_API_KEY before starting a run; the people are model calls.");
-    if (killSwitch.engaged) blockers.push(`Everything is stopped${killSwitch.reason ? ` (${killSwitch.reason})` : ""}. Release it to start a run.`);
+    /*
+      One builder, in `needs.ts`. `blockers` is derived from it rather than assembled beside it,
+      so the flat list two older screens read and the scoped list the dashboard reads can never
+      come to disagree about what is left. See `needsOf` for why the scope is worth carrying.
+    */
+    const needs = await needsOf(deps.store, {
+      projectId,
+      projectName: s.project.name,
+      hasApiKey: deps.hasApiKey(),
+      killSwitch: { engaged: killSwitch.engaged, reason: killSwitch.reason },
+    });
+    // Only the ones that actually stop an execution. `ready` is the go button's gate, and an
+    // advisory need — an unchecked target, an empty population nothing runs — must not close it.
+    const blockers = needs.filter((need) => need.blocking).map((need) => need.sentence);
     const runs = await deps.store.listRuns({ projectId });
     const running = new Set(deps.runs.runningIds);
     const status: SetupStatus = {
       ready: blockers.length === 0,
       blockers,
+      needs,
       targetId: target?.id ?? null,
       personaCount: personas.length,
       peopleCount,

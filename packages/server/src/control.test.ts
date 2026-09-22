@@ -822,6 +822,39 @@ describe("starting, steering and watching a run", () => {
     await h.close();
   });
 
+  /**
+   * `needs` and `blockers` are two different questions and one builder. A need that does not stop
+   * an execution must not close the go button — the first draft folded them together and turned
+   * `ready` false on a project that was perfectly able to run, because nobody had pressed Check on
+   * its target.
+   */
+  it("separates what is left to do from what actually stops an execution", async () => {
+    const h = await harness({ seed: false });
+    const identity = { strategy: "self-signup" as const, signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", emailDomain: "populace.test" };
+    await post(h.app, routes.targets(P), { name: "Tasklet", mcp: [{ name: "default", url: target.mcpUrl }], identity });
+    await post(h.app, routes.personaStarters(P), { slug: "first-timer", count: 1 });
+
+    const setup = SetupStatusSchema.parse(await json(await h.app.request(routes.projectSetup(P))));
+
+    // Nobody has run a first-contact check, so there IS something left to do...
+    const unchecked = setup.needs.find((need) => need.id.startsWith("target-unchecked:"));
+    expect(unchecked).toBeDefined();
+    // ...it names the target it is about, rather than saying "a target" and leaving the reader to
+    // find which one...
+    expect(unchecked?.scope.kind).toBe("target");
+    expect(unchecked?.sentence).toContain("Tasklet");
+    // ...and it does not stop anything.
+    expect(unchecked?.blocking).toBe(false);
+    expect(setup.blockers).toEqual([]);
+    expect(setup.ready).toBe(true);
+
+    // `blockers` is exactly the blocking needs, derived from the one builder rather than assembled
+    // beside it, so the flat list and the scoped list can never disagree.
+    expect(setup.blockers).toEqual(setup.needs.filter((need) => need.blocking).map((need) => need.sentence));
+
+    await h.close();
+  });
+
   it("estimates without spending anything, and says which basis it used", async () => {
     const h = await harness();
     const first = RunEstimateSchema.parse(await json(await post(h.app, await estimateRoute(h))));

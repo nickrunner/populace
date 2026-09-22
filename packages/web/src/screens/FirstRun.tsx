@@ -37,7 +37,23 @@ import {
 } from "../design/index.js";
 
 /**
- * The zero state, and the only path into a first execution (SPEC §7.5).
+ * FirstRun — the panel a genuinely empty project opens with, and one path into a first execution.
+ *
+ * **It was called `GetStarted`, and the rename is not cosmetic.** "Get started" is the name of a
+ * mode you are put in; this is a panel on the project's own dashboard, which is what its next
+ * paragraph has always claimed it was. It now behaves like one in the only two ways that were
+ * still wrong:
+ *
+ *  - **It is no longer the only path.** Step 3 creates the simulation itself when the project has
+ *    none, rather than editing a row that `GET /setup` had quietly created as a side effect. The
+ *    server still creates that row for the cost estimate's sake, but this panel no longer depends
+ *    on it having happened.
+ *  - **It shows up when it is useful and not when it is not.** The gate was `everRan` — it
+ *    vanished the moment any execution finished, which is exactly when somebody is setting up a
+ *    second simulation, and it stood there through the whole of a configured-but-unsent project.
+ *    It is now shown only on a project with no target AND nobody in it: a project that has not
+ *    begun. Everything it does is in the library, and the dashboard's "What needs doing" says what
+ *    is left once it is gone.
  *
  * It is a panel on project home rather than a mode the product puts you in: nothing here is a
  * wizard you have to finish before the rest of the product exists, and every step is also
@@ -59,7 +75,7 @@ import {
  * step**, the estimate names its own basis, and the two mode cards — the best copy in the repo —
  * are here word for word, now as the two options of one `RadioGroup` (§6.3, row 15).
  */
-export function GetStarted() {
+export function FirstRun() {
   const { project, href } = useProject();
   const done = { target: project.counts.targets > 0, people: project.counts.people > 0 };
 
@@ -369,7 +385,22 @@ function RunStep() {
 
   const go = useMutation({
     mutationFn: async () => {
-      const simulation = await api.saveSimulation(key, simulationId, { name: name.trim() || "First look", visitsPerPerson: bounded ? visits : null });
+      /*
+        Create, or edit. This step used to assume a simulation row already existed, because
+        `GET /setup` made one as a side effect of being read — so the panel's go button PUT to
+        whatever id came back, and if that row was ever not created it PUT to `""` and got a 404.
+        A panel should not be built on a GET's side effect: with no simulation it makes one, with
+        one it edits it, and either way it says out loud what it is doing.
+
+        `createSimulation` is given only what this panel asks for. The target and the population
+        are defaulted by the server while the project has exactly one of each, which on a first
+        run it does; a project with two of either is past its first run and uses `/s/new`.
+      */
+      const chosen = { name: name.trim() || "First look", visitsPerPerson: bounded ? visits : null };
+      const simulation =
+        simulationId === ""
+          ? await api.createSimulation(key, chosen)
+          : await api.saveSimulation(key, simulationId, chosen);
       const started = await api.startRun(key, simulation.slug, {});
       return { slug: simulation.slug, runId: started.runId };
     },

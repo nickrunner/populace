@@ -316,6 +316,8 @@ export type Memory = z.infer<typeof MemorySchema>;
 export type ToolUsageView = z.infer<typeof ToolUsageViewSchema>;
 export type SpendView = z.infer<typeof SpendViewSchema>;
 export type SetupStatus = z.infer<typeof SetupStatusSchema>;
+/** One leftover, and what it is about. See `NeedSchema` in the contract. */
+export type Need = SetupStatus["needs"][number];
 export type StoredTarget = z.infer<typeof StoredTargetViewSchema>;
 export type TargetCheck = z.infer<typeof TargetCheckSchema>;
 export type TargetPromises = z.infer<typeof TargetPromisesSchema>;

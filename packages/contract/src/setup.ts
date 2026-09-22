@@ -257,9 +257,42 @@ export const SettingsInputSchema = z.object({
 export type SettingsInput = z.infer<typeof SettingsInputSchema>;
 
 /** Everything standing between this project and its first run, in the words the screen shows. */
+/**
+ * What is left to do, and what it is about.
+ *
+ * `scope` is what lets a screen put the sentence on the row it names instead of in a pile at the
+ * top — a project with three targets says which one has never been checked. There is deliberately
+ * NO path or label here: a browser route in a server payload is a routing table maintained in two
+ * places, and this product moves its routes. The web derives the link from `kind` and `id`.
+ */
+export const NeedSchema = z.object({
+  id: z.string(),
+  sentence: z.string(),
+  /**
+   * Whether this STOPS an execution, as opposed to merely being left to do. `blockers` and
+   * `ready` are derived from the blocking ones alone: "nobody has checked that Tasklet answers"
+   * is worth saying and must not gate the go button.
+   */
+  blocking: z.boolean(),
+  scope: z.object({
+    kind: z.enum(["project", "target", "population", "simulation"]),
+    id: z.string(),
+  }),
+});
+export type Need = z.infer<typeof NeedSchema>;
+
 export const SetupStatusSchema = z.object({
   ready: z.boolean(),
+  /**
+   * The same sentences as `needs`, flattened.
+   *
+   * Kept because `Preflight` and the first-run panel both read it and neither needs the scope,
+   * and because a wire field with three consumers is not worth a coordinated change. It is
+   * DERIVED from `needs` — one builder, so the two can never come to disagree.
+   */
   blockers: z.array(z.string()),
+  /** The same leftovers, each knowing what it is about. See `NeedSchema`. */
+  needs: z.array(NeedSchema),
   targetId: z.string().nullable(),
   personaCount: z.number().int().nonnegative(),
   /** How many PEOPLE the population holds. The wire does not say "agent" (Decision A). */
