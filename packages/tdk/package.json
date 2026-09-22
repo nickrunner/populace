@@ -4,6 +4,22 @@
   "type": "module",
   "license": "MIT",
   "description": "Target Development Kit: the app-side half of populace. Mount one route, implement one function, and a population of strangers can make accounts on your product.",
+  "keywords": [
+    "populace",
+    "mcp",
+    "testing",
+    "provisioning",
+    "agents"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nickrunner/populace.git",
+    "directory": "packages/tdk"
+  },
+  "homepage": "https://github.com/nickrunner/populace/tree/main/packages/tdk#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
