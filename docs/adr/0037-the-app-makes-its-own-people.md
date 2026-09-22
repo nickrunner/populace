@@ -90,10 +90,6 @@ app's own `createPerson` rather than at populace.
 
 **What is knowingly left open:**
 
-- **`admin-mint` builds the same invalid email** (`handle+populace:run_x@domain`) and has since it
-  was written. Firebase tolerates it; a stricter vendor would not. It is not changed here because
-  changing it alters the addresses of accounts existing runs created, which is what a sweep matches
-  on for some targets — it wants doing deliberately, with the sweep in view.
 - **Nothing verifies that the tag survives.** `createPerson` returns no tag, so an app that drops
   it on the way in is discovered by a sweep that finds nothing. The kit's own author called this
   out, and it is the argument for the conformance-check capability the TDK will grow, not a hole in
@@ -103,3 +99,29 @@ app's own `createPerson` rather than at populace.
   nothing.
 - **The strategy is not offered in `populace.yaml`'s starter template**, so a config-first user
   finds it only through the dashboard.
+
+## Amendment — every provider builds a legal address now
+
+The note above said `admin-mint` and `self-signup` kept the invalid form and that changing them
+would move the addresses of accounts existing runs had created. That caution does not apply to a
+build with no runs to protect, and the reply was to say so: *"This is a greenfield build — don't
+worry about existing runs."*
+
+So `emailTagFor` moved to `packages/core/src/ids.ts`, beside `tagForRun` and `slugify` where it
+belongs, and all three providers use it. Every address populace generates is now one that
+`z.email()` accepts.
+
+Two call sites had encoded the old shape and are the reason this is worth recording rather than
+just doing:
+
+- **`e2e.test.ts` asked the mock target for a run's accounts by `?tag=populace:<runId>`**, and that
+  route matches an email substring the way a real admin API would. It asks by run id now. Nothing
+  in populace's own sweep does this — `self-signup` sweeps from stored rows and `admin-mint` from a
+  Firebase custom claim — so the reference target was the only thing that had to learn.
+- **`wake.test.ts` asserted the tag was in the address.** It asserts the run id is, and that a
+  colon is not.
+
+The email has never been the authoritative copy of the tag: the identity row carries it, and on the
+provisioning wire it goes in the request body. What the address carries is a fallback for a target
+with nowhere else to put it, and a fallback that makes the address invalid was worth nobody's
+tolerance.

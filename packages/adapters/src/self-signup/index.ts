@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  emailTagFor,
   getPath,
   type CaptureContext,
   type Credential,
@@ -42,7 +43,7 @@ export class SelfSignupProvider implements IdentityProvider {
    * signs up as somebody the roster does not know (SPEC §5.3.5).
    */
   provision(ctx: ProvisionContext): Promise<ProvisionResult> {
-    const local = `${ctx.agent.handle}+${ctx.tag}`;
+    const local = `${ctx.agent.handle}+${emailTagFor(ctx.tag)}`;
     const password = `Pw-${createHash("sha256").update(`${ctx.tag}:${ctx.agent.id}`).digest("base64url").slice(0, 14)}`;
     return Promise.resolve({
       kind: "self-service",

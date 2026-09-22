@@ -1,7 +1,6 @@
 import {
+  emailTagFor,
   newIdentityId,
-  runIdFromTag,
-  slugify,
   type Credential,
   type Identity,
   type IdentityProvider,
@@ -126,7 +125,7 @@ export class ProvisionUrlProvider implements IdentityProvider {
   }
 
   async provision(ctx: ProvisionContext): Promise<ProvisionResult> {
-    const email = `${ctx.agent.handle}+${emailTag(ctx.tag)}@${this.config.emailDomain}`;
+    const email = `${ctx.agent.handle}+${emailTagFor(ctx.tag)}@${this.config.emailDomain}`;
     const body = await this.call("POST", "/people", {
       tag: ctx.tag,
       handle: ctx.agent.handle,
@@ -285,21 +284,6 @@ export class ProvisionUrlProvider implements IdentityProvider {
     if (parsed) return new TdkRefusal(parsed.error.code, parsed.error.message, status);
     return new TdkRefusal("unknown", `the target's provisioning endpoint at ${url} refused with HTTP ${status}: ${text.slice(0, 200)}`, status);
   }
-}
-
-/**
- * The run, as an email local part can carry it.
- *
- * A tag is `populace:run_x_y` and a colon is not legal in an unquoted local part (RFC 5321), so
- * the raw tag makes an address that a strict validator refuses — `@populace/tdk` does, which is
- * how this was found. The run id alone is legal, stable and recoverable: prefix it with
- * `populace:` to get the tag back.
- *
- * The email is only ever the FALLBACK copy, for an app with nowhere else to keep the tag. The
- * authoritative one goes in the request body and is untouched.
- */
-function emailTag(tag: string): string {
-  return runIdFromTag(tag) ?? slugify(tag);
 }
 
 /**

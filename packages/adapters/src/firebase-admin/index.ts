@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  emailTagFor,
   JsonValueSchema,
   newIdentityId,
   type Credential,
@@ -170,7 +171,7 @@ export class FirebaseAdminProvider implements IdentityProvider {
     // user behind that it could never mint a session for.
     this.exchangeTarget();
     const auth = await this.client();
-    const email = `${ctx.agent.handle}+${ctx.tag}@${this.config.emailDomain}`;
+    const email = `${ctx.agent.handle}+${emailTagFor(ctx.tag)}@${this.config.emailDomain}`;
     const password = `Pw-${createHash("sha256").update(`${ctx.tag}:${ctx.agent.id}`).digest("base64url").slice(0, 14)}`;
     const { uid } = await auth.createUser({ email, password, displayName: ctx.agent.name, emailVerified: true });
     await auth.setCustomUserClaims(uid, { [CLAIM]: ctx.tag });

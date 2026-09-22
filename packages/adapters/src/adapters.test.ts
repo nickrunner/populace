@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Agent, Credential, Identity, JsonValue, ProvisionResult, TeardownDeps } from "@populace/core";
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { FirebaseAdminProvider, SelfSignupProvider, StaticIdentityProvider, type FetchLike, type FirebaseAuthLike } from "./index.js";
 
 const agent: Agent = {
@@ -37,7 +38,12 @@ describe("SelfSignupProvider", () => {
     const result = await provider.provision(ctx);
     expect(result.kind).toBe("self-service");
     if (result.kind !== "self-service") return;
-    expect(result.suggested.email).toBe("ingrid-bergstrom-casual-1+populace:run_a_aaaaaa@populace.test");
+    expect(result.suggested.email).toBe("ingrid-bergstrom-casual-1+run_a_aaaaaa@populace.test");
+    // The RUN ID and not the tag, because a tag is `populace:run_…` and a colon is not legal in an
+    // unquoted local part — every address populace generated used to be invalid, and the one
+    // target that validated rather than tolerated refused them all (ADR-0037).
+    expect(result.suggested.email).not.toContain(":");
+    expect(z.email().safeParse(result.suggested.email).success).toBe(true);
     expect(result.suggested.displayName).toBe("Ingrid Bergstrom");
     const credential = provider.capture({ tool: "sign_up", arguments: { email: result.suggested.email }, result: { token: "tk_1", user: { id: "usr_1" } } });
     expect(credential).toEqual({ bearerToken: "tk_1", expiresAt: null, redeemable: null, userId: "usr_1", email: result.suggested.email, extra: {} });
@@ -57,8 +63,8 @@ describe("SelfSignupProvider", () => {
     const b = await provider.provision({ ...ctx, agent: sceptics });
     if (a.kind !== "self-service" || b.kind !== "self-service") throw new Error("expected self-service");
     expect(a.suggested.email).not.toBe(b.suggested.email);
-    expect(a.suggested.email).toBe("ingrid-bergstrom-weekenders-1+populace:run_a_aaaaaa@populace.test");
-    expect(b.suggested.email).toBe("ingrid-bergstrom-sceptics-1+populace:run_a_aaaaaa@populace.test");
+    expect(a.suggested.email).toBe("ingrid-bergstrom-weekenders-1+run_a_aaaaaa@populace.test");
+    expect(b.suggested.email).toBe("ingrid-bergstrom-sceptics-1+run_a_aaaaaa@populace.test");
   });
 
   it("tears down through the configured tool", async () => {
@@ -76,7 +82,7 @@ describe("SelfSignupProvider", () => {
     const renamed = { ...agent, name: "Ingrid Bergström-Okonkwo", handle: "ingrid-b-casual-1" };
     const result = await provider.provision({ ...ctx, agent: renamed });
     if (result.kind !== "self-service") throw new Error("expected self-service");
-    expect(result.suggested.email).toBe("ingrid-b-casual-1+populace:run_a_aaaaaa@populace.test");
+    expect(result.suggested.email).toBe("ingrid-b-casual-1+run_a_aaaaaa@populace.test");
     expect(result.suggested.displayName).toBe("Ingrid Bergström-Okonkwo");
   });
 });
@@ -448,8 +454,8 @@ describe("FirebaseAdminProvider", () => {
     const b = await provider.provision({ ...ctx, agent: sceptics });
     if (a.kind !== "credential" || b.kind !== "credential") throw new Error("expected credentials");
 
-    expect(a.credential.email).toBe(`ahmed-castillo-weekenders-1+${ctx.tag}@populace.test`);
-    expect(b.credential.email).toBe(`ingrid-bergstrom-sceptics-1+${ctx.tag}@populace.test`);
+    expect(a.credential.email).toBe("ahmed-castillo-weekenders-1+run_a_aaaaaa@populace.test");
+    expect(b.credential.email).toBe("ingrid-bergstrom-sceptics-1+run_a_aaaaaa@populace.test");
     expect(a.credential.email).not.toBe(b.credential.email);
     expect([...users.values()].map((u) => u.displayName)).toEqual(["Ahmed Castillo", "Ingrid Bergstrom"]);
     expect([...users.values()].map((u) => u.displayName)).not.toContain(agent.persona.name);

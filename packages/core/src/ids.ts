@@ -70,6 +70,21 @@ export function isRunId(value: string): boolean {
   return /^run_[0-9a-z]+_[0-9a-z]{6}$/.test(value);
 }
 
+/**
+ * The run, as an email local part can legally carry it.
+ *
+ * Every provider builds a person's address as `handle+<this>@domain`, and for a long time it used
+ * the tag itself — but a tag is `populace:run_x_y` and **a colon is not legal in an unquoted local
+ * part** (RFC 5321), so every address populace generated was invalid. Firebase tolerated it and
+ * nothing else had been asked, until `@populace/tdk` validated one and refused it (ADR-0037).
+ *
+ * The run id is legal, stable and recoverable — prefix it with `populace:` to get the tag back.
+ * `slugify` is the fallback for a tag that is not a run tag at all, which nothing produces today.
+ */
+export function emailTagFor(tag: string): string {
+  return runIdFromTag(tag) ?? slugify(tag);
+}
+
 /** A safe slug for embedding in emails, usernames and file names. */
 export function slugify(value: string): string {
   return value

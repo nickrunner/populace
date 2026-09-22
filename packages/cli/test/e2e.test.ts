@@ -130,13 +130,17 @@ describe("local daemon + CLI end to end", () => {
 
     // A bare sweep tears down the three accounts on the target and KEEPS the evidence: the digest
     // above is the reason the run happened, and losing it is asked for by name.
-    const before = (await (await fetch(`${target.url}/admin/users?tag=populace:${runId}`, { headers: { "x-admin-token": target.adminToken } })).json()) as { users: object[] };
+    //
+    // Asked by RUN ID, because that is what the addresses carry. A tag is `populace:run_…` and a
+    // colon is not legal in an email local part, so a person's address embeds the run id alone
+    // (ADR-0037) — and this route finds users by an email substring, as a real admin API would.
+    const before = (await (await fetch(`${target.url}/admin/users?tag=${runId}`, { headers: { "x-admin-token": target.adminToken } })).json()) as { users: object[] };
     expect(before.users).toHaveLength(3);
     const swept = await populace("sweep");
     expect(swept).toContain("3 identities tagged");
     expect(swept).toContain("tore down");
     expect(swept).not.toContain("removed 3 agent(s)");
-    const after = (await (await fetch(`${target.url}/admin/users?tag=populace:${runId}`, { headers: { "x-admin-token": target.adminToken } })).json()) as { users: object[] };
+    const after = (await (await fetch(`${target.url}/admin/users?tag=${runId}`, { headers: { "x-admin-token": target.adminToken } })).json()) as { users: object[] };
     expect(after.users).toHaveLength(0);
     expect(await populace("status")).toContain("3 agent(s), 9 wake(s), 6 finding(s)");
 

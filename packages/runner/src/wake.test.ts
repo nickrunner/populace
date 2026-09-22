@@ -102,7 +102,10 @@ describe("runWake against the mock target", () => {
 
     // identity captured from the signup tool result and persisted
     expect(result.identity?.credential.bearerToken).toMatch(/^tk_/);
-    expect(result.identity?.credential.email).toContain(`+populace:${agent.runId}@`);
+    // The address carries the RUN ID; the tag it belongs to is on the identity row below. A tag
+    // has a colon in it and an email local part may not (ADR-0037).
+    expect(result.identity?.credential.email).toContain(`+${agent.runId}@`);
+    expect(result.identity?.credential.email).not.toContain(":");
     expect(result.agent.identityId).toBe(result.identity?.id);
     expect((await store.getIdentity(result.identity!.id))?.tag).toBe(`populace:${agent.runId}`);
 
