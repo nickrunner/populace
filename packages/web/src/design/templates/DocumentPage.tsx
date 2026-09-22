@@ -38,6 +38,25 @@ import type { StateKind } from "../tokens.js";
  * grid of blocks beneath the content below 1240px, a 264px sticky column beside it at or above
  * (§5.3). Rendering it twice would duplicate every id in it and announce every number twice.
  *
+ * **AMENDED — a page with no rail centres its column, because the frame is sized for the rail.**
+ *
+ * `--w-page` is 1100px and that number is not arbitrary: it is the document column (648px) plus
+ * the 48px gap plus the 264px instrument rail plus the gutter pair. It is the width of the
+ * two-column layout. But `rail` is optional and **exactly one screen in the product passes one**
+ * — `SimulationResults`. Everywhere else the frame was reserving 312px for a column that never
+ * rendered, and since the document column is left-aligned inside it, all 312px of that reserve
+ * piled up on the right: on a 1605px `<main>` the content's optical centre sat 201px left of the
+ * window's. It read as a page pushed into the corner, which is exactly what it was.
+ *
+ * So the column takes `mx-auto` when there is no rail beside it. The frame keeps its 1100px — the
+ * cap is still right for the layout it describes — and the column simply sits in the middle of it
+ * rather than at one end, which puts it in the middle of the window at every width. **With** a
+ * rail nothing moves at all: the two columns fill the frame and `mx-auto` would have nothing to
+ * distribute.
+ *
+ * What this does NOT do is widen anything. The reading measure is the measure (note 3); a screen
+ * that wants the whole 1605px is an instrument, and `InstrumentPage` is the template for it.
+ *
  * The state slot is the fifth thing, and it is shared with the other four page templates — see
  * `pageStateSlot` below.
  */
@@ -98,6 +117,14 @@ const DOCUMENT_COLUMN = [
 ].join(" ");
 
 /**
+ * Railless, the column centres itself in the frame — see the amendment in note 4. It is `mx-auto`
+ * and not a change to the frame's cap because the two are equivalent wherever the cap binds, and
+ * this way `--w-page` goes on meaning the one thing it has always meant: the width of a
+ * document-class page with its instrument rail beside it.
+ */
+const CENTRED = "mx-auto";
+
+/**
  * Below 1240px: a two-column grid of the same blocks, beneath the content. At 1240px and above:
  * a 264px column that sticks while the document scrolls past it.
  */
@@ -126,7 +153,7 @@ export const DocumentPage = forwardRef<HTMLDivElement, DocumentPageProps>(functi
   return (
     <div ref={ref} className={cn(PAGE_FRAME, "py-10 md:py-12")}>
       <div className="flex flex-col gap-10 xl:flex-row xl:items-start xl:gap-12">
-        <div className={DOCUMENT_COLUMN}>
+        <div className={cn(DOCUMENT_COLUMN, rail === undefined && CENTRED)}>
           {header}
           {/*
             32px between the header and the body. `PageHeader` deliberately draws no bottom

@@ -951,7 +951,7 @@ else.** No data fetching, no product nouns, no business logic.
 | # | Template | File | Owns | Used by |
 |---|---|---|---|---|
 | 1 | `AppShell` | `AppShell.tsx` | `SkipLink` + `Sidebar` + scrolling `<main id="main" tabindex="-1">` + `RouteAnnouncer` + the `Toast` region + the one `TooltipProvider`; the rail→drawer switch below 900px. **AMENDED: the header bar is unconditional, and the lockup in it is a link** — see the note under the code block | every `/app` screen |
-| 2 | `DocumentPage` | `DocumentPage.tsx` | `--w-page`, the 72px stub grid, `--measure-read`, an optional 264px sticky instrument rail at ≥1240px, `PageHeader` slot, state slot | 12 screens |
+| 2 | `DocumentPage` | `DocumentPage.tsx` | `--w-page`, the 72px stub grid, `--measure-read`, an optional 264px sticky instrument rail at ≥1240px, `PageHeader` slot, state slot. **AMENDED: railless, the column is `mx-auto`** — `--w-page` is the width of the TWO-column layout (648 + 48 + 264 + gutters) and only `SimulationResults` passes a rail, so everywhere else the frame reserved 312px that piled up on the right and pushed the page 201px left of centre | 12 screens |
 | 3 | `InstrumentPage` | `InstrumentPage.tsx` | `--w-page` full bleed, no reading measure, 32px rows, the stub as a leading column, a toolbar slot | 8 screens |
 | 4 | `SplitPage` | `SplitPage.tsx` | `grid-cols-[minmax(0,1fr)_minmax(0,1fr)]`, sticky right rail, stacking at 1000px with the **detail above the list** | 5 screens |
 | 5 | `FormPage` | `FormPage.tsx` | `DocumentPage` + a sticky `SaveBar`, an unsaved-changes guard, field error focus management | 4 screens |
