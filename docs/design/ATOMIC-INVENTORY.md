@@ -950,7 +950,7 @@ else.** No data fetching, no product nouns, no business logic.
 
 | # | Template | File | Owns | Used by |
 |---|---|---|---|---|
-| 1 | `AppShell` | `AppShell.tsx` | `SkipLink` + `Sidebar` + scrolling `<main id="main" tabindex="-1">` + `RouteAnnouncer` + the `Toast` region + the one `TooltipProvider`; the rail→drawer switch below 900px | every `/app` screen |
+| 1 | `AppShell` | `AppShell.tsx` | `SkipLink` + `Sidebar` + scrolling `<main id="main" tabindex="-1">` + `RouteAnnouncer` + the `Toast` region + the one `TooltipProvider`; the rail→drawer switch below 900px. **AMENDED: the header bar is unconditional, and the lockup in it is a link** — see the note under the code block | every `/app` screen |
 | 2 | `DocumentPage` | `DocumentPage.tsx` | `--w-page`, the 72px stub grid, `--measure-read`, an optional 264px sticky instrument rail at ≥1240px, `PageHeader` slot, state slot | 12 screens |
 | 3 | `InstrumentPage` | `InstrumentPage.tsx` | `--w-page` full bleed, no reading measure, 32px rows, the stub as a leading column, a toolbar slot | 8 screens |
 | 4 | `SplitPage` | `SplitPage.tsx` | `grid-cols-[minmax(0,1fr)_minmax(0,1fr)]`, sticky right rail, stacking at 1000px with the **detail above the list** | 5 screens |
@@ -966,6 +966,33 @@ export interface AppShellProps { rail?: React.ReactNode; children: React.ReactNo
 // both the fixed column and the drawer, so the template still fetches nothing and the rail is
 // still one component. The drawer closes on a click that lands on an anchor inside it, which is
 // the delegated listener the rail used to own.
+//
+// AMENDED AGAIN — the header bar, and the brand's one site inside `/app`.
+//
+// The bar used to be `md:hidden` whenever a rail was passed, on the argument that a wide screen
+// has the rail and needs nothing above it. Two consequences, both wrong:
+//
+//   1. The product had two frames, one per window width, and the wide one had no bar at all.
+//   2. The wide frame therefore wore the product's name nowhere but a 20px `Mark` that
+//      `ProjectRail` drew into the head of the navigation — and on a RAILLESS screen the bar did
+//      carry the 168px lockup, but carried it as bare artwork. Clicking the product's name did
+//      nothing, anywhere in `/app`.
+//
+// Now: the bar is drawn on every screen at every width, and the lockup in it is a `RouterLink` to
+// `/projects` — the product's own top, not `/`, which is the brochure and the last place somebody
+// inside the product means to land. It follows DESIGN-SYSTEM §8.3's table exactly: the 168px
+// horizontal logo at `md` and up (the sidebar-header row), the 24px mark below it (the mobile-
+// header row), switched in CSS so a resize needs no re-render.
+//
+// Three things move with it, and all three are de-duplications rather than additions:
+//   - `ProjectRail` no longer draws a `Mark`. Two lockups on one screen pointing at two addresses
+//     is two answers to "where does this take me". It also no longer wraps `Sidebar` in a box of
+//     its own, which had been a second `--w-rail` and a second `border-r` inside the shell's.
+//   - `ProjectSwitcher` no longer carries the word `populace` above the project's name. That
+//     destination — the projects index — is the lockup's now, and is also "All projects" in the
+//     switcher's menu.
+//   - `ThemeToggle` is in the bar at every width. It used to move to the foot of the rail above
+//     `md`, which put the one control a reader memorises the position of in two positions.
 export interface PageStateSlots { loading?: React.ReactNode; error?: React.ReactNode; empty?: React.ReactNode; gone?: React.ReactNode }
 export interface DocumentPageProps extends PageStateSlots {
   header: React.ReactNode;              // a PageHeader

@@ -11,8 +11,8 @@ import { DropdownMenu, type DropdownMenuItem } from "./DropdownMenu.js";
  * ProjectSwitcher — ATOMIC-INVENTORY §3, organism 32. The head of the rail.
  *
  * The project's name is the heading of the rail, because a project is the thing everything below
- * it belongs to; the `populace` mark is one 20px line above it, which is as much room as a
- * product name needs once the product is open.
+ * it belongs to. The product's own name is not in here at all: it is in the shell's header bar,
+ * above the rail, on every screen and as a link.
  *
  * **What changes is not the look, it is that the menu can be closed.** Today this is a
  * `<button aria-expanded>` next to an absolutely positioned `<div>` with a `mousedown` listener
@@ -21,9 +21,16 @@ import { DropdownMenu, type DropdownMenuItem } from "./DropdownMenu.js";
  * outside click, focus return to the trigger, typeahead and arrow-key roving — one tab stop for
  * the whole menu rather than one per project.
  *
- * **Three destinations, unchanged.** The mark goes to the projects index; the name opens the
- * menu; the line beneath goes to this project's home. The menu lists every *other* project and
- * ends with "New project".
+ * **Two destinations and a menu.** The name opens the menu; the line beneath goes to this
+ * project's home. The menu lists every *other* project and ends with the two acts that are not a
+ * project — "All projects" and "New project".
+ *
+ * There used to be a third: the word `populace`, set in the smallest chrome step above the
+ * project's name, linking to the projects index. It is gone, and "All projects" in the menu is
+ * where that destination lives now. The word was the product's name doing a navigation label's
+ * job, in the one place on the screen where the *project's* name is supposed to be the heading —
+ * and since `AppShell` grew a header bar with the real lockup in it, a link to the index, the
+ * word was also the second brand mark on the same screen.
  *
  * **No heading element.** `PageHeader` owns the page's single `<h1>` (§6, heading order) and the
  * rail is chrome beside it, not above it; a rail that declared an `<h1>` of its own would give
@@ -82,6 +89,7 @@ export const ProjectSwitcher = forwardRef<HTMLDivElement, ProjectSwitcherProps>(
       others.length === 0
         ? [
             { label: "No other projects yet", disabled: true },
+            { label: "All projects", to: "/projects" },
             { label: "New project", to: "/projects?new=1" },
           ]
         : [
@@ -100,20 +108,13 @@ export const ProjectSwitcher = forwardRef<HTMLDivElement, ProjectSwitcherProps>(
                 to: projectHref(project),
               }),
             ),
+            { label: "All projects", to: "/projects" },
             { label: "New project", to: "/projects?new=1" },
           ];
 
     return (
       <div ref={ref} className="px-3 py-4">
         <Stack gap={1}>
-          {/*
-            The wordmark, set in the smallest chrome step. It is a link rather than a logo
-            because it goes somewhere: the index of every project this install has.
-          */}
-          <Link to="/projects" size="meta" tone="quiet" className="self-start">
-            populace
-          </Link>
-
           <DropdownMenu
             label="Projects"
             items={items}
@@ -134,7 +135,7 @@ export const ProjectSwitcher = forwardRef<HTMLDivElement, ProjectSwitcherProps>(
 
           {/*
             The project's own words if it has any; otherwise what it is made of, as two facts with
-            the rule between them (§4.5). Either way the line is the third destination — this
+            the rule between them (§4.5). Either way the line is the second destination — this
             project's home — so the `MetaLine` sits inside the link rather than beside it.
           */}
           <Link to={projectHref(current)} size="meta" tone="quiet" className="block truncate">

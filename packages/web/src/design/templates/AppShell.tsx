@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import * as VisuallyHiddenPrimitive from "@radix-ui/react-visually-hidden";
-import { useLocation } from "react-router-dom";
+import { Link as RouterLink, useLocation } from "react-router-dom";
 
 import { cn } from "../cn.js";
-import { surfaceBase } from "../variants.js";
+import { focusRing, pressTransition, surfaceBase } from "../variants.js";
 import { Button, SkipLink } from "../atoms/index.js";
-import { Logo } from "../brand/index.js";
+import { Logo, Mark } from "../brand/index.js";
 import { TooltipProvider } from "../atoms/Tooltip.js";
 import { ThemeToggle } from "../molecules/index.js";
 import { ToastRegion } from "../organisms/index.js";
@@ -29,18 +29,21 @@ import { RouteAnnouncer } from "./RouteAnnouncer.js";
  *  4. **The toast viewport, mounted exactly once.** `ToastRegion` is both the Radix provider
  *     every `Toast` needs and the single viewport they all portal into, so a toast rendered
  *     anywhere beneath the shell lands in one stack with one tab stop.
- *  5. **The theme toggle's placement**: the foot of the rail on a wide window, the top bar on a
- *     narrow one — and the top bar at every width when there is no rail to sit in. Exactly one of
- *     the two is ever rendered, because two of the same control on one screen is two answers to
- *     one question.
+ *  5. **The theme toggle**, in the header bar, on every screen and at every width. It used to
+ *     move — the foot of the rail on a wide window, the bar on a narrow one — which meant the
+ *     one control a reader learns the position of was in two positions. One site, always.
  *  6. **The tooltip provider, mounted exactly once**, for the same reason as the toast viewport.
  *     `skipDelayDuration` is a property of a *group* of triggers — move along a toolbar of
  *     `IconButton`s and the second tooltip should open instantly — and a provider per tooltip
  *     has one trigger under it, so the window never applies.
- *  7. **The lockup on a railless screen.** The rail is where the product wears its name, so a
- *     screen without one wore it nowhere: `/projects` shipped with no artwork on it at all. When
- *     there is no rail the header bar stays at every width and carries §8.3's sidebar-header
- *     lockup, and the empty rail column is not drawn.
+ *  7. **The header bar, and the lockup in it — on every screen, at every width, and a link.**
+ *     This is the one that changed. The bar used to be `md:hidden` whenever there was a rail, so
+ *     a wide product screen had no bar at all and wore the product's name only as a 20px mark
+ *     tucked into the head of the rail; and on a railless screen the bar did carry the lockup but
+ *     carried it as *artwork* — a `<Logo>` with nothing around it, so clicking the product's name
+ *     did nothing. Both are gone. The bar is unconditional, the lockup is always in it, and it is
+ *     always a `RouterLink` to `HOME` below. The rail no longer draws a mark of its own, because
+ *     two lockups on one screen is two answers to "where does this take me".
  *
  * **The rail becomes a drawer below `md`.** DESIGN-SYSTEM §5.3 names 900px for that switch and
  * the token set has no 900px breakpoint — the four are 640 / 860 / 1000 / 1240 — so it happens at
@@ -48,6 +51,11 @@ import { RouteAnnouncer } from "./RouteAnnouncer.js";
  * collapses. The drawer is a Radix `Dialog`, so Escape, the focus trap and focus return to the
  * trigger all come free (§6), and it closes on a navigation as well, because a rail still
  * covering the screen you just asked for is a rail in the way.
+ *
+ * **What the bar deliberately does not hold.** No search, no account menu, no breadcrumb and no
+ * page title: the `<h1>` belongs to `PageHeader` inside `<main>` (§6, heading order), and a bar
+ * that repeated it would give every screen two. Three things and no others — the way back into
+ * the navigation on a narrow window, the product's name as the way home, and the theme.
  *
  * **No route transition** (§5.1). The page is there or it is not.
  */
@@ -68,6 +76,21 @@ export interface AppShellProps {
 
 /** The id the skip link jumps to, and the landmark the announcer reads the heading out of. */
 const MAIN_ID = "main";
+
+/**
+ * Where the lockup goes, and why it is not `/`.
+ *
+ * `/` is the public landing page — the brochure. A reader who is inside the product and clicks
+ * the product's name is asking to go up, not out, and landing on the marketing site is the most
+ * disorienting thing that address could do. `/projects` is the product's own top: the index of
+ * every project this install has, and the one screen that is above all the others rather than
+ * beside them. The public pages keep their own lockup, in `MarketingShell`, and that one does
+ * point at `/`, because there it IS home.
+ */
+const HOME = "/projects";
+
+/** The lockup's hit area: a link, so it takes the control radius, the press and the ring (§5.2, §6). */
+const LOCKUP_LINK = cn("inline-flex shrink-0 rounded-sm", pressTransition, focusRing);
 
 /**
  * The rail's own box, drawn once and used twice: by the fixed column at `md` and up, and by the
@@ -148,39 +171,36 @@ export function AppShell({ rail, children }: AppShellProps) {
 
         <div className="flex h-full min-h-0 flex-col">
           {/*
-            The bar. With a rail it is the narrow-window one, holding the two controls the rail
-            took with it — the way back to the navigation, and the theme — and it is gone at `md`
-            where the rail itself is back. Without a rail it stays at every width, because it is
-            then the only chrome on the screen and the only thing carrying the product's name.
+            The bar, on every screen and at every width. It used to be `md:hidden` whenever there
+            was a rail, on the argument that a wide product screen has the rail and needs nothing
+            above it — which left the product with two different frames depending on the window,
+            and left the wide one with no place to wear its own name but a 20px mark inside the
+            navigation. One bar, always, is the frame; what is *in* it still varies by exactly one
+            control, the drawer trigger, which has nothing to open when there is no rail.
 
-            Its gutter matches the page frame's (`px-4 md:px-8`) in that case, so the lockup hangs
-            on the same left edge the heading under it does rather than on an inset of its own.
+            Its gutter follows what is underneath it. Railless, that is the page frame
+            (`px-4 md:px-8`), so the lockup hangs on the same left edge as the heading below it.
+            With a rail it is the rail's own `px-3`, so the lockup sits over the rail's content
+            column rather than on an inset of its own.
           */}
           <header
             className={cn(
               "flex shrink-0 items-center gap-3 border-b border-rule bg-surface py-2",
-              railless ? "px-4 md:px-8" : "px-3 md:hidden",
+              railless ? "px-4 md:px-8" : "px-3",
             )}
           >
             {/*
-              The lockup, on a railless shell only — §8.3's sidebar-header entry, which is the
-              168px horizontal logo (`size="md"`). A railless page has the whole width rather than
-              a 236px rail, so it takes the lettered lockup rather than the bare mark the rail's
-              own head uses. `on="surface"` is the bar's ground and the component picks the cut;
-              nothing here asks which theme it is in. It is named rather than decorative: on these
-              routes there is no other artwork and no rail naming the product.
-            */}
-            {railless ? <Logo size="md" on="surface" /> : null}
-            {/*
-              No rail, no way in to one. A railless shell is what a route outside a project wants
-              — the projects index, a 404, a shell whose record did not load — and a "Menu" that
-              opens an empty panel is a control that names something that is not there. The theme
-              toggle below is the bar's other reason to exist and it stays either way.
+              The way back into the navigation, on a narrow window. It leads the bar because that
+              is where a reader reaches for it, and it is `md:hidden` because at `md` the rail it
+              opens is already on the screen — one of the two, never both.
+
+              Railless there is nothing to open, and a "Menu" that opens an empty panel is a
+              control that names something that is not there, so it is not rendered at all.
             */}
             {railless ? null : (
             <DialogPrimitive.Root open={drawerOpen} onOpenChange={setDrawerOpen}>
               <DialogPrimitive.Trigger asChild>
-                <Button variant="quiet" size="sm">
+                <Button variant="quiet" size="sm" className="md:hidden">
                   Menu
                 </Button>
               </DialogPrimitive.Trigger>
@@ -239,6 +259,41 @@ export function AppShell({ rail, children }: AppShellProps) {
             </DialogPrimitive.Root>
             )}
 
+            {/*
+              The product's name, and the way home. It is a LINK, which is the whole point of this
+              bar: a lockup that goes nowhere is a sticker. The link carries the accessible name
+              and the artwork inside it is therefore decorative (`label={null}`) — two names for
+              one destination is the commonest way a logo goes wrong for a screen reader. On
+              `HOME` itself it is still a link, but `aria-current="page"` stops it claiming to
+              lead anywhere new.
+
+              **Two lockups, and the cascade picks**, the same way `Logo` picks between the light
+              and the dark cut. At `md` and up it is §8.3's sidebar-header entry, the 168px
+              horizontal logo, which fits the 236px rail's content column with its clear space and
+              has the whole width to itself on a railless page. Below `md` it is §8.3's
+              mobile-header entry, the 24px mark: the bar there also holds the drawer trigger and
+              the theme toggle, and 168px of lettering between them is more than a 360px phone
+              has. This is a media query rather than a branch in TypeScript because the window can
+              be resized after paint, and a component that had asked how wide it was would have to
+              re-render to find out it was wrong. `hidden` is `display: none`, so exactly one of
+              the two is in the accessibility tree as well as on the page — and both are
+              `aria-hidden` regardless, because the link above them is what has the name.
+            */}
+            <RouterLink
+              to={HOME}
+              aria-label="Populace, your projects"
+              aria-current={pathname === HOME ? "page" : undefined}
+              className={LOCKUP_LINK}
+            >
+              <Mark size="md" on="surface" label={null} className="md:hidden" />
+              <Logo size="md" on="surface" label={null} className="hidden md:inline-block" />
+            </RouterLink>
+
+            {/*
+              The theme, at the right-hand end of the bar on every screen. It used to live at the
+              foot of the rail on a wide window and here on a narrow one, which put the one
+              control whose position a reader memorises in two positions. One site, always.
+            */}
             <div className="ml-auto">
               <ThemeToggle compact />
             </div>
@@ -251,16 +306,16 @@ export function AppShell({ rail, children }: AppShellProps) {
               away with the navigation above it.
             */}
             {/*
-              Railless, there is no column: an empty 236px of `surface` with a theme toggle at the
-              foot of it is a rail drawn around nothing. The toggle is in the bar above instead,
-              which is exactly the rule this template already keeps — one of the two, never both.
+              Railless, there is no column: an empty 236px of `surface` is a rail drawn around
+              nothing, and the bar above is then the only chrome on the screen.
+
+              The theme toggle used to sit at the foot of this column. It is in the bar now, at
+              every width — see the bar above — so the column holds the navigation and nothing
+              else, and the rail's scroll runs the full height of it.
             */}
             {railless ? null : (
               <div className={cn(RAIL, "hidden h-full w-[var(--w-rail)] shrink-0 border-r border-rule md:flex")}>
                 {rail}
-                <div className="shrink-0 border-t border-rule px-3 py-3">
-                  <ThemeToggle compact />
-                </div>
               </div>
             )}
 
