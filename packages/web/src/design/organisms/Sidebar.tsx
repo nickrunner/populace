@@ -161,12 +161,14 @@ export interface SidebarProps {
   href: (path?: string) => string;
   /** The configured target, or null when the project has none yet. */
   target: RailTarget | null;
+  /** How many targets the project has; above one the foot reports the count and names none. */
+  targetCount: number;
   /** How many populations the project has. The row appears only above one. */
   populationCount: number;
 }
 
 export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
-  { collapsed = false, onNavigate, project, projects, href, target, populationCount },
+  { collapsed = false, onNavigate, project, projects, href, target, targetCount, populationCount },
   ref,
 ) {
   const inSimulation = useMatch("/p/:proj/s/:sim/*");
@@ -182,6 +184,7 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
   const targetStatus: TargetStatusView = {
     name: target?.name ?? null,
     endpoint: target?.endpoint ?? null,
+    count: targetCount,
     to: target === null ? href("library/targets") : href(`library/targets/${encodeURIComponent(target.id)}`),
     state: project.killSwitch.engaged
       ? "stopped"

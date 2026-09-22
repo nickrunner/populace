@@ -249,7 +249,7 @@ export type { ToolPolicyEditorProps, PolicyTool } from "./ToolPolicyEditor.js";
 export { ConnectionStatusBar } from "./ConnectionStatusBar.js";
 export type { ConnectionStatusBarProps } from "./ConnectionStatusBar.js";
 
-export { FirstContactPanel } from "./FirstContactPanel.js";
+export { FirstContactPanel, OUTCOME_WORDS, OUTCOME_TONES } from "./FirstContactPanel.js";
 export type { FirstContactPanelProps } from "./FirstContactPanel.js";
 
 export { SamplePreview } from "./SamplePreview.js";

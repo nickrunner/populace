@@ -32,8 +32,14 @@ import { WhatWentWrong } from "./WhatWentWrong.js";
  * Nothing here promises what a future execution will find (§7.3). One person got in, or did not.
  */
 
-/** The six outcomes, in the words the reader gets. */
-const OUTCOME_WORDS: Record<FirstContact["outcome"], string> = {
+/**
+ * The six outcomes, in the words the reader gets.
+ *
+ * Exported because the project dashboard's Targets band reports the same stored result, and two
+ * tables of six words drift the day somebody edits one of them. The band shows the word and this
+ * panel shows the word plus the detail; neither invents a seventh.
+ */
+export const OUTCOME_WORDS: Record<FirstContact["outcome"], string> = {
   accepted: "they can get in",
   "connected-only": "connected, nothing called",
   "tool-failed": "got in; the tool failed",
@@ -43,7 +49,7 @@ const OUTCOME_WORDS: Record<FirstContact["outcome"], string> = {
 };
 
 /** `good` where a population would get through the front door, `bad` where it would not. */
-const OUTCOME_TONES: Record<FirstContact["outcome"], "good" | "neutral" | "bad"> = {
+export const OUTCOME_TONES: Record<FirstContact["outcome"], "good" | "neutral" | "bad"> = {
   accepted: "good",
   "connected-only": "neutral",
   "tool-failed": "neutral",

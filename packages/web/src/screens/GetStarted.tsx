@@ -134,12 +134,22 @@ export function GetStarted() {
   );
 }
 
-/** The answer step 1 holds, on the line, once it has one: the app's name and where it lives. */
+/**
+ * The answer step 1 holds, on the line, once it has one: the app's name and where it lives.
+ *
+ * With SEVERAL targets it says how many instead of naming one. It used to render `items[0]`
+ * unconditionally, and `listTargets` orders `updated_at DESC` — so a project with a dev and a qa
+ * endpoint had a step-1 summary that named whichever was edited last and silently changed its
+ * mind when the other was touched. Naming one of two is worse than naming neither.
+ */
 function TargetSummary() {
   const { key } = useProject();
   const targets = useQuery(q.targets(key));
-  const target = targets.data?.items[0];
-  return target === undefined ? null : (
+  const items = targets.data?.items ?? [];
+  const target = items[0];
+  if (target === undefined) return null;
+  if (items.length > 1) return <MetaLine facts={[{ key: "count", node: plural(items.length, "target") }]} />;
+  return (
     <MetaLine
       facts={[
         { key: "name", node: target.name },

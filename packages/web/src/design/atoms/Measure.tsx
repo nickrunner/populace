@@ -10,6 +10,17 @@ import { cn } from "../cn.js";
  * ~11% more characters per line than the sans (§3.6), so a pixel width would give the two
  * families two different line lengths while a `ch` width gives them the same one.
  *
+ * **The hazard that argument hides, and where the correction lives.** `ch` resolves against the
+ * element it is declared on — and that element is *this wrapper*, which inherits the body's
+ * 13px chrome sans, not the 30px serif the statement inside it is set in. `read` is right by
+ * coincidence (Space Grotesk 13 and Source Serif 15 have nearly the same "0"), which is why this
+ * went unnoticed while `read` is ~two thirds of every measure in the product; `statement` was
+ * rendering at 283px against an intended 520px and broke a one-sentence headline every three
+ * words. The per-variant correction is in `theme.css` beside the tokens, with the measurements
+ * that produced it. Do not "simplify" it away, and do not fix it by putting a font on this
+ * wrapper — that was simulated and it retypesets 26 labels and links that rely on inheriting the
+ * chrome sans.
+ *
  *   read      62ch  serif prose — the default, and the document-class reading column
  *   statement 34ch  a `t-statement` headline, which wants to break as a sentence
  *   lede      52ch  a `t-lede` intro

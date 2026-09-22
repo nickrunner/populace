@@ -46,10 +46,20 @@ const block = cva(
  * where it is drawn.
  */
 export interface TargetStatusView {
-  /** The target's name, or null when the project has none yet. */
+  /** The target's name, or null when the project has none yet. Ignored when `count > 1`. */
   name: string | null;
-  /** The first MCP endpoint's URL, or null when there is no target. */
+  /** The first MCP endpoint's URL, or null when there is no target. Ignored when `count > 1`. */
   endpoint: string | null;
+  /**
+   * How many targets the project has.
+   *
+   * A project may hold several — dev and qa are two targets, not two projects — and this block
+   * used to render the first of them unconditionally. `listTargets` orders `updated_at DESC`, so
+   * "the first" meant "whichever you edited last": the rail named one of two and changed its mind
+   * when the other was touched. Above one it reports the count and names none of them, because
+   * naming one of two is worse than naming neither.
+   */
+  count: number;
   /** Where the block goes: the target's own screen, or the list when there is no target. */
   to: string;
   /**
@@ -69,7 +79,9 @@ export const TargetStatus = forwardRef<HTMLAnchorElement, TargetStatusProps>(
       <RouterLink ref={ref} to={target.to} className={cn(block())}>
         <Inline gap={2} align="center" className="mb-1">
           <Text size="label" tone="muted" truncate className="min-w-0 flex-1">
-            {target.name ?? "No target yet"}
+            {target.count > 1
+              ? `${target.count} targets`
+              : (target.name ?? "No target yet")}
           </Text>
           {target.state === "stopped" ? (
             <Chip tone="bad">Stopped</Chip>
@@ -83,9 +95,16 @@ export const TargetStatus = forwardRef<HTMLAnchorElement, TargetStatusProps>(
           `code-sm` is the system's smallest mono step and the floor §1.3 rule 6 sets; the
           endpoint breaks anywhere, because a URL is one word to CSS and four lines to a reader.
         */}
-        <Mono size="code-sm" tone="muted" className="block break-all">
-          {target.endpoint ?? "connect one to begin"}
-        </Mono>
+        {/*
+          The endpoint, which is machine output and takes the mono step. With several targets
+          there is no single endpoint to print, and the count above has already said so — a
+          sentence in its place would be chrome explaining chrome.
+        */}
+        {target.count > 1 ? null : (
+          <Mono size="code-sm" tone="muted" className="block break-all">
+            {target.endpoint ?? "connect one to begin"}
+          </Mono>
+        )}
       </RouterLink>
     );
   },

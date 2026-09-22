@@ -59,6 +59,7 @@ export function ProjectRail({ onNavigate }: ProjectRailProps) {
           ? null
           : { id: first.id, name: first.name, endpoint: first.mcp[0]?.url ?? null }
       }
+      targetCount={targets.data?.items.length ?? 0}
       populationCount={populations.data?.items.length ?? 0}
     />
   );

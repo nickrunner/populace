@@ -19,6 +19,8 @@ import {
   MetaLine,
   Money,
   Mono,
+  OUTCOME_TONES,
+  OUTCOME_WORDS,
   PageHeader,
   RelativeTime,
   Ring,
@@ -28,8 +30,6 @@ import {
   SimulationActions,
   Spacer,
   Stack,
-  Stat,
-  StatGroup,
   StateBlock,
   Text,
   type MetaFact,
@@ -140,14 +140,25 @@ export function ProjectHome() {
         <PageHeader
           title={project.name}
           lede={project.description || undefined}
+          /*
+            What the project is made of, and what it is costing. Spend moved up here out of the
+            strip below: it is a fact about the whole project rather than one of the things the
+            project is made of, and a `Stat` at the 32px figure step made "$0.00" the loudest
+            number on a page whose subject is what came back.
+          */
           meta={[
             { key: "simulations", node: plural(project.counts.simulations, "simulation") },
+            { key: "targets", node: plural(project.counts.targets, "target") },
             { key: "people", node: `${people(project.counts.people)} configured` },
             {
               key: "spend",
               node: (
                 <>
-                  <Money usd={project.costLast7dUsd} /> this week
+                  <Money usd={project.spentTodayUsd} /> today of{" "}
+                  <Money usd={project.dailyCeilingUsd} />{" "}
+                  <Link size="meta" to={href("settings")}>
+                    change
+                  </Link>
                 </>
               ),
             },
@@ -163,7 +174,9 @@ export function ProjectHome() {
           </Text>
         </Measure>
 
-        <LayOfTheLand />
+        <TargetsBand />
+
+        <WhoCanGoBand />
 
         {/*
           Until something has run, the panel — and it is a panel now, sitting on the page rather
@@ -174,23 +187,52 @@ export function ProjectHome() {
         */}
         {everRan ? null : <GetStarted />}
 
-        <Section
-          title="Simulations"
-          trailing={plural(project.counts.simulations, "simulation")}
-          actions={<Link to={href("s/new")}>New simulation</Link>}
-        >
-          {project.simulations.length === 0 ? (
+        {/*
+          The simulations. With one target this is one flat ledger, exactly as before. With two it
+          is one section per target, because five rows in store order tell a reader nothing about
+          the thing they most want to know — "three at dev, two at qa" — and a simulation IS the
+          pairing of a target and a population, so the target is the axis that groups.
+        */}
+        {project.simulations.length === 0 ? (
+          <Section
+            title="Simulations"
+            trailing={plural(project.counts.simulations, "simulation")}
+            actions={<Link to={href("s/new")}>New simulation</Link>}
+          >
             <StateBlock kind="empty" what="this project's simulations">
               No simulations yet. One is a population, a target and a way of sending them.
             </StateBlock>
-          ) : (
+          </Section>
+        ) : project.counts.targets > 1 ? (
+          <Stack gap={12}>
+            {groupByTarget(project.simulations).map(([targetName, rows]) => (
+              <Section
+                key={targetName}
+                title={targetName}
+                trailing={plural(rows.length, "simulation")}
+                actions={<Link to={href("s/new")}>New simulation</Link>}
+              >
+                <Ledger>
+                  {rows.map((simulation) => (
+                    <SimulationRow key={simulation.id} simulation={simulation} />
+                  ))}
+                </Ledger>
+              </Section>
+            ))}
+          </Stack>
+        ) : (
+          <Section
+            title="Simulations"
+            trailing={plural(project.counts.simulations, "simulation")}
+            actions={<Link to={href("s/new")}>New simulation</Link>}
+          >
             <Ledger>
               {project.simulations.map((simulation) => (
                 <SimulationRow key={simulation.id} simulation={simulation} />
               ))}
             </Ledger>
-          )}
-        </Section>
+          </Section>
+        )}
 
         {/* The roll-up across simulations, which presupposes two of them. With one, "nothing has
             turned up in two simulations yet" is a sentence about the product's own machinery. */}
@@ -250,123 +292,195 @@ export function ProjectHome() {
 }
 
 /**
- * The lay of the land: what this project is pointed at, who is in it, and what it is costing —
- * with the way into each one underneath it.
+ * The Targets band — what this project is pointed at, one row per target.
  *
- * **Why it exists.** All three facts were in the product already and none of them were on this
- * page. The target's name and endpoint were at the foot of the rail, the spend was the meter
- * above them, and the headcount was an 11px number beside a nav row. A reader who had just made
- * a project and wanted to know what the lay of the land was had to read the chrome to find out,
- * and the chrome is 11px and down the left-hand side.
+ * **This replaces a three-cell strip whose first cell was `targets.data?.items[0]`.** That cell
+ * called itself "The target", and the store has never had a one-target rule: the only uniqueness
+ * constraint is `(project_id, slug)`, `POST /targets` carries a `target-2` slug de-dup loop that
+ * only makes sense for N, and a simulation names its target by row id on a required field. So a
+ * project with a dev and a qa endpoint had two targets and a dashboard that showed one of them —
+ * and `listTargets` orders `updated_at DESC`, so *which* one was whichever you last edited. A
+ * silent coin flip, not a default.
  *
- * **A ruled strip and not three cards.** §1.4: the ground is ruled, not empty. `StatGroup ruled`
- * draws the hairlines between the cells and wraps 3 → 2 below 860px on its own, which is the
- * same band the ledger below it already keeps.
+ * Each row carries the stored first-contact outcome and **never dials the target**. Asking
+ * whether an endpoint answers opens a connection to somebody else's server; that is a POST the
+ * target's own screen makes when a reader presses Check, never a render. Same rule the rail's
+ * `TargetStatus` keeps.
  *
- * **The acts are links, never buttons** — `Stat`'s `foot`. Nothing in this strip spends anything
- * or changes anything; each one is a door to the screen that can. A row of figures with a button
- * in every cell is the card kit this direction is defined against.
- *
- * **It asks the state, never the target.** Whether the endpoint actually answers is a POST that
- * the target's own screen makes when a reader presses Check — the same rule `TargetStatus` keeps
- * at the foot of the rail. This cell reports what is *configured*, and the word it prints is a
- * word (§4.2), never a hue on its own.
+ * "Used by" is derived from the simulations already in the payload, so it costs nothing and it is
+ * the fact that makes several targets legible: a target nothing points at is a loose end, and a
+ * target three simulations share is a hazard worth seeing (ADR-0022:31-40 — an ephemeral start
+ * resets the world under another execution).
  */
-function LayOfTheLand() {
+function TargetsBand() {
   const { key, project, href } = useProject();
-  // The query `ProjectRail` already runs, served from the one cache entry, so the strip costs no
-  // round trip of its own. `ProjectOverviewView` carries counts and no target, which is why this
-  // is here and not in the payload.
   const targets = useQuery(q.targets(key));
-  const target = targets.data?.items[0];
-  const endpoint = target?.mcp[0]?.url ?? null;
-
-  const running = project.runningRunIds.length > 0;
-  const state = project.killSwitch.engaged
-    ? "stopped"
-    : running
-      ? "running"
-      : target === undefined
-        ? "none"
-        : "configured";
+  const items = targets.data?.items ?? [];
 
   return (
-    <StatGroup cols={3} ruled>
-      <Stat
-        label="Targets"
-        value={
-          <Inline gap={3} align="baseline" wrap>
-            <span className="min-w-0 truncate">{target?.name ?? "None yet"}</span>
-            {state === "stopped" ? (
-              <Chip tone="bad">Stopped</Chip>
-            ) : state === "running" ? (
-              <Chip tone="live">Running</Chip>
-            ) : null}
-          </Inline>
-        }
-        sub={
-          endpoint === null ? (
-            "nothing is connected"
-          ) : (
-            /* `break-all`: a URL is one word to CSS and four lines to a reader. */
-            <Mono size="code-sm" tone="muted" className="block break-all">
-              {endpoint}
-            </Mono>
-          )
-        }
-        foot={
-          target === undefined ? (
-            <Link size="meta" to={href("library/targets")}>
-              Connect your app
-            </Link>
-          ) : (
-            <Link size="meta" to={href(`library/targets/${encodeURIComponent(target.id)}`)}>
-              Check it answers
-            </Link>
-          )
-        }
-      />
-
-      <Stat
-        label="People"
-        value={project.counts.people}
-        sub={`${plural(project.counts.cohorts, "cohort")}, ${plural(project.counts.personas, "persona")}`}
-        foot={
-          /* With nobody in the project, "who they are" is a door onto an empty room. One act
-             until there is somebody, two once there are. */
-          project.counts.people === 0 ? (
-            <Link size="meta" to={href("library/personas")}>
-              Pick who visits it
-            </Link>
-          ) : (
-            <>
-              <Link size="meta" to={href("library/cohorts")}>
-                Who they are
-              </Link>
-              <Link size="meta" to={href("library/personas")}>
-                Add someone
-              </Link>
-            </>
-          )
-        }
-      />
-
-      <Stat
-        label="Spent today"
-        value={<Money usd={project.spentTodayUsd} />}
-        sub={
-          <>
-            of the <Money usd={project.dailyCeilingUsd} /> daily ceiling
-          </>
-        }
-        foot={
-          <Link size="meta" to={href("settings")}>
-            Change the ceiling
+    <Section
+      title="Targets"
+      trailing={plural(project.counts.targets, "target")}
+      actions={<Link to={href("library/targets")}>All targets</Link>}
+    >
+      {items.length === 0 ? (
+        <StateBlock kind="empty" what="this project's targets">
+          Nothing is connected yet. A target is an address your product answers on — dev and qa are
+          two targets here, not two projects.{" "}
+          <Link to={href("library/targets")} size="ui">
+            Connect a target
           </Link>
-        }
-      />
-    </StatGroup>
+        </StateBlock>
+      ) : (
+        <Ledger>
+          {items.map((target) => {
+            const used = project.simulations.filter((s) => s.target.id === target.id);
+            const contact = target.firstContact;
+            return (
+              <LedgerRow key={target.id} stub={contact === null ? <Ring size="sm" /> : <Dot size="sm" />}>
+                <Stack gap={1}>
+                  <Inline gap={3} align="baseline" wrap>
+                    <Heading level={3} size="name">
+                      <Link to={href(`library/targets/${encodeURIComponent(target.id)}`)}>
+                        {target.name}
+                      </Link>
+                    </Heading>
+                    {/* The word, never the hue alone (§4.2). Null means nobody has checked. */}
+                    {contact === null ? (
+                      <Text size="meta" tone="muted">
+                        never checked
+                      </Text>
+                    ) : (
+                      <Badge tone={OUTCOME_TONES[contact.outcome]}>
+                        {OUTCOME_WORDS[contact.outcome]}
+                      </Badge>
+                    )}
+                  </Inline>
+                  {/* `break-all`: a URL is one word to CSS and four lines to a reader. */}
+                  <Mono size="code-sm" tone="muted" className="block break-all">
+                    {target.mcp[0]?.url ?? "no endpoint"}
+                  </Mono>
+                  <MetaLine facts={usedByFacts(used)} />
+                </Stack>
+              </LedgerRow>
+            );
+          })}
+        </Ledger>
+      )}
+    </Section>
   );
+}
+
+/**
+ * Which simulations point at a target. A target nothing points at says so in those words rather
+ * than printing "0 simulations", because nought of something is a state, not a measurement.
+ */
+function usedByFacts(used: readonly SimulationSummary[]): readonly MetaFact[] {
+  if (used.length === 0)
+    return [{ key: "unused", node: "no simulation points at it yet" }];
+  return [
+    { key: "used", node: `run by ${used.map((s) => s.name).join(", ")}` },
+    ...(used.length > 1
+      ? [
+          {
+            key: "shared",
+            // ADR-0022:31-40's named-but-unguarded gap. Stated, not refused — see the plan.
+            node: "they share it, so an ephemeral start resets it under the others",
+          },
+        ]
+      : []),
+  ];
+}
+
+/**
+ * The Who-can-go band — the casts this project keeps, and what each adds up to.
+ *
+ * A population is composition and nothing else: an ordered set of cohorts (ADR-0029). While there
+ * is one it is still worth showing, because the headcount and what it is made of are the second
+ * thing a reader wants after "what is it pointed at" — and both of them lived only in the rail,
+ * as an 11px number beside a nav row.
+ */
+function WhoCanGoBand() {
+  const { key, project, href } = useProject();
+  const populations = useQuery(q.populations(key));
+  const items = populations.data?.items ?? [];
+
+  return (
+    <Section
+      title="Who can go"
+      trailing={`${people(project.counts.people)} in ${plural(project.counts.cohorts, "cohort")}`}
+      actions={<Link to={href("library/cohorts")}>All cohorts</Link>}
+    >
+      {items.length === 0 || project.counts.people === 0 ? (
+        <StateBlock kind="empty" what="this project's people">
+          Nobody has been picked yet. A persona is a kind of person; a cohort is N people cut from
+          one persona; a population is a set of cohorts saved under a name.{" "}
+          <Link to={href("library/personas")} size="ui">
+            Pick who visits
+          </Link>
+        </StateBlock>
+      ) : (
+        <Ledger>
+          {items.map((population) => {
+            const headcount = population.members.reduce((n, m) => n + m.count, 0);
+            const used = project.simulations.filter((s) => s.population.name === population.name);
+            return (
+              <LedgerRow key={population.id} stub={<Dot size="sm" />}>
+                <Stack gap={1}>
+                  <Inline gap={3} align="baseline" wrap>
+                    <Heading level={3} size="name">
+                      {population.name}
+                    </Heading>
+                    <Text size="meta" tone="muted">
+                      {people(headcount)}
+                    </Text>
+                  </Inline>
+                  <MetaLine
+                    facts={[
+                      {
+                        key: "cohorts",
+                        node:
+                          population.members.length === 0
+                            ? "no cohorts in it yet"
+                            : population.members.map((m) => m.cohortName).join(", "),
+                      },
+                      {
+                        key: "used",
+                        node:
+                          used.length === 0
+                            ? "no simulation runs it yet"
+                            : `run by ${used.map((s) => s.name).join(", ")}`,
+                      },
+                    ]}
+                  />
+                </Stack>
+              </LedgerRow>
+            );
+          })}
+        </Ledger>
+      )}
+    </Section>
+  );
+}
+
+/**
+ * The simulations, gathered under the target each one visits, in first-appearance order.
+ *
+ * Grouping by NAME rather than by id is deliberate: the heading is the target's name, two targets
+ * cannot share one within a project (the slug is unique per project and the name drives it), and
+ * keying by name means the group and its heading can never disagree. Order follows the first row
+ * that mentions each target, so the ledger's own ordering still decides what a reader meets first.
+ */
+function groupByTarget(
+  simulations: readonly SimulationSummary[],
+): readonly (readonly [string, readonly SimulationSummary[]])[] {
+  const groups = new Map<string, SimulationSummary[]>();
+  for (const simulation of simulations) {
+    const bucket = groups.get(simulation.target.name);
+    if (bucket === undefined) groups.set(simulation.target.name, [simulation]);
+    else bucket.push(simulation);
+  }
+  return [...groups.entries()];
 }
 
 /**

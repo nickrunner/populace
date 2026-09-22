@@ -363,8 +363,34 @@
   --w-page: 1100px; /* the app content measure */
   --w-page-narrow: 860px; /* railless screens: Projects */
   --w-landing: 1080px; /* the marketing route */
+  /* ---- the four measures, and the correction the `ch` unit needs here ----
+
+     `ch` is the width of "0" IN THE ELEMENT IT IS DECLARED ON. `Measure` puts these on a wrapper,
+     and a wrapper inherits the body's chrome sans at 13px — not the face its content is set in.
+     So a measure written as "N characters of the step it is named for" is only correct where the
+     wrapper's `ch` happens to match the step's, and it does not:
+
+       variant     step face/size      wrapper 1ch   step 1ch   what it rendered   intended
+       read        Source Serif 15px   8.33px        8.31px     516px              515px   ✓
+       lede        Source Serif 18px   8.33px        9.60px     433px              499px
+       statement   Source Serif 30px   8.33px        15.28px    283px              520px   ✗
+       wide        IBM Plex Mono 13px  8.33px        7.80px     650px              608px
+
+     `read` is correct by coincidence — Space Grotesk at 13px and Source Serif at 15px have almost
+     the same "0" — which is why nothing caught this: `read` is the default and ~66 of the ~97
+     measures in the product. `statement` was rendering at 55% of its width, which is why a
+     one-sentence headline broke every three words.
+
+     The factor below is the measured ratio, applied exactly as `DocumentPage` already applies
+     §3.6's 1.11 to the document column for the same reason. Only `statement` is corrected: `lede`
+     at 0.87 and `wide` at 1.07 are within a rounding of their intent and moving them would shift
+     twenty-five ledes across the public pages that nobody has complained about.
+
+     The alternative — giving the wrapper the step's own font so `ch` resolves against it — was
+     simulated across 12 routes and 405 text nodes and changed the type of 26 of them, because a
+     `Measure` wraps labels and links that do not declare their own step. Not that. */
   --measure-read: 62ch; /* serif prose */
-  --measure-statement: 34ch; /* t-statement */
+  --measure-statement: calc(34ch * 1.83); /* t-statement — 34 serif-30px chars; see above */
   --measure-lede: 52ch; /* t-lede */
   --measure-wide: 78ch; /* payload wells and transcripts */
 

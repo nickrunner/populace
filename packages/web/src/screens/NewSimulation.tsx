@@ -1,6 +1,6 @@
 import { useId, useState, type SyntheticEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, type PopulationView } from "../api.js";
 import { q } from "../queries.js";
 import { useProject } from "../context.jsx";
@@ -112,8 +112,19 @@ export function NewSimulation() {
   const [name, setName] = useState("");
   const [bounded, setBounded] = useState(true);
   const [visits, setVisits] = useState(4);
-  const [populationId, setPopulationId] = useState<string | null>(null);
-  const [targetId, setTargetId] = useState<string | null>(null);
+  /*
+    `?target=` and `?population=` seed the two choices. The dashboard's bands and, later, the
+    pairings grid link straight in here with the pairing already made — which is the whole point
+    of a simulation being a pairing: the interesting act is "send THIS cast at THAT address", and
+    making the reader re-find both in two lists is the product forgetting what they just clicked.
+
+    They are the INITIAL value of a `useState`, not a controlled value, so a reader who arrives
+    pre-seeded and then changes their mind is not fought by the URL. An id that is not in the
+    project is ignored by the radio group, which renders only ids it has.
+  */
+  const [params] = useSearchParams();
+  const [populationId, setPopulationId] = useState<string | null>(params.get("population"));
+  const [targetId, setTargetId] = useState<string | null>(params.get("target"));
   const errorId = useId();
 
   // The per-visit price is history over this machine's own visits and has nothing to do with which
