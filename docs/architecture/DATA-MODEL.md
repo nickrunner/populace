@@ -154,7 +154,18 @@ what it buys, because none of it is available today:
 Secrets do not go in the snapshot. `bearerToken`, `apiKey` and anything substituted from `${VAR}`
 are redacted to a reference before storage; the snapshot records *that* an env var was used, never
 its value. This matters before M5, because a local database gets copied around and attached to bug
-reports.
+reports. The hash is taken over the redacted config with object keys ordered, so it is a hash of
+content rather than of assembly order, and two runs on unchanged config share one row.
+
+**A snapshot is a record of what ran, never a source of credentials.** It is redacted by
+construction, so anything that opens a connection — a resumed execution, the verifier's replay,
+sweep's teardown calls, an identity renewing a session — takes the *plan* from the snapshot and the
+*secrets* from the authored rows. `withLiveSecrets` is the one place that puts them back, and it
+covers `bearerToken`, per-endpoint headers, `model.apiKey`, the reset headers and an `admin-mint`
+identity's own key. Connecting from a snapshot directly sends `[redacted]` as a bearer token, and
+the failure is silent in the worst way: replays that cannot authenticate come back
+`not-reproduced`, the digest drops not-reproduced findings before clustering, and real findings
+disappear with nothing on screen to say why.
 
 ## 5. Config as rows
 
@@ -278,17 +289,38 @@ changing it requires a mapping step — the same care the store's table-shape ch
 An append-only log with one monotonic cursor across the whole store.
 
 ```ts
-Event { seq: number, at: string, runId: string | null, wakeId: string | null,
-        type: "run.started" | "wake.started" | "trace.appended" | "finding.filed"
-            | "guardrail.tripped" | "wake.ended" | "run.ended" | "job.updated" | ...,
+Event { seq: number, at: string,
+        projectId: string | null, simulationId: string | null,
+        runId: string | null, wakeId: string | null,
+        type: "run.started" | "run.ended" | "run.status" | "run.config" | "wake.started"
+            | "wake.ended" | "trace.appended" | "finding.filed" | "guardrail.tripped"
+            | "identity.created" | "job.updated",
         payload: JsonValue }
 ```
 
 `trace_events` is ordered per wake, which is right for replay and useless for "what happened next
-anywhere". The log gives SSE a resumable cursor (ADR-0025), gives the run screen a single
-subscription, and in M5 is how separate runner and API processes meet. It is written by the
-runner's existing trace writer and by the daemon at run boundaries — not by new instrumentation
-scattered through the wake loop.
+anywhere". The log gives SSE a resumable cursor (ADR-0026), gives the run screen a single
+subscription, and in M5 is how separate runner and API processes meet.
+
+It is written by a `RecordingStore` decorator around the `Store` the runner already writes to, plus
+the daemon at run boundaries — not by new instrumentation scattered through the wake loop. Every
+row it appends is derived from a write that was happening anyway, which is what keeps `runWake()`
+untouched and keeps the log honestly derived.
+
+**Every event about a run carries its `runId`, and scope is stamped rather than passed in.** Both
+ends of delivery filter on the id — the in-process fan-out compares the event's ids to the
+subscriber's filter, and `listEvents` filters with `run_id = ?`, which excludes NULL in SQL — so an
+event about a run written with a null `runId` is invisible to the screen that run owns. A null
+`runId` means the event is genuinely not about a run.
+
+`projectId` and `simulationId` are not the emitter's job. An emitter deep inside a wake knows its
+wake and its run and has no business knowing which project the run is filed under, so
+`RecordingStore.scoped()` fills both from the run row (and fills `runId` itself from the wake when
+only the wake is known), caching per run because a run's project never changes. That is what lets
+one connection follow a whole project — `GET /events?project=…` — instead of one per run. The one
+case it cannot cache is a run whose row is written a moment after its first event; that event is
+stamped with what is known and the next one asks again, rather than the cache remembering "no
+project" forever.
 
 Retention: the log is derived from rows that already exist and can be truncated to the last
 N events or the last M days without losing anything. That is stated up front so nobody later
@@ -304,8 +336,18 @@ Job { id, kind, status: "queued"|"running"|"succeeded"|"failed"|"cancelled",
       runId?, progress: { done, total, label }, error?, createdAt, startedAt?, endedAt? }
 ```
 
-One in-process runner drains the queue in M2 (ADR-0026). In M5 the same table is the queue hosted
-workers pull from; the interface does not change.
+One in-process runner drains the queue serially in M2 (ADR-0027). In M5 the same table is the queue
+hosted workers pull from; the interface does not change.
+
+Two rules the implementation settled. **A settled job never changes again:** `run.start` outlives
+its own handler, because the handler returns once the run row exists and the daemon keeps ticking
+behind it, so progress reported after the job succeeded belongs to the run and its own events.
+**A job left `running` or `queued` by a process that died is failed on the next open**, because it
+can never finish and a browser would wait on its spinner forever. Note that the job and the run it
+was driving are reconciled to different states on the same open: the job to `failed`, the run to
+`paused` with `pauseReason: "process-ended"` (§3 and the ADR-0024 amendment). That is not an
+inconsistency — the job really did stop and cannot be resumed, while the execution is exactly what
+`serve --resume` picks back up.
 
 ## 11. Schema change without a migration framework
 

@@ -49,3 +49,18 @@ still immutable; "apply changes" re-resolves the simulation's config, writes a *
 participants at visit one, removed cohorts retire as `scaled-down`, everybody else keeps their
 memory. The snapshot is still what stops an edit rewriting history; what changed is that replacing
 it is an action with a record, not a side effect.
+
+## Amendment (2026-09-18): the snapshot is a record of what ran, never a source of credentials
+
+Two properties of the snapshot that are easy to lose later.
+
+The hash is taken over the **redacted** config with object keys ordered (`snapshotConfig` in
+`packages/server/src/config-store.ts`), so it is a hash of content rather than of assembly order and
+two runs on unchanged config share one row.
+
+Because the stored config is redacted, anything that opens a connection — a resume, the verifier's
+replay, sweep's teardown calls — has to take the plan from the snapshot and the secrets from the
+authored rows. That is what `withLiveSecrets` is for. Connecting from a snapshot directly sends
+`[redacted]` as a bearer token, and the failure is silent in the worst way: replays that cannot
+authenticate come back `not-reproduced`, the digest drops not-reproduced findings before clustering,
+and real findings disappear with nothing on screen to say why.

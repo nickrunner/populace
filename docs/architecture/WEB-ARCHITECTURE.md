@@ -201,7 +201,7 @@ carrying a discriminated union of event types declared in `contract`: `run.*`, `
 `finding.*`, `job.*`, `guardrail.*`. A project page follows every simulation in it on ONE connection
 rather than opening one per execution, which is what the `events.project_id` column is for.
 
-The cursor is a store-level monotonic sequence over an append-only `events` table (ADR-0025).
+The cursor is a store-level monotonic sequence over an append-only `events` table (ADR-0026).
 Because it is persisted rather than in-memory:
 
 - A reconnecting browser replays what it missed instead of showing a gap.
@@ -212,6 +212,10 @@ M1 does not write this table (the roadmap holds M1 to no new persisted data). M1
 reads `trace_events` directly and polls. M2 introduces the event log, and the trace viewer's
 "live" mode is then the same component with a live cursor.
 
+Because a subscriber filters on `run`, every event about a run has to carry its `runId` — see
+`DATA-MODEL.md` §9 and the ADR-0026 amendment. An event about a run written with a null `runId`
+reaches neither the live stream nor the replay.
+
 ## 7. Build and distribution
 
 - `pnpm build` stays `tsc -b`; `@populace/web` adds a Vite build that writes to
@@ -219,11 +223,25 @@ reads `trace_events` directly and polls. M2 introduces the event log, and the tr
 - `populace serve` serves those assets with an SPA fallback. A user runs one command.
 - In development, `pnpm dev` runs Vite with `/api` proxied to the server so the dashboard hot
   reloads against a real store.
-- `pnpm check` (lint + build + test) stays the single CI gate.
+- `pnpm check` (build + lint + typecheck + test, in that order) stays the single CI gate. Build has
+  to come first: typed lint rules and `tsc -p` both read the workspace packages' emitted
+  declarations, which a fresh checkout does not have.
 
 ## 8. Build order
 
-Per milestone, what lands where. Milestone content is the roadmap's; this is only the layering.
+What lands where. The content of a rung is the roadmap's (`docs/product/ROADMAP.md`); this is only
+the layering.
+
+**The ladder was renumbered on 2026-09-20.** M1 through M3 and the projects part of M4 are built,
+so the roadmap retired the M rungs and re-cut what is left as R1 (the returning verdict), R2
+(results that leave the building), R3 (unattended running), R4 (CI mode) and R5 (cloud). The M rows
+below are kept because they record what actually landed in what order and why the layering is what
+it is; read them as history, and read the roadmap for what is next.
+
+One layering note carries onto the new ladder: R5 is still the only rung that replaces an
+implementation behind `Store` or `Scheduler`, and R1 through R4 add screens, routes and clients
+over what exists. Anything that proposes to change `runWake()` for R1–R4 has gone wrong somewhere
+earlier.
 
 **M1 — read-only.** `contract` + `server` with the read routes above, `web` with the run list,
 run overview, digest screen, findings list, finding detail and the wake trace viewer. Core made
@@ -236,13 +254,62 @@ decided D3). The target wizard, persona editor and starter library. Cost estimat
 run starts. This rung is roughly twice any other and is split by surface depth if it must
 split, never by audience.
 
+*Where M2 stands on 2026-09-20.* On `main`: the control plane (config rows, run rows with frozen
+snapshots, the event log behind a `RecordingStore`, the serial job queue, the advisory serve lock),
+the target wizard with a live check and a first-contact report (ADR-0034), the six-persona starter
+library, settings, the run form with its estimate, the live execution screen, and — after the
+projects/simulations/cohorts/people restructure — the persona editor with a prompt preview rendered
+from the runner's own `personaSystemPrompt`.
+
+Two pieces of this rung are **not** on `main` and are the outstanding M2 work: **YAML export and
+import from the dashboard**, and **config history with restore**. `yaml` is a dependency of `cli`
+only, and there is no revision table. Both were built on the pre-restructure entity model and were
+not carried across it; ADR-0025 still says export exists, so either they are rebuilt on projects,
+simulations and cohorts, or that ADR needs amending to say the file is a CLI-only entry point.
+Until one or the other happens the ADR and the code disagree, which is the state this document
+exists to prevent.
+
 **M3 — the loop.** Cluster signatures persisted, triage state attached to them rather than to
-finding rows (ADR-0027), run comparison, "re-run the people who complained" as a job over
+finding rows (ADR-0028), run comparison, "re-run the people who complained" as a job over
 `--continue-from`, GitHub issue export, a shareable digest.
 
 **M4 — many targets.** Projects become real, targets get a library, runs get schedules, and a
 non-interactive CI mode consumes the same API.
 
+Scheduled runs — now R3 and R4 — make the scoping gap in §9 urgent rather than creating it: a
+schedule that fired into an engaged kill switch would skip its run and say nothing, which is worse
+than waiting. The CI mode needs the same answer.
+
 **M5 — cloud.** `@populace/store-postgres` behind the existing `Store` interface, an external
 scheduler behind `Scheduler`, hosted runners pulling jobs, accounts and tenancy in `server`,
 secrets out of the config rows. The runner is untouched.
+
+## 9. Open items
+
+Decisions this architecture needs and has not made. Each is recorded where it belongs; they are
+gathered here so nobody has to find them by reading every ADR. Checked against `main` on
+2026-09-20.
+
+- **Replay contaminates the target it verifies against.** A finding filed with no evidence calls is
+  replayed on the visit's last five tool calls (`callLog.slice(-5)`), writes included, and each
+  replay changes what the next one sees. Fix validation is built on verdicts, so a verdict that
+  depended on what an earlier replay wrote is not evidence that a fix worked. **R1 is the rung
+  that puts a verdict in front of a user as the answer, so this has to be settled before R1 rather
+  than during it.** Options and reasoning: ADR-0014, amendment of 2026-09-18.
+
+- **The stop is global while executions are not.** Starting is scoped — one execution per
+  simulation, because an ephemeral start resets the target — but "Stop everything now" engages the
+  store-wide kill switch, and nothing may start while it is engaged. Two simulations running at
+  once therefore stop each other. Two more things sit on the same seam: an ephemeral start resets a
+  target another simulation may be mid-run against, and the daily ceiling is scoped per population
+  rather than per machine. ADR-0022, amendment of 2026-09-18.
+
+- **YAML export and import, and config history, are missing from `main`.** See the M2 row above:
+  either they are rebuilt on the new entity model or ADR-0025 is amended to match the code.
+
+- **The migration trigger cannot be observed, so it cannot be relied on as a gate.** The store
+  empties a database whose recorded `SCHEMA_SHAPE` is not this build's, with one line of warning
+  and nobody's consent, and the named trigger for ending that regime — the first database outside
+  this repository holding a target somebody typed — is a fact nothing in the system can see. The
+  cheap half of the fix is to make the rebuild refuse instead of proceed when the database holds
+  authored rows, which turns silent data loss into a startup that stops and says why. Roadmap D5.
