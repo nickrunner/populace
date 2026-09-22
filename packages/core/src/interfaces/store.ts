@@ -3,6 +3,7 @@ import type { Project, StoredPersona, StoredPopulation, StoredSettings, StoredTa
 import type { Cohort } from "../schemas/cohort.js";
 import type { Person } from "../schemas/person.js";
 import type { Simulation } from "../schemas/simulation.js";
+import type { SignInGrant } from "../schemas/sign-in.js";
 import type { Triage } from "../schemas/triage.js";
 import type { Event, EventInput, EventQuery } from "../schemas/event.js";
 import type { Job } from "../schemas/job.js";
@@ -212,6 +213,18 @@ export interface Store {
   listTargets(projectId?: string): Promise<StoredTarget[]>;
   /** Refused with `ReferencedError` while a simulation names it. */
   deleteTarget(id: string): Promise<void>;
+
+  /**
+   * The user's own OAuth sign-ins to targets that will not talk to strangers (ADR-0036), keyed by
+   * `(projectId, url)`. These are a HUMAN's credentials, not a population's: nothing under
+   * `runWake` reads them, and `listSignInGrants()` with no project exists for one caller — the
+   * OAuth callback, which arrives holding a `state` and nothing else and has to find the flow it
+   * belongs to.
+   */
+  saveSignInGrant(grant: SignInGrant): Promise<void>;
+  getSignInGrant(projectId: string, url: string): Promise<SignInGrant | undefined>;
+  listSignInGrants(projectId?: string): Promise<SignInGrant[]>;
+  deleteSignInGrant(projectId: string, url: string): Promise<void>;
 
   savePersona(persona: StoredPersona): Promise<void>;
   getPersona(id: string): Promise<StoredPersona | undefined>;

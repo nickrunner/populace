@@ -163,6 +163,13 @@ export class RecordingStore implements Store {
   getTarget: Store["getTarget"] = (...args) => this.inner.getTarget(...args);
   listTargets: Store["listTargets"] = (...args) => this.inner.listTargets(...args);
   deleteTarget: Store["deleteTarget"] = (...args) => this.inner.deleteTarget(...args);
+
+  /* A sign-in is the user's own OAuth grant, not a row a run produces, so it is passed through
+     unlogged like every other authored write. */
+  saveSignInGrant: Store["saveSignInGrant"] = (...args) => this.inner.saveSignInGrant(...args);
+  getSignInGrant: Store["getSignInGrant"] = (...args) => this.inner.getSignInGrant(...args);
+  listSignInGrants: Store["listSignInGrants"] = (...args) => this.inner.listSignInGrants(...args);
+  deleteSignInGrant: Store["deleteSignInGrant"] = (...args) => this.inner.deleteSignInGrant(...args);
   savePersona: Store["savePersona"] = (...args) => this.inner.savePersona(...args);
   getPersona: Store["getPersona"] = (...args) => this.inner.getPersona(...args);
   listPersonas: Store["listPersonas"] = (...args) => this.inner.listPersonas(...args);

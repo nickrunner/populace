@@ -1,21 +1,35 @@
-import type { IdentityGuess, TargetCheck, TargetPromises } from "@populace/contract";
+import type { IdentityGuess, SignInStatus, TargetCheck, TargetPromises } from "@populace/contract";
 import type { IdentityConfig, McpEndpoint } from "@populace/core";
-import { McpSession, fetchPageText, type TargetTool } from "@populace/runner";
+import { McpSession, fetchPageText, type SignInProvider, type TargetTool } from "@populace/runner";
 import { z } from "zod";
+
+/**
+ * What the check may connect AS, beyond whatever the endpoints themselves carry.
+ *
+ * `signIn` is the user's own OAuth grant for an address (ADR-0036) and `askAboutSignIn` is what
+ * turns a bare failure into "it will not talk to strangers". Both are optional, and a caller that
+ * passes neither gets exactly the anonymous check this had before: the runner's wake path is such
+ * a caller, and must stay one — a grant is one human's account and not a population's.
+ */
+export interface CheckCredentials {
+  signIn?: (endpoint: McpEndpoint) => SignInProvider | undefined;
+  askAboutSignIn?: (endpoint: McpEndpoint) => Promise<SignInStatus>;
+}
 
 /**
  * The live connection panel behind the `Connect` screen: does it answer, how fast, what does it
  * expose, and what would have to be true for an agent to sign itself up. Read-only against the
  * target — it lists tools and never calls one.
  */
-export async function checkTarget(endpoints: McpEndpoint[], identity?: IdentityConfig): Promise<TargetCheck> {
+export async function checkTarget(endpoints: McpEndpoint[], identity?: IdentityConfig, credentials: CheckCredentials = {}): Promise<TargetCheck> {
   const tools: TargetTool[] = [];
   const errors: string[] = [];
   let latencyMs: number | null = null;
   let server: TargetCheck["server"] = null;
+  let signIn: SignInStatus | null = null;
 
   for (const endpoint of endpoints) {
-    const session = new McpSession(endpoint, undefined);
+    const session = new McpSession(endpoint, undefined, credentials.signIn?.(endpoint));
     const started = Date.now();
     try {
       await session.connect();
@@ -25,6 +39,13 @@ export async function checkTarget(endpoints: McpEndpoint[], identity?: IdentityC
       tools.push(...session.listTools());
     } catch (err) {
       errors.push(`${endpoint.name}: ${err instanceof Error ? err.message : String(err)}`);
+      // Why it refused matters more than that it refused. Asked of the FIRST endpoint that fails
+      // and no further: one address needing a sign-in is the whole answer the screen can act on,
+      // and a second probe of a second dead address tells the reader nothing new.
+      if (signIn === null && credentials.askAboutSignIn) {
+        const asked = await credentials.askAboutSignIn(endpoint);
+        if (asked.required) signIn = asked;
+      }
     } finally {
       await session.close();
     }
@@ -40,6 +61,7 @@ export async function checkTarget(endpoints: McpEndpoint[], identity?: IdentityC
     // this is named on the screen rather than counted.
     undescribed: tools.filter((t) => t.description.trim() === "").map((t) => t.name),
     identity: guessIdentity(tools, identity),
+    signIn,
     errors,
   };
 }

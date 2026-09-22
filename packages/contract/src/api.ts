@@ -138,6 +138,22 @@ export const routes = {
   /** Puts the target back by hand, outside a run. 202 and a job, because it is somebody's server. */
   targetReset: (p: string, t: string) => `${API_BASE}/projects/${seg(p)}/targets/${seg(t)}/reset`,
 
+  /**
+   * YOUR sign-in to an address, for a server that will not talk to strangers (ADR-0036).
+   *
+   * Scoped to a project and keyed by the address in the query string, because a sign-in belongs to
+   * an ADDRESS rather than to a saved target: the whole point is to sign in while connecting, when
+   * there is no target yet to hang it off. GET reports, POST starts a flow and answers with
+   * somewhere to send the browser, DELETE forgets the grant.
+   */
+  signIn: (p: string) => `${API_BASE}/projects/${seg(p)}/sign-in`,
+  /**
+   * Where the authorization server sends the browser back to. Fixed, and outside every project:
+   * it is registered with somebody else's server as this installation's one callback, and a path
+   * that varied by project would be a new client registration per project.
+   */
+  signInCallback: `${API_BASE}/sign-in/callback`,
+
   personas: (p: string) => `${API_BASE}/projects/${seg(p)}/personas`,
   /** Registered before `/personas/:x` so the literal path is not captured as an id. */
   personaStarters: (p: string) => `${API_BASE}/projects/${seg(p)}/personas/starters`,

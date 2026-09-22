@@ -39,3 +39,4 @@ One record per fixed decision from the kickoff brief, plus the routine calls mad
 | [0033](0033-tool-policy-belongs-to-the-target.md) | A tool policy belongs to the target; a persona may only narrow it |
 | [0034](0034-first-contact-check.md) | First contact — one account, one read-only call, before a run |
 | [0035](0035-a-project-holds-several-targets-and-several-populations.md) | A project holds several targets and several populations; a simulation is the pairing |
+| [0036](0036-signing-in-to-a-target.md) | Connecting is a sign-in, and your sign-in is not the population's |

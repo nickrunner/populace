@@ -133,6 +133,27 @@ forbids is unreachable whoever is wearing the costume — and a persona added la
 target's floor rather than the whole surface. The merge happens in `runWake`, in the one loop that
 decides which target tools reach the model at all.
 
+### Your sign-in, which is not the population's
+
+Some targets will not talk to strangers at all: they answer `401` with a `WWW-Authenticate` header
+naming an OAuth authorization server, and no tool list can be read without getting in first. For
+those, populace signs the USER in — RFC 9728 discovery, dynamic client registration, authorization
+code with PKCE, refresh, all of it the MCP SDK's own client, kept in `sign_in_grants` and keyed by
+`(project, address)` rather than by target, because signing in happens while connecting and there
+is no saved target yet (ADR-0036).
+
+**That grant is one human's account, and it never reaches a population.** `McpSession` takes a
+sign-in provider as a third argument and only the callers acting as the user pass one — the
+connection check and the tool list behind it. `runWake` passes an identity's bearer and nothing
+else, and an explicit token wins over a provider inside `connect()`. How the STRANGERS a simulation
+sends get accounts of their own is the next section, and it is a different mechanism on purpose:
+signing in yourself does not mean a population can run.
+
+Pressing Check registers nothing with anybody. A provider is handed to the check only for an
+address already signed in to; a failed connection is followed by one read-only probe that reads the
+`401` and the RFC 9728 document, so "could not reach it" and "it will not talk to strangers" are
+different sentences on the screen. Registration happens behind the sign-in button and nowhere else.
+
 ### Identity
 
 `IdentityProvider.provision()` runs before the session. For `self-signup` it

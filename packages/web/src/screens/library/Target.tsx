@@ -1,9 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, type FirstContact, type StoredTarget, type TargetCheck } from "../../api.js";
 import { q } from "../../queries.js";
 import { useProject } from "../../context.jsx";
+import { EMPTY_IDENTITY, identityDraftFrom, identityFrom, WaysIn, whatIdentityNeeds, whatIdentityWillNotDo, type IdentityDraft } from "./ways-in.js";
 import type { TargetInput } from "@populace/contract";
 import type { ToolPolicy } from "@populace/core/isomorphic";
 import {
@@ -11,10 +12,9 @@ import {
   Button,
   Card,
   CardHeader,
-  ConditionalFieldset,
   ConnectionStatusBar,
   Field,
-  FieldGrid,
+  FieldWarning,
   FirstContactPanel,
   FormPage,
   Input,
@@ -35,7 +35,6 @@ import {
   ToolName,
   ToolPolicyEditor,
   WhatWentWrong,
-  type ConditionalBranch,
   type StateKind,
 } from "../../design/index.js";
 
@@ -47,106 +46,41 @@ interface EndpointDraft {
   authenticated: boolean;
 }
 
-interface Draft {
+/** The whole form. Its identity half is `IdentityDraft`, shared with the connect screen. */
+interface Draft extends IdentityDraft {
   name: string;
   mcp: EndpointDraft[];
   webBaseUrl: string;
   description: string;
-  signupTool: string;
-  tokenPath: string;
-  userIdPath: string;
-  teardownTool: string;
-  emailDomain: string;
-  strategy: "self-signup" | "static" | "admin-mint";
-  staticFile: string;
-  /** admin-mint: the Firebase Web API key. Empty means "leave whatever is stored alone". */
-  apiKey: string;
-  apiKeySet: boolean;
-  serviceAccountFile: string;
-  firebaseProjectId: string;
-  exchangeUrl: string;
   /** What ANYBODY sent here may touch. A persona can narrow this; nothing can widen it. */
   tools: ToolPolicy;
 }
 
 const EMPTY: Draft = {
+  ...EMPTY_IDENTITY,
   name: "",
   mcp: [{ name: "default", url: "", bearerToken: "", authenticated: false }],
   webBaseUrl: "",
   description: "",
-  signupTool: "",
-  tokenPath: "token",
-  userIdPath: "",
-  teardownTool: "",
-  emailDomain: "populace.test",
-  strategy: "self-signup",
-  staticFile: "",
-  apiKey: "",
-  apiKeySet: false,
-  serviceAccountFile: "",
-  firebaseProjectId: "",
-  exchangeUrl: "",
   tools: { allow: [], deny: [], destructive: "confirm" },
 };
 
 function draftFrom(target: StoredTarget): Draft {
-  const identity = target.identity;
   return {
+    // The stored API key is never pre-filled: it is not sent to the browser, so blank means keep.
+    ...identityDraftFrom(target.identity),
     name: target.name,
     mcp: target.mcp.map((e) => ({ name: e.name, url: e.url, bearerToken: "", authenticated: e.authenticated })),
     webBaseUrl: target.webBaseUrl ?? "",
     description: target.description ?? "",
-    signupTool: identity.strategy === "self-signup" ? identity.signupTool : "",
-    tokenPath: identity.strategy === "self-signup" ? identity.tokenPath : "token",
-    userIdPath: identity.strategy === "self-signup" ? (identity.userIdPath ?? "") : "",
-    teardownTool: identity.strategy === "self-signup" ? (identity.teardownTool ?? "") : "",
-    emailDomain: identity.strategy === "self-signup" ? identity.emailDomain : "populace.test",
-    strategy: identity.strategy,
-    staticFile: identity.strategy === "static" ? identity.file : "",
-    // Never pre-filled: the stored key is not sent to the browser, so blank means "keep it".
-    apiKey: "",
-    apiKeySet: identity.strategy === "admin-mint" ? identity.apiKeySet : false,
-    serviceAccountFile: identity.strategy === "admin-mint" ? (identity.serviceAccountFile ?? "") : "",
-    firebaseProjectId: identity.strategy === "admin-mint" ? (identity.projectId ?? "") : "",
-    exchangeUrl: identity.strategy === "admin-mint" ? (identity.exchangeUrl ?? "") : "",
     tools: target.tools,
   };
 }
 
-/**
- * A `switch`, not an if/else chain: the chain's final `else` silently produced an admin-mint
- * config for any strategy it did not know about, so a fourth way in would have compiled and
- * quietly sent the wrong one.
- */
-function identityFrom(draft: Draft): TargetInput["identity"] {
-  switch (draft.strategy) {
-    case "self-signup":
-      return {
-        strategy: "self-signup",
-        signupTool: draft.signupTool,
-        tokenPath: draft.tokenPath || "token",
-        ...(draft.userIdPath ? { userIdPath: draft.userIdPath } : {}),
-        ...(draft.teardownTool ? { teardownTool: draft.teardownTool } : {}),
-        emailDomain: draft.emailDomain || "populace.test",
-      };
-    case "static":
-      return { strategy: "static", file: draft.staticFile };
-    case "admin-mint":
-      return {
-        strategy: "admin-mint",
-        provider: "firebase",
-        emailDomain: draft.emailDomain || "populace.test",
-        // Absent leaves the stored key alone; the form only sends one when it was typed.
-        ...(draft.apiKey ? { apiKey: draft.apiKey } : {}),
-        ...(draft.serviceAccountFile ? { serviceAccountFile: draft.serviceAccountFile } : {}),
-        ...(draft.firebaseProjectId ? { projectId: draft.firebaseProjectId } : {}),
-        ...(draft.exchangeUrl ? { exchangeUrl: draft.exchangeUrl } : {}),
-      };
-  }
-}
-
-function bodyFrom(draft: Draft): TargetInput {
-  const identity: TargetInput["identity"] = identityFrom(draft);
+/** Null while no way in has been chosen, which is a save the form refuses rather than sends. */
+function bodyFrom(draft: Draft): TargetInput | null {
+  const identity = identityFrom(draft);
+  if (identity === null) return null;
   return {
     name: draft.name,
     mcp: draft.mcp.map((e) => ({ name: e.name, url: e.url, ...(e.bearerToken === "" ? {} : { bearerToken: e.bearerToken }) })),
@@ -223,7 +157,11 @@ export function Target() {
     setDraft((d) => ({ ...d, mcp: d.mcp.map((e, i) => (i === index ? { ...e, ...patch } : e)) }));
 
   const save = useMutation({
-    mutationFn: () => api.saveTarget(projectKey, existing?.id ?? null, bodyFrom(draft)),
+    mutationFn: async () => {
+      const body = bodyFrom(draft);
+      if (body === null) throw new Error("choose how the people get in before saving this target");
+      return api.saveTarget(projectKey, existing?.id ?? null, body);
+    },
     onSuccess: async (saved) => {
       setDraft(draftFrom(saved));
       await queries.invalidateQueries();
@@ -276,6 +214,8 @@ export function Target() {
   /** What the server would refuse, named here so the reader is not told by a dead button (§6). */
   const missingName = draft.name === "";
   const missingAddress = firstUrl === "";
+  /** What the way in still needs, in the reader's words, or null when it is ready to save. */
+  const missingWayIn = whatIdentityNeeds(draft);
   const dirty =
     loaded && shapeOf(draft) !== shapeOf(existing === undefined ? EMPTY : draftFrom(existing));
 
@@ -339,6 +279,12 @@ export function Target() {
         // refusing rather than left pressing a bar that does nothing.
         if (missingName || missingAddress) {
           setTab(TABS[0].value);
+          return;
+        }
+        // The way in lives on its own panel, so an unanswered one takes the reader there rather
+        // than leaving them pressing a bar that does nothing.
+        if (missingWayIn !== null) {
+          setTab("getting-in");
           return;
         }
         save.mutate();
@@ -479,16 +425,14 @@ export function Target() {
             <Stack gap={8}>
               <Card>
                 <Stack gap={8}>
-                  <ConditionalFieldset
-                    legend="Way in"
-                    name="identity-strategy"
-                    value={draft.strategy}
-                    onChange={(strategy) => set("strategy", strategy)}
-                    branches={WAYS_IN.map((way) => ({
-                      ...way,
-                      fields: identityFields(way.value, draft, set),
-                    }))}
-                  />
+                  <WaysIn draft={draft} onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))} />
+
+                  {attempted && missingWayIn !== null ? (
+                    <Text size="read-sm" tone="critical" as="p">
+                      It still needs {missingWayIn}.
+                    </Text>
+                  ) : null}
+                  {whatIdentityWillNotDo(draft) === null ? null : <FieldWarning>{whatIdentityWillNotDo(draft)}</FieldWarning>}
 
                   {check !== null && check.identity.because.length > 0 ? (
                     <Stack gap={2}>
@@ -658,213 +602,4 @@ export function Target() {
       </Stack>
     </FormPage>
   );
-}
-
-/** The three ways in, and what choosing each one means. */
-const WAYS_IN: readonly Omit<ConditionalBranch<Draft["strategy"]>, "fields">[] = [
-  {
-    value: "self-signup",
-    label: "They sign themselves up",
-    hint: "Recommended: each person makes their own account through the target's own tool.",
-  },
-  {
-    value: "static",
-    label: "Accounts from a file I provide",
-    hint: "Accounts you already hold, handed out one per person.",
-  },
-  {
-    value: "admin-mint",
-    label: "Minted by an admin SDK",
-    hint: "Firebase makes each person, and a key turns what comes back into a session.",
-    note: "The service account creates each person in Firebase; the Web API key turns what comes back into a session the product will accept. Both are needed — a Firebase custom token is not an ID token, and anything that verifies one will refuse it.",
-  },
-];
-
-/**
- * The fields that belong to one way in. A function rather than three inline trees: what the
- * `ConditionalFieldset` needs is one branch's fields, and building them beside the branch's own
- * words is what keeps the two from drifting apart.
- */
-function identityFields(
-  strategy: Draft["strategy"],
-  draft: Draft,
-  set: <K extends keyof Draft>(key: K, value: Draft[K]) => void,
-): ReactNode {
-  switch (strategy) {
-    case "self-signup":
-      return (
-        <Stack gap={6}>
-          <Field label="Sign-up tool" hint="The tool that creates an account.">
-            {({ id, describedBy, invalid }) => (
-              <Input
-                id={id}
-                describedBy={describedBy}
-                invalid={invalid}
-                value={draft.signupTool}
-                onChange={(v) => set("signupTool", v)}
-                placeholder="sign_up"
-                mono
-              />
-            )}
-          </Field>
-          <FieldGrid cols={2}>
-            <Field label="Where the token comes back" hint="Dotted path into the result.">
-              {({ id, describedBy, invalid }) => (
-                <Input
-                  id={id}
-                  describedBy={describedBy}
-                  invalid={invalid}
-                  value={draft.tokenPath}
-                  onChange={(v) => set("tokenPath", v)}
-                  placeholder="token"
-                  mono
-                />
-              )}
-            </Field>
-            <Field label="Where the account id comes back" optional>
-              {({ id, describedBy, invalid }) => (
-                <Input
-                  id={id}
-                  describedBy={describedBy}
-                  invalid={invalid}
-                  value={draft.userIdPath}
-                  onChange={(v) => set("userIdPath", v)}
-                  placeholder="user.id"
-                  mono
-                />
-              )}
-            </Field>
-          </FieldGrid>
-          <FieldGrid cols={2}>
-            <Field
-              label="Tool that deletes an account"
-              hint="Used to clean up afterwards. Without it, accounts have to be removed by hand."
-            >
-              {({ id, describedBy, invalid }) => (
-                <Input
-                  id={id}
-                  describedBy={describedBy}
-                  invalid={invalid}
-                  value={draft.teardownTool}
-                  onChange={(v) => set("teardownTool", v)}
-                  placeholder="delete_account"
-                  mono
-                />
-              )}
-            </Field>
-            <Field
-              label="Email domain"
-              hint="Every address carries the execution's tag, so a sweep can find them again."
-            >
-              {({ id, describedBy, invalid }) => (
-                <Input
-                  id={id}
-                  describedBy={describedBy}
-                  invalid={invalid}
-                  value={draft.emailDomain}
-                  onChange={(v) => set("emailDomain", v)}
-                  mono
-                />
-              )}
-            </Field>
-          </FieldGrid>
-        </Stack>
-      );
-    case "static":
-      return (
-        <Field
-          label="Accounts file"
-          hint={'JSON keyed by cohort — { "byCohort": { "<cohort slug>": [ { "bearerToken": "..." } ] } } — with one entry per person. These accounts are yours: a clean-up leaves them alone.'}
-        >
-          {({ id, describedBy, invalid }) => (
-            <Input
-              id={id}
-              describedBy={describedBy}
-              invalid={invalid}
-              value={draft.staticFile}
-              onChange={(v) => set("staticFile", v)}
-              placeholder="accounts.json"
-              mono
-            />
-          )}
-        </Field>
-      );
-    case "admin-mint":
-      return (
-        <Stack gap={6}>
-          <SecretField
-            label="Web API key"
-            stored={draft.apiKeySet}
-            value={draft.apiKey}
-            onChange={(v) => set("apiKey", v)}
-            hint="Firebase console → Project settings → General → Web API Key. Used to exchange the custom token and to renew it every hour."
-          />
-          <FieldGrid cols={2}>
-            <Field
-              label="Service account file"
-              hint="Path to the JSON key. Leave empty to use GOOGLE_APPLICATION_CREDENTIALS."
-            >
-              {({ id, describedBy, invalid }) => (
-                <Input
-                  id={id}
-                  describedBy={describedBy}
-                  invalid={invalid}
-                  value={draft.serviceAccountFile}
-                  onChange={(v) => set("serviceAccountFile", v)}
-                  placeholder="./service-account.json"
-                  mono
-                />
-              )}
-            </Field>
-            <Field label="Firebase project" optional hint="Only needed when the credentials do not name one.">
-              {({ id, describedBy, invalid }) => (
-                <Input
-                  id={id}
-                  describedBy={describedBy}
-                  invalid={invalid}
-                  value={draft.firebaseProjectId}
-                  onChange={(v) => set("firebaseProjectId", v)}
-                  placeholder="my-app-staging"
-                  mono
-                />
-              )}
-            </Field>
-          </FieldGrid>
-          <FieldGrid cols={2}>
-            <Field
-              label="Email domain"
-              hint="Every address carries the execution's tag, so a sweep can find them again."
-            >
-              {({ id, describedBy, invalid }) => (
-                <Input
-                  id={id}
-                  describedBy={describedBy}
-                  invalid={invalid}
-                  value={draft.emailDomain}
-                  onChange={(v) => set("emailDomain", v)}
-                  mono
-                />
-              )}
-            </Field>
-            <Field
-              label="Exchange endpoint"
-              optional
-              hint="An endpoint of your own that turns a custom token into the bearer your product accepts. Set one and it replaces Google's exchange entirely — sessions are renewed through it too, never through Google."
-            >
-              {({ id, describedBy, invalid }) => (
-                <Input
-                  id={id}
-                  describedBy={describedBy}
-                  invalid={invalid}
-                  value={draft.exchangeUrl}
-                  onChange={(v) => set("exchangeUrl", v)}
-                  placeholder="https://…"
-                  mono
-                />
-              )}
-            </Field>
-          </FieldGrid>
-        </Stack>
-      );
-  }
 }

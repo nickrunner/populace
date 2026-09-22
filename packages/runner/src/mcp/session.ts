@@ -1,3 +1,4 @@
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -45,9 +46,16 @@ export class McpSession {
   private client: Client | null = null;
   private tools: TargetTool[] = [];
 
+  /**
+   * `signIn` is the USER's OAuth grant and is only ever passed by the things that act as the user
+   * — the connection check and the tool list behind it (ADR-0036). A wake passes an identity's
+   * bearer token and nothing else: an owner's grant handed to a population would send every person
+   * in wearing the owner's face.
+   */
   constructor(
     readonly endpoint: McpEndpoint,
     private bearerToken: string | undefined,
+    private readonly signIn?: OAuthClientProvider,
   ) {}
 
   get token(): string | undefined {
@@ -60,7 +68,12 @@ export class McpSession {
     const token = this.bearerToken ?? this.endpoint.bearerToken;
     if (token) headers.authorization = `Bearer ${token}`;
     const client = new Client({ name: "populace-runner", version: "0.1.0" });
-    await client.connect(new StreamableHTTPClientTransport(new URL(this.endpoint.url), { requestInit: { headers } }));
+    // An explicit token wins: an identity's bearer IS who this connection is supposed to be, and
+    // letting the SDK refresh a sign-in over the top of it would quietly swap the caller.
+    const authProvider = token ? undefined : this.signIn;
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(this.endpoint.url), { requestInit: { headers }, ...(authProvider ? { authProvider } : {}) }),
+    );
     this.client = client;
     const listed = await client.listTools();
     this.tools = listed.tools.map((t: Tool) => ({

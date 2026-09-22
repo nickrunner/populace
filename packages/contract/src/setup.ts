@@ -122,6 +122,55 @@ export const IdentityGuessSchema = z.object({
 });
 export type IdentityGuess = z.infer<typeof IdentityGuessSchema>;
 
+/**
+ * YOUR sign-in to an address (ADR-0036), on the wire. Never the tokens: a credential goes up and
+ * never comes back down, so this says whether one is held and when it dies, and nothing else.
+ *
+ * It is deliberately separate from `identity` on a target. This is the one human connecting;
+ * `identity` is how the STRANGERS a simulation sends get accounts of their own. A screen that
+ * blurred the two would be promising that signing in here is enough to run a population, which it
+ * is not, and the copy says so.
+ */
+export const SignInStatusSchema = z.object({
+  /** The address this is about, normalised. */
+  url: z.string(),
+  /** The endpoint refuses anonymous callers. */
+  required: z.boolean(),
+  /** It publishes OAuth metadata naming an authorization server, so populace can do this for you. */
+  supported: z.boolean(),
+  /** A usable grant is held. */
+  connected: z.boolean(),
+  /** What the resource calls itself, when it published a name. */
+  resourceName: z.string().nullable(),
+  authorizationServer: z.string().nullable(),
+  /** What the sign-in asks for, in the server's own words. */
+  scopes: z.array(z.string()),
+  /** When the access token dies. Null when it does not expire or the server did not say. */
+  expiresAt: z.iso.datetime().nullable(),
+  /** Whether a refresh token is held — the difference between a sign-in that lasts and one that does not. */
+  renewable: z.boolean(),
+  /** What went wrong finding any of this out, when something did. */
+  error: z.string().nullable(),
+});
+export type SignInStatus = z.infer<typeof SignInStatusSchema>;
+
+/** Starting a flow: the address to sign in to. */
+export const SignInStartBodySchema = z.object({ url: z.url() });
+export type SignInStartBody = z.infer<typeof SignInStartBodySchema>;
+
+/**
+ * Where to send the browser. `authorizeUrl` is null when the grant already held turned out to be
+ * enough — a refresh that still works — and the answer is "you are already signed in".
+ */
+export const SignInStartResultSchema = z.object({
+  authorizeUrl: z.url().nullable(),
+  status: SignInStatusSchema,
+});
+export type SignInStartResult = z.infer<typeof SignInStartResultSchema>;
+
+export const SignInQuerySchema = z.object({ url: z.string() });
+export type SignInQuery = z.infer<typeof SignInQuerySchema>;
+
 export const TargetCheckSchema = z.object({
   ok: z.boolean(),
   checkedAt: z.iso.datetime(),
@@ -134,6 +183,12 @@ export const TargetCheckSchema = z.object({
    */
   undescribed: z.array(z.string()),
   identity: IdentityGuessSchema,
+  /**
+   * Why it would not talk to us, when that is the reason it did not. Null when the address was
+   * reached, and null when it failed for any other reason — "could not reach it" and "it will not
+   * talk to strangers" are different sentences and the screen says the right one.
+   */
+  signIn: SignInStatusSchema.nullable(),
   errors: z.array(z.string()),
 });
 export type TargetCheck = z.infer<typeof TargetCheckSchema>;

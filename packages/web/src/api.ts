@@ -12,6 +12,8 @@ import {
   RunEstimateSchema,
   RunLiveSchema,
   SettingsViewSchema,
+  SignInStartResultSchema,
+  SignInStatusSchema,
   SetupStatusSchema,
   SimulationResultsViewSchema,
   ParticipantDetailViewSchema,
@@ -172,6 +174,15 @@ export const api = {
    */
   firstContact: (p: string, id: string) => send("POST", routes.targetFirstContact(p, id), undefined, FirstContactSchema),
 
+  /**
+   * YOUR sign-in to an address (ADR-0036). Keyed by the address rather than by a target, because
+   * signing in is part of CONNECTING — there is no saved target yet when it happens.
+   */
+  signInStatus: (p: string, url: string) => get(`${routes.signIn(p)}?url=${encodeURIComponent(url)}`, SignInStatusSchema),
+  /** Registers this populace with the authorization server if need be, and says where to send the browser. */
+  startSignIn: (p: string, url: string) => send("POST", routes.signIn(p), { url }, SignInStartResultSchema),
+  forgetSignIn: (p: string, url: string) => send("DELETE", `${routes.signIn(p)}?url=${encodeURIComponent(url)}`, undefined, SignInStatusSchema),
+
   personas: (p: string) => get(routes.personas(p), personas),
   persona: (p: string, x: string) => get(routes.persona(p, x), PersonaViewSchema),
   starters: (p: string) => get(routes.personaStarters(p), starters),
@@ -322,6 +333,8 @@ export type SetupStatus = z.infer<typeof SetupStatusSchema>;
 export type Need = SetupStatus["needs"][number];
 export type StoredTarget = z.infer<typeof StoredTargetViewSchema>;
 export type TargetCheck = z.infer<typeof TargetCheckSchema>;
+/** YOUR sign-in to an address, never the token it holds (ADR-0036). */
+export type SignInStatus = z.infer<typeof SignInStatusSchema>;
 export type TargetPromises = z.infer<typeof TargetPromisesSchema>;
 export type FirstContact = z.infer<typeof FirstContactSchema>;
 export type Persona = z.infer<typeof PersonaViewSchema>;

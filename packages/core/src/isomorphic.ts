@@ -19,6 +19,7 @@ export * from "./schemas/person.js";
 export * from "./schemas/agent.js";
 export * from "./schemas/identity.js";
 export * from "./schemas/identity-config.js";
+export * from "./schemas/sign-in.js";
 export * from "./schemas/first-contact.js";
 export * from "./schemas/trace.js";
 export * from "./schemas/finding.js";

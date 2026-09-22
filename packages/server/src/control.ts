@@ -11,6 +11,8 @@ import {
   PopulationInputSchema,
   ProjectInputSchema,
   SettingsInputSchema,
+  SignInQuerySchema,
+  SignInStartBodySchema,
   SimulationInputSchema,
   StartExecutionBodySchema,
   StopRunBodySchema,
@@ -45,6 +47,7 @@ import {
   newPopulationId,
   newProjectId,
   newTargetId,
+  normalizeEndpointUrl,
   slugify,
   tagForRun,
   ReferencedError,
@@ -66,7 +69,7 @@ import {
 } from "@populace/core";
 import { identityProviderFor } from "@populace/adapters";
 import { buildDigest, verifyPending } from "@populace/reports";
-import { personaSystemPrompt } from "@populace/runner";
+import { finishSignIn, personaSystemPrompt, startSignIn } from "@populace/runner";
 import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { ensureRoster } from "./cohort-store.js";
@@ -91,7 +94,8 @@ import type { JobHandler, JobReport, JobSpend } from "./jobs.js";
 import { ProjectReadModel } from "./project-read-model.js";
 import { ReadModel } from "./read-model.js";
 import { STARTER_PERSONAS, starterBySlug } from "./starters.js";
-import { checkPromises, checkTarget } from "./target-check.js";
+import { checkPromises, checkTarget, type CheckCredentials } from "./target-check.js";
+import { callbackPage, callbackUri, isAddress, pendingFor, providerFor, signInStatus, statusOf } from "./sign-in.js";
 import { firstContact } from "./first-contact.js";
 import { resetTarget } from "./target-reset.js";
 import { targetView as liveTargetView } from "./target.js";
@@ -167,6 +171,31 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       const token = endpoint.bearerToken === undefined ? previous?.bearerToken : endpoint.bearerToken === "" ? undefined : endpoint.bearerToken;
       return { name: endpoint.name, url: endpoint.url, ...(token === undefined ? {} : { bearerToken: token }), headers: previous?.headers ?? {} };
     });
+
+  /**
+   * What a CHECK may connect as: the user's own sign-in for that address, and the probe that tells
+   * a gated address apart from a dead one (ADR-0036).
+   *
+   * It is built here, at the one altitude that knows both the project and the browser's origin,
+   * and it is handed only to `checkTarget`. Nothing that sends a PERSON anywhere is given one: a
+   * grant is the owner's account, and a population wearing it would be forty people with one face.
+   */
+  const asTheUser = async (c: Context, projectId: string): Promise<CheckCredentials> => {
+    // Loaded up front so the decision below can be made synchronously, but mostly so that a
+    // provider is handed over ONLY for an address already signed in to. The SDK's transport treats
+    // a provider as permission to do whatever getting in takes — including registering this
+    // installation with the authorization server the first time it meets a 401 — and pressing
+    // Check must not register anything with anybody. Signing in is a button, and that is the only
+    // thing that writes to somebody else's authorization server.
+    const held = new Map((await deps.store.listSignInGrants(projectId)).filter((grant) => grant.tokens !== null).map((grant) => [grant.url, grant]));
+    return {
+      signIn: (endpoint) =>
+        isAddress(endpoint.url) && held.has(normalizeEndpointUrl(endpoint.url))
+          ? providerFor(deps.store, projectId, endpoint.url, callbackUri(c, routes.signInCallback))
+          : undefined,
+      askAboutSignIn: (endpoint) => signInStatus(deps.store, projectId, endpoint.url, { probe: true }),
+    };
+  };
 
   /**
    * The two things a first-contact result is evidence about — where the target is and how a person
@@ -350,7 +379,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const body = await parseBody(c, TargetInputSchema.pick({ mcp: true }).extend({ identity: TargetInputSchema.shape.identity.optional() }));
     if (!body.ok) return body.response;
-    return c.json(await checkTarget(mergeEndpoints(body.value.mcp, []), body.value.identity));
+    return c.json(await checkTarget(mergeEndpoints(body.value.mcp, []), body.value.identity, await asTheUser(c, s.project.id)));
   });
 
   app.get(routes.target_(":p", ":t"), async (c) => {
@@ -418,7 +447,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const target = owned(await deps.store.getTarget(param(c, "t")), s.project.id);
     if (!target) return fail(c, "not_found", "no such target");
-    return c.json(await checkTarget(target.mcp, target.identity));
+    return c.json(await checkTarget(target.mcp, target.identity, await asTheUser(c, s.project.id)));
   });
 
   /**
@@ -447,8 +476,91 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const target = owned(await deps.store.getTarget(param(c, "t")), s.project.id);
     if (!target) return fail(c, "not_found", "no such target");
-    const check = await checkTarget(target.mcp, target.identity);
+    const check = await checkTarget(target.mcp, target.identity, await asTheUser(c, s.project.id));
     return c.json(await checkPromises(target.webBaseUrl ?? null, check.tools));
+  });
+
+  // ---- signing in to an address (ADR-0036) ---------------------------------
+
+  /**
+   * What is known about a sign-in to this address: whether the endpoint wants one, whether it
+   * publishes enough for populace to do it, and whether one is held. It asks the address itself,
+   * which is a read and registers nothing with anybody.
+   *
+   * Never the token. A credential goes up and never comes back down, here as everywhere else.
+   */
+  app.get(routes.signIn(":p"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const q = parseQuery(c, SignInQuerySchema);
+    if (!q.ok) return q.response;
+    if (!isAddress(q.value.url)) return fail(c, "bad_request", `${q.value.url} is not an address`);
+    return c.json(await signInStatus(deps.store, s.project.id, q.value.url, { probe: true }));
+  });
+
+  /**
+   * Start one. POST because it REGISTERS THIS INSTALLATION as an OAuth client with somebody else's
+   * authorization server the first time — the ADR-0023 rule that nothing with effects hides behind
+   * a GET — and because what it produces is a consent screen a human is about to be sent to.
+   *
+   * The answer is a URL rather than a redirect: the caller is a `fetch` from the dashboard, and a
+   * 302 to a login screen answered into an XHR would be followed by nobody.
+   */
+  app.post(routes.signIn(":p"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const body = await parseBody(c, SignInStartBodySchema);
+    if (!body.ok) return body.response;
+    const provider = providerFor(deps.store, s.project.id, body.value.url, callbackUri(c, routes.signInCallback));
+    let authorizeUrl: URL | null;
+    try {
+      authorizeUrl = await startSignIn(provider, body.value.url);
+    } catch (err) {
+      // Discovery and registration are somebody else's server answering, so this is an ordinary
+      // outcome with a sentence attached rather than a 500 with a stack behind it.
+      return fail(c, "conflict", `this address could not be signed in to: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return c.json({
+      authorizeUrl: authorizeUrl === null ? null : authorizeUrl.href,
+      status: statusOf(body.value.url, await provider.load()),
+    });
+  });
+
+  /** Forget it. The grant goes; the authorization server is not told, because it did not ask. */
+  app.delete(routes.signIn(":p"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const q = parseQuery(c, SignInQuerySchema);
+    if (!q.ok) return q.response;
+    if (!isAddress(q.value.url)) return fail(c, "bad_request", `${q.value.url} is not an address`);
+    await deps.store.deleteSignInGrant(s.project.id, q.value.url);
+    return c.json(await signInStatus(deps.store, s.project.id, q.value.url, { probe: false }));
+  });
+
+  /**
+   * Where the authorization server sends the browser back. It answers with a PAGE, not JSON: a
+   * human is looking at it, having just consented in a tab populace opened for them.
+   *
+   * Outside every project, because it is one URL registered with somebody else's server for this
+   * whole installation. `state` is what says which project and which address it belongs to — which
+   * is the job OAuth gives `state` — and a callback whose state matches no flow in flight is the
+   * shape a forged or stale one has, so it is refused rather than guessed at.
+   */
+  app.get(routes.signInCallback, async (c) => {
+    const failed = c.req.query("error");
+    const state = c.req.query("state") ?? "";
+    const code = c.req.query("code") ?? "";
+    if (failed) return c.html(callbackPage({ ok: false, message: `The authorization server said: ${failed}.` }), 400);
+    if (code === "" || state === "") return c.html(callbackPage({ ok: false, message: "That callback arrived without a code." }), 400);
+    const grant = await pendingFor(deps.store, state);
+    if (!grant) return c.html(callbackPage({ ok: false, message: "That sign-in is not one this populace started, or it has already been finished." }), 400);
+    const provider = providerFor(deps.store, grant.projectId, grant.url, grant.redirectUri);
+    try {
+      await finishSignIn(provider, grant.url, code);
+    } catch (err) {
+      return c.html(callbackPage({ ok: false, message: err instanceof Error ? err.message : String(err) }), 502);
+    }
+    return c.html(callbackPage({ ok: true, resource: grant.resourceName }));
   });
 
   /** Putting the target back by hand. A job, because it changes somebody else's database. */

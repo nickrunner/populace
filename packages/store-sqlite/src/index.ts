@@ -11,7 +11,9 @@ import {
   PersonSchema,
   ProjectSchema,
   ReferencedError,
+  normalizeEndpointUrl,
   RunSchema,
+  SignInGrantSchema,
   SimulationSchema,
   TriageSchema,
   StoredPersonaSchema,
@@ -37,6 +39,7 @@ import {
   type Job,
   type Memory,
   type Person,
+  type SignInGrant,
   type PersonQuery,
   type Project,
   type Run,
@@ -124,6 +127,25 @@ CREATE TABLE IF NOT EXISTS targets (
 CREATE INDEX IF NOT EXISTS targets_project ON targets(project_id);
 /* The slug is the immutable URL segment (SPEC §2.2), so it has to identify exactly one row. */
 CREATE UNIQUE INDEX IF NOT EXISTS targets_slug ON targets(project_id, slug);
+
+/*
+ * The user's own OAuth sign-ins to targets that will not talk to strangers (ADR-0036). One row per
+ * (project, address): two targets in one project on one address are one server and one sign-in.
+ *
+ * Adding this table did NOT bump SCHEMA_SHAPE, and that is the rule rather than an exception:
+ * every statement here runs under CREATE TABLE IF NOT EXISTS on every open, including the open
+ * that finds the recorded shape already current, so a table nothing else references appears in an
+ * existing database by itself. The shape guards tables that CHANGE, where an old file's columns
+ * are wrong and the rebuild is the whole migration story. Changing THIS table later is a bump like
+ * any other.
+ */
+CREATE TABLE IF NOT EXISTS sign_in_grants (
+  project_id TEXT NOT NULL, url TEXT NOT NULL, pending_state TEXT,
+  updated_at TEXT NOT NULL, json TEXT NOT NULL,
+  PRIMARY KEY (project_id, url)
+);
+/* The OAuth callback arrives holding a state parameter and nothing else; this finds its flow. */
+CREATE INDEX IF NOT EXISTS sign_in_grants_state ON sign_in_grants(pending_state);
 
 CREATE TABLE IF NOT EXISTS personas (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL, origin TEXT NOT NULL,
@@ -749,6 +771,7 @@ export class SqliteStore implements Store {
       this.db.prepare("DELETE FROM cohorts WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM personas WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM targets WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM sign_in_grants WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM triage WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM settings WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM jobs WHERE project_id = ?").run(id);
@@ -788,6 +811,34 @@ export class SqliteStore implements Store {
     const referrers = this.simulationsNaming("target_id", id);
     if (referrers.length) return Promise.reject(new ReferencedError("target", id, referrers));
     this.db.prepare("DELETE FROM targets WHERE id = ?").run(id);
+    return Promise.resolve();
+  }
+
+  saveSignInGrant(grant: SignInGrant): Promise<void> {
+    const parsed = SignInGrantSchema.parse(grant);
+    this.db
+      .prepare(
+        `INSERT INTO sign_in_grants (project_id, url, pending_state, updated_at, json) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(project_id, url) DO UPDATE SET pending_state = excluded.pending_state,
+           updated_at = excluded.updated_at, json = excluded.json`,
+      )
+      .run(parsed.projectId, parsed.url, parsed.pending?.state ?? null, parsed.updatedAt, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  getSignInGrant(projectId: string, url: string): Promise<SignInGrant | undefined> {
+    const row = this.db.prepare("SELECT json FROM sign_in_grants WHERE project_id = ? AND url = ?").get(projectId, normalizeEndpointUrl(url));
+    return Promise.resolve(row ? parseRow(SignInGrantSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  listSignInGrants(projectId?: string): Promise<SignInGrant[]> {
+    const sql = `SELECT json FROM sign_in_grants ${projectId ? "WHERE project_id = ?" : ""} ORDER BY updated_at DESC`;
+    const result = projectId ? this.db.prepare(sql).all(projectId) : this.db.prepare(sql).all();
+    return Promise.resolve(rows(result).map((r) => parseRow(SignInGrantSchema, r)));
+  }
+
+  deleteSignInGrant(projectId: string, url: string): Promise<void> {
+    this.db.prepare("DELETE FROM sign_in_grants WHERE project_id = ? AND url = ?").run(projectId, normalizeEndpointUrl(url));
     return Promise.resolve();
   }
 
