@@ -46,6 +46,7 @@ import {
   newProjectId,
   newTargetId,
   slugify,
+  tagForRun,
   ReferencedError,
   StoredTargetSchema,
   type Agent,
@@ -214,11 +215,33 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.json(updated satisfies ProjectView);
   });
 
-  /** Archived, never deleted: a project's runs are the user's history, and archiving keeps them. */
+  /**
+   * Gone, not archived. It used to set `archived` and answer 204, which the projects list reads
+   * as "do not show this" — so the row survived, nothing in the product could ever see it again,
+   * and the only thing a user could do about a project they did not want was accumulate more of
+   * them. Archiving is the right answer for a SIMULATION, whose executions are history worth
+   * keeping under a name; a project is the scope that history lives in, and a user deleting one
+   * is saying they want the scope gone.
+   *
+   * `?archive=1` keeps the old behaviour for a caller that wants the row hidden and kept.
+   *
+   * A running execution is the one refusal. Its process is mid-wake against somebody else's
+   * product, and deleting the rows underneath it would leave accounts on that target with nothing
+   * left in the database that knows they exist — the exact thing `sweep` is for.
+   */
   app.delete(routes.project(":p"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    await deps.store.saveProject({ ...s.project, archived: true, updatedAt: now() });
+    if (c.req.query("archive") === "1") {
+      await deps.store.saveProject({ ...s.project, archived: true, updatedAt: now() });
+      return c.body(null, 204);
+    }
+    const running = new Set(deps.runs.runningIds);
+    const live = (await deps.store.listRuns({ projectId: s.project.id })).filter((run) => running.has(run.id));
+    if (live.length > 0) {
+      return fail(c, "conflict", `${s.project.name} has ${live.length === 1 ? "an execution" : `${String(live.length)} executions`} running; stop ${live.length === 1 ? "it" : "them"} first, and sweep if accounts were made`);
+    }
+    await deps.store.deleteProject(s.project.id);
     return c.body(null, 204);
   });
 
@@ -354,7 +377,14 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const s = await scope(c);
     if (!s.ok) return s.response;
     if (!owned(await deps.store.getTarget(param(c, "t")), s.project.id)) return fail(c, "not_found", "no such target");
-    await deps.store.deleteTarget(param(c, "t"));
+    // A simulation still pointing at it is a refusal that names the simulation, not a 500 (SPEC
+    // §2.14): the user is being told which thing to take apart first.
+    try {
+      await deps.store.deleteTarget(param(c, "t"));
+    } catch (err) {
+      if (err instanceof ReferencedError) return fail(c, "conflict", err.message);
+      throw err;
+    }
     return c.body(null, 204);
   });
 
@@ -961,7 +991,14 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const population = await populationOf(c, s.project.id);
     if (!population) return fail(c, "not_found", "no such population");
-    await deps.store.deletePopulation(population.id);
+    // The store refuses a population a simulation still names, and naming the referrer is the
+    // point of that refusal (SPEC §2.14). Uncaught it was a 500, which tells the user nothing.
+    try {
+      await deps.store.deletePopulation(population.id);
+    } catch (err) {
+      if (err instanceof ReferencedError) return fail(c, "conflict", err.message);
+      throw err;
+    }
     return c.body(null, 204);
   });
 
@@ -1114,13 +1151,24 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.json(await projects.simulationSummary(updated));
   });
 
-  /** Archived, not deleted: a simulation's executions are the user's history. */
+  /**
+   * Archived, not deleted: a simulation's executions are the user's history, so removing it from
+   * the list leaves them exactly where they are. `?runs=delete` is the user having been shown how
+   * many executions that is and said to take them too — then the simulation row goes as well, and
+   * the archive path is never reached.
+   */
   app.delete(routes.simulation(":p", ":s"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
     const simulation = await simulationOf(c, s.project.id);
     if (!simulation) return fail(c, "not_found", "no such simulation");
-    await deps.store.deleteSimulation(simulation.id);
+    const withRuns = c.req.query("runs") === "delete";
+    if (withRuns) {
+      const running = new Set(deps.runs.runningIds);
+      const live = (await deps.store.listRuns({ simulationId: simulation.id })).filter((run) => running.has(run.id));
+      if (live.length > 0) return fail(c, "conflict", `${simulation.name} is running; stop it first, and sweep if accounts were made`);
+    }
+    await deps.store.deleteSimulation(simulation.id, withRuns ? { withRuns: true } : {});
     return c.body(null, 204);
   });
 
@@ -1358,6 +1406,33 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   };
 
   // ---- run control --------------------------------------------------------
+
+  /**
+   * One execution and everything it produced: participants, their memory, their visits, the
+   * traces of those visits, the findings filed in them and the run's own event log.
+   *
+   * The refusal that matters is not "this is history" — the user pressing this is saying they
+   * know — it is ACCOUNTS. A run that signed people up on somebody else's product and has not
+   * been swept is the only record of which accounts those are; delete the rows and they are
+   * stranded there with nothing left that can find them. So an unswept run with live identities
+   * says to sweep first, and `?force=1` is the user accepting the strand. A running execution is
+   * refused outright: there is a process mid-wake writing the rows this would remove.
+   */
+  app.delete(routes.run(":id"), async (c) => {
+    const run = await deps.store.getRun(param(c, "id"));
+    if (!run) return c.body(null, 204);
+    if (deps.runs.runningIds.includes(run.id)) return fail(c, "conflict", "that execution is running; stop it first");
+    if (c.req.query("force") !== "1") {
+      // `static` is somebody's own login out of a pool file: populace never made it and deleting
+      // these rows strands nothing. The other two strategies are accounts this run created.
+      const live = (await deps.store.listIdentitiesByTag(tagForRun(run.id))).filter((identity) => identity.tornDownAt === null && identity.strategy !== "static");
+      if (live.length > 0) {
+        return fail(c, "conflict", `this execution made ${live.length === 1 ? "an account" : `${String(live.length)} accounts`} that ${live.length === 1 ? "is" : "are"} still on the target; sweep it first, or the only record of ${live.length === 1 ? "it" : "them"} goes with these rows`);
+      }
+    }
+    await deps.store.deleteRun(run.id);
+    return c.body(null, 204);
+  });
 
   app.post(routes.runStop(":id"), async (c) => {
     const body = await parseBody(c, StopRunBodySchema);

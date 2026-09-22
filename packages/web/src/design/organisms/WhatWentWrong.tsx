@@ -1,4 +1,4 @@
-import { forwardRef } from "react";
+import { forwardRef, type ReactNode } from "react";
 
 import { Stack } from "../atoms/index.js";
 import { FieldError } from "../molecules/index.js";
@@ -35,14 +35,26 @@ export interface WhatWentWrongProps {
   error: Error;
   /** The id the control that failed names in `aria-describedby`, where one owns the failure. */
   id?: string;
+  /**
+   * The way past this particular failure, where there is one — a retry that takes a different
+   * route, or the act the refusal was asking for. It sits UNDER the machine's words rather than
+   * over them, because a reader offered a button before they have read what refused them has
+   * been handed a way to repeat their mistake faster.
+   *
+   * Most failures have no such thing and leave this out. A generic "Try again" belongs to
+   * `StateBlock`, which is the failed READ; this is the failed WRITE, and the only button worth
+   * putting here is one that does something different from what just failed.
+   */
+  children?: ReactNode;
 }
 
 export const WhatWentWrong = forwardRef<HTMLDivElement, WhatWentWrongProps>(
-  function WhatWentWrong({ says, error, id }, ref) {
+  function WhatWentWrong({ says, error, id, children }, ref) {
     return (
-      <Stack ref={ref} gap={2}>
+      <Stack ref={ref} gap={2} align="start">
         <FieldError id={id}>{says}</FieldError>
         <PayloadBlock caption="What came back" value={error.message} error />
+        {children}
       </Stack>
     );
   },

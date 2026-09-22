@@ -174,6 +174,13 @@ export interface Store {
    * one that pointed back; that scan was O(runs x agents) on a screen that renders on every poll.
    */
   listRuns(filter?: { projectId?: string; simulationId?: string; status?: Run["status"]; parentRunId?: string }): Promise<Run[]>;
+  /**
+   * The run row and everything produced under it: agents, memories, identities, wakes, their
+   * trace events, findings and the event log. It used to delete the run and its events alone,
+   * which left the rest keyed to a run id nothing could resolve — invisible in every screen and
+   * counted by every `COUNT(*)`. `sweepRun` still deletes those explicitly before calling this,
+   * and those deletes are simply no-ops now.
+   */
   deleteRun(id: string): Promise<void>;
 
   // config snapshots (immutable; written once when a run starts)
@@ -186,6 +193,19 @@ export interface Store {
   saveProject(project: Project): Promise<void>;
   getProject(id: string): Promise<Project | undefined>;
   listProjects(): Promise<Project[]>;
+  /**
+   * The one delete in the store that cascades instead of refusing (SPEC §2.14). Everywhere else a
+   * row referenced by another row is a `ReferencedError`, because the user is being asked which of
+   * two things they meant; a project is the boundary those references live inside, so there is no
+   * second thing to mean. Everything scoped to it goes with it: targets, personas, cohorts, their
+   * people, populations, simulations, settings, triage, jobs, and every execution under it with
+   * the agents, identities, memories, wakes, traces, findings and events those produced.
+   *
+   * It is the ONLY way a run's produced rows leave the database other than a sweep, and it is
+   * irreversible, so the API behind it asks the question first. Deleting a project that is not
+   * there is a no-op rather than an error.
+   */
+  deleteProject(id: string): Promise<void>;
 
   saveTarget(target: StoredTarget): Promise<void>;
   getTarget(id: string): Promise<StoredTarget | undefined>;
@@ -233,10 +253,12 @@ export interface Store {
   getSimulation(id: string): Promise<Simulation | undefined>;
   listSimulations(query?: SimulationQuery): Promise<Simulation[]>;
   /**
-   * A simulation that has ever run is ARCHIVED, never deleted: its runs are the user's history and
-   * archiving a simulation never touches them.
+   * A simulation that has ever run is ARCHIVED rather than deleted, because its executions are the
+   * user's history and throwing them away is not what "remove this from the list" means.
+   * `withRuns` is the user saying they meant it: the simulation and every execution under it go,
+   * through `deleteRun`, and the archive path is not taken.
    */
-  deleteSimulation(id: string): Promise<void>;
+  deleteSimulation(id: string, options?: { withRuns?: boolean }): Promise<void>;
 
   /** Human judgement about a problem, keyed by signature so it survives a re-execution (ADR-0028). */
   saveTriage(triage: Triage): Promise<void>;

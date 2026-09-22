@@ -1,10 +1,11 @@
 import { useId, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api } from "../api.js";
+import { api, type ProjectSummary } from "../api.js";
 import { q } from "../queries.js";
 import { people, plural } from "../format.js";
 import {
+  AlertDialog,
   Button,
   Chip,
   Dialog,
@@ -61,6 +62,15 @@ export function Projects() {
       void navigate(`/p/${encodeURIComponent(project.slug)}`);
     },
   });
+
+  // Every read in the app is scoped by project, so a deleted one invalidates all of them rather
+  // than just the list: a cached overview for a project that no longer exists is a 404 waiting
+  // for the next navigation.
+  const remove = useMutation({
+    mutationFn: (slug: string) => api.removeProject(slug),
+    onSuccess: () => queries.invalidateQueries(),
+  });
+  const removeErrorId = useId();
 
   const items = (projects.data?.items ?? []).filter((project) => !project.archived);
 
@@ -140,6 +150,28 @@ export function Projects() {
                   <Dot size="sm" className="md:ml-auto" />
                 )
               }
+              aside={
+                /* Outside the row's link, which is what `aside` is for: nested in it, this would
+                   navigate instead of asking the question. */
+                <AlertDialog
+                  title={`Delete ${project.name}?`}
+                  body={consequence(project)}
+                  confirmLabel="Delete this project"
+                  onConfirm={() => {
+                    remove.mutate(project.slug);
+                  }}
+                  trigger={
+                    <Button
+                      variant="quiet"
+                      size="sm"
+                      disabled={remove.isPending}
+                      aria-describedby={remove.isError && remove.variables === project.slug ? removeErrorId : undefined}
+                    >
+                      Delete
+                    </Button>
+                  }
+                />
+              }
             >
               <Stack gap={1}>
                 <Inline gap={3} align="baseline">
@@ -166,6 +198,16 @@ export function Projects() {
             </LedgerRow>
           ))}
         </Ledger>
+
+        {/* The machine's own words go in the well beneath, never paraphrased into the sentence
+            (§7.4). A refusal here is usually "an execution is running", which is actionable. */}
+        {remove.isError ? (
+          <WhatWentWrong
+            id={removeErrorId}
+            says="That project was not deleted. Everything in it is still there."
+            error={remove.error}
+          />
+        ) : null}
       </CenteredPage>
 
       <Dialog
@@ -243,6 +285,27 @@ export function Projects() {
       </Dialog>
     </>
   );
+}
+
+/**
+ * What deleting a project actually takes, with the numbers rather than "this cannot be undone"
+ * (§7.4). The counts are the ones the row already shows, so the reader is being told the
+ * consequence in the same figures they were just looking at.
+ *
+ * It promises nothing about accounts on the target: populace cannot know whether a swept run
+ * left any, and the sentence that would say so is the kind of promise §7.3 forbids. What it can
+ * say truthfully is that the record of them goes, which is the fact that matters.
+ */
+function consequence(project: ProjectSummary): string {
+  const parts = [
+    plural(project.counts.simulations, "simulation"),
+    people(project.counts.people),
+    plural(project.counts.personas, "persona"),
+  ];
+  const made = `${project.name} and everything in it goes: ${parts.join(", ")}, and its target.`;
+  return project.lastActivityAt === null
+    ? `${made} Nothing has ever run in it, so there is no history to lose.`
+    : `${made} Every execution it has run goes too — the visits, what the people remembered, and the problems they filed. If any of those runs left accounts on the target, the only record of them goes with this.`;
 }
 
 /**

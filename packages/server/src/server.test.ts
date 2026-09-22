@@ -16,6 +16,7 @@ import {
   WakeDetailSchema,
   WakeSummarySchema,
   pageOf,
+  ProjectSummaryViewSchema,
   routes,
 } from "@populace/contract";
 import { PopulaceConfigSchema, expandPopulation, newRunId, type JsonValue, type PopulaceConfig } from "@populace/core";
@@ -499,6 +500,51 @@ describe("populace serve", () => {
       // The socket is already gone, which is the point of the test.
     }
     await store.close();
+  });
+
+  /**
+   * The projects list is the first screen anybody sees, and `serve` used to put a row on it
+   * before the user had done anything: `ensureProject` ran on every boot and named the result
+   * "Default". With nothing in the product able to delete a project, that row was permanent.
+   */
+  it("invents no project when there is nothing to seed and none was asked for", async () => {
+    const store = new SqliteStore(":memory:");
+    const server = await startServer({ store, storePath: ":memory:", version: "test", port: 0 });
+    try {
+      expect(await store.listProjects()).toHaveLength(0);
+      const list = pageOf(ProjectSummaryViewSchema).parse(await json(await fetch(`${server.url}${routes.projects}`)));
+      expect(list.items).toHaveLength(0);
+    } finally {
+      await server.close();
+      await store.close();
+    }
+  });
+
+  /** A file to import is a reason for a project, and the project is named after what it tests. */
+  it("names the project it imports a populace.yaml into after the target", async () => {
+    const { store, cfg } = await seed();
+    const server = await startServer({ store, storePath: ":memory:", version: "test", seedConfig: cfg, port: 0 });
+    try {
+      const projects = await store.listProjects();
+      expect(projects).toHaveLength(1);
+      expect(projects[0]?.name).toBe(cfg.target.name);
+      expect(projects[0]?.name).not.toBe("Default");
+    } finally {
+      await server.close();
+      await store.close();
+    }
+  });
+
+  /** `--project` is the other reason: the user named one, so it is made. */
+  it("makes the project that --project names", async () => {
+    const store = new SqliteStore(":memory:");
+    const server = await startServer({ store, storePath: ":memory:", version: "test", projectId: "staging", port: 0 });
+    try {
+      expect((await store.listProjects()).map((project) => project.id)).toEqual(["staging"]);
+    } finally {
+      await server.close();
+      await store.close();
+    }
   });
 
   it("explains itself when no dashboard has been built into the install", async () => {

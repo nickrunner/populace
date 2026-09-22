@@ -7,6 +7,7 @@ import { useProject } from "../../context.jsx";
 import { people, plural } from "../../format.js";
 import { Button, Inline, Stack } from "../atoms/index.js";
 import { ConfirmButton, FieldError } from "../molecules/index.js";
+import { AlertDialog } from "./AlertDialog.js";
 
 /**
  * SimulationActions — the one action a simulation is asking for, in the words its mode makes
@@ -72,9 +73,35 @@ export const SimulationActions = forwardRef<HTMLDivElement, SimulationActionsPro
     const pause = useMutation({ mutationFn: () => api.pauseRun(runId), onSuccess: refresh });
     const resume = useMutation({ mutationFn: () => api.resumeRun(runId), onSuccess: refresh });
     const stop = useMutation({ mutationFn: () => api.stopRun(runId, "drain"), onSuccess: refresh });
+    /**
+     * The one act here that takes something away rather than moving it along. `withRuns` is
+     * always true: a user pressing "Delete" on a list is saying "stop showing me this", and the
+     * server's other behaviour — archive the row, keep the executions — leaves it off every
+     * screen while the rows stay, which is the pile-up this whole pass is about. The dialog says
+     * what goes before they press it.
+     */
+    const remove = useMutation({
+      mutationFn: () => api.removeSimulation(key, simulation.slug, true),
+      onSuccess: async () => {
+        await refresh();
+        // Only from a page that IS this simulation; on the project's list the row simply goes.
+        if (live) void navigate(href());
+      },
+    });
 
-    const busy = start.isPending || pause.isPending || resume.isPending || stop.isPending;
-    const error = start.error ?? pause.error ?? resume.error ?? stop.error;
+    const busy = start.isPending || pause.isPending || resume.isPending || stop.isPending || remove.isPending;
+    const error = start.error ?? pause.error ?? resume.error ?? stop.error ?? remove.error;
+
+    /**
+     * What deleting it takes, and it differs by whether anything has ever run. A simulation that
+     * has never been sent is a piece of configuration and saying so is the honest sentence; one
+     * that has run is the record of what the people found, and the reader is told that outright
+     * rather than being handed "this cannot be undone".
+     */
+    const losing =
+      simulation.latest === null
+        ? `${simulation.name} has never been sent, so there is nothing to lose but the settings. Its population, its personas and its target all stay — they belong to the project, not to this.`
+        : `${simulation.name} goes, and so does every execution of it: the visits, what the people remembered and the problems they filed. Its population, its personas and its target stay. If any of those executions left accounts on ${simulation.target.name}, the only record of them goes with this.`;
 
     /** What sending them in costs, in people rather than in dollars this view does not carry. */
     const sending = (
@@ -189,6 +216,30 @@ export const SimulationActions = forwardRef<HTMLDivElement, SimulationActionsPro
                 Run it again
               </Button>
             </ConfirmButton>
+          )}
+          {/*
+            Set off from the act the row is actually asking for: the primary button is where the
+            eye lands, and a destructive control flush against it is a misclick waiting to
+            happen. It is `quiet` because the question, not the colour, is what stops a mistake
+            (§1.2) — and it is absent entirely while an execution is running, because deleting
+            the rows a live process is writing is not a question worth asking.
+          */}
+          {simulation.status === "running" ? null : (
+            <span className="ml-2">
+              <AlertDialog
+                title={`Delete ${simulation.name}?`}
+                body={losing}
+                confirmLabel="Delete this simulation"
+                onConfirm={() => {
+                  remove.mutate();
+                }}
+                trigger={
+                  <Button variant="quiet" size="sm" disabled={busy} aria-describedby={remove.isError ? errorId : undefined}>
+                    Delete
+                  </Button>
+                }
+              />
+            </span>
           )}
         </Inline>
 

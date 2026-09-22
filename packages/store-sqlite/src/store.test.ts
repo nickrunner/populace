@@ -265,6 +265,68 @@ describe("SqliteStore", () => {
     await store.close();
   });
 
+  /**
+   * The one delete that cascades, and the reason it has to be tested at this level: the produced
+   * rows are keyed by RUN, not by project, so a project delete that only touched the tables with
+   * a `project_id` column would leave agents, wakes, traces and findings behind — invisible in
+   * every screen and counted by every `COUNT(*)`.
+   */
+  it("deletes a project with every row keyed to it, produced rows included", async () => {
+    const store = new SqliteStore(":memory:");
+    const runId = "run_a_aaaaaa";
+    await store.saveProject({ id: "default", slug: "default", name: "Tasklet", description: "", archived: false, createdAt: at, updatedAt: at });
+    await store.saveProject({ id: "other", slug: "other", name: "Somebody else's", description: "", archived: false, createdAt: at, updatedAt: at });
+    await store.saveRun({
+      id: runId,
+      projectId: "default",
+      simulationId: "sim_1",
+      seq: 1,
+      populationId: "pop_1",
+      targetId: "tgt_1",
+      label: "",
+      status: "completed",
+      mode: "ephemeral",
+      parentRunId: null,
+      continuation: null,
+      configSnapshotId: "",
+      resumes: 0,
+      lastResumedAt: null,
+      pauseReason: null,
+      sweptAt: null,
+      startedAt: at,
+      endedAt: at,
+      totals: { agents: 1, activeAgents: 0, wakes: 0, findings: 0, confirmed: 0, costUsd: 0 },
+    });
+    await store.upsertAgent(agent("pop/p#1", at));
+    await store.saveMemory({ ...emptyMemory(runId, "pop/p#1", now), notes: [{ wake: 1, text: "hi" }] });
+    await store.savePersona(storedPersona("psn_1", "first-timers"));
+    await store.saveCohort(cohort("coh_1", "first-timers", "psn_1", "First-timers"));
+    await store.savePerson(person("coh_1", "first-timers", 0, "Ingrid Bergstrom"));
+    await store.savePopulation(population("pop_1", "everyone", ["coh_1"]));
+
+    await store.deleteProject("default");
+
+    expect(await store.getProject("default")).toBeUndefined();
+    expect(await store.getRun(runId)).toBeUndefined();
+    expect(await store.listAgents({ runId })).toHaveLength(0);
+    expect(await store.getMemory(runId, "pop/p#1")).toBeUndefined();
+    expect(await store.listPersonas("default")).toHaveLength(0);
+    expect(await store.listCohorts("default")).toHaveLength(0);
+    expect(await store.listPeople({ projectId: "default", includeArchived: true })).toHaveLength(0);
+    expect(await store.listPopulations("default")).toHaveLength(0);
+
+    // The neighbour is untouched, which is the difference between a cascade and a `DROP TABLE`.
+    expect(await store.getProject("other")).toBeDefined();
+    await store.close();
+  });
+
+  /** Deleting a project that is not there is a no-op, not a throw: `DELETE` is idempotent. */
+  it("says nothing about a project that is already gone", async () => {
+    const store = new SqliteStore(":memory:");
+    await expect(store.deleteProject("never-existed")).resolves.toBeUndefined();
+    await store.close();
+  });
+
   it("archives a deleted cohort's people rather than deleting them", async () => {
     const store = new SqliteStore(":memory:");
     await store.saveCohort(cohort("coh_1", "first-timers", "psn_1", "First-timers"));

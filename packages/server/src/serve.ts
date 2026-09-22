@@ -97,8 +97,16 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
 
   if (!options.readOnly) {
     lock = await takeLock(options.store, options.force === undefined ? {} : { force: options.force });
-    await ensureProject(options.store, projectId);
-    await ensureSettings(options.store, projectId);
+    // A project is created when there is a REASON for one, not on every boot. This used to run
+    // unconditionally, so every `serve` against a store that had none minted a project literally
+    // called "Default" — and since nothing in the product could delete a project, those piled up
+    // as the first thing a new user saw. The two reasons are a `populace.yaml` to import into and
+    // an explicit `--project`; with neither, the dashboard opens on its empty state and the user
+    // makes the first project themselves, with a name that means something.
+    if (options.seedConfig || options.projectId !== undefined) {
+      await ensureProject(options.store, projectId, options.seedConfig ? { name: options.seedConfig.target.name } : {});
+      await ensureSettings(options.store, projectId);
+    }
     if (options.seedConfig) {
       const seeded = await seedProjectFromConfig(options.store, options.seedConfig, projectId, options.seedSimulations ? { simulations: options.seedSimulations } : {});
       log(`populace serve: ${seeded.seeded ? `imported populace.yaml — ${seeded.reason}` : `using the config in the database (${seeded.reason})`}`);

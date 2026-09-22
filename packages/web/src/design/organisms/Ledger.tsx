@@ -287,6 +287,19 @@ export interface LedgerRowProps {
   stubKind?: LedgerStubKind;
   to?: string;
   onClick?: () => void;
+  /**
+   * A control that belongs to the row but is NOT the row's own act — the one place a delete,
+   * a menu or a toggle can live on a row whose whole surface is already a link.
+   *
+   * It renders OUTSIDE the `RouterLink` (or the `<button>`), which is the entire reason it
+   * exists: a `<button>` nested in an `<a>` is invalid HTML, React hydrates it anyway, and the
+   * result is a control that navigates instead of doing what it says. Four screens wanted to put
+   * "Delete" on a linked row and there was nowhere to put it.
+   *
+   * Keep it to one small control. The stub is the locator, the content is the row, and this is
+   * the act; anything more and the row has become a toolbar.
+   */
+  aside?: ReactNode;
   selected?: boolean;
   /** A 2px `critical` edge on the CONTENT column, and the word `suspect` (§4.2). */
   suspect?: boolean;
@@ -300,6 +313,7 @@ export const LedgerRow = forwardRef<HTMLElement, LedgerRowProps>(function Ledger
     stubKind,
     to,
     onClick,
+    aside,
     selected = false,
     suspect = false,
     density = "default",
@@ -357,12 +371,31 @@ export const LedgerRow = forwardRef<HTMLElement, LedgerRowProps>(function Ledger
   /** Selection is a place, not a decoration, so it is announced as well as drawn. */
   const current = selected ? true : undefined;
 
+  /**
+   * The aside is a sibling of the interactive surface, never a child of it. The link keeps
+   * `min-w-0 flex-1` so the content column still truncates against the aside rather than pushing
+   * it off the row, and the aside keeps `shrink-0` so it survives a long name.
+   */
+  const withAside = (interior: ReactNode): ReactNode =>
+    aside === undefined ? (
+      interior
+    ) : (
+      <div className="flex items-start gap-2">
+        {interior}
+        <div className="shrink-0 self-center">{aside}</div>
+      </div>
+    );
+
+  const surface = cn(rowClasses, aside === undefined ? undefined : "min-w-0 flex-1");
+
   if (to !== undefined) {
     return (
       <Item ref={setRef}>
-        <RouterLink to={to} className={rowClasses} aria-current={current} onClick={onClick}>
-          {body}
-        </RouterLink>
+        {withAside(
+          <RouterLink to={to} className={surface} aria-current={current} onClick={onClick}>
+            {body}
+          </RouterLink>,
+        )}
       </Item>
     );
   }
@@ -370,9 +403,23 @@ export const LedgerRow = forwardRef<HTMLElement, LedgerRowProps>(function Ledger
   if (onClick !== undefined) {
     return (
       <Item ref={setRef}>
-        <button type="button" className={rowClasses} aria-current={current} onClick={onClick}>
-          {body}
-        </button>
+        {withAside(
+          <button type="button" className={surface} aria-current={current} onClick={onClick}>
+            {body}
+          </button>,
+        )}
+      </Item>
+    );
+  }
+
+  if (aside !== undefined) {
+    return (
+      <Item ref={setRef}>
+        {withAside(
+          <div className={surface} aria-current={current}>
+            {body}
+          </div>,
+        )}
       </Item>
     );
   }

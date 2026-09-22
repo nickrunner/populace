@@ -9,6 +9,7 @@ import {
   PersonViewSchema,
   PreflightViewSchema,
   ProjectOverviewViewSchema,
+  ProjectSummaryViewSchema,
   PersonaViewSchema,
   PopulationViewSchema,
   RunEstimateSchema,
@@ -2160,6 +2161,222 @@ describe("the project library and the pre-flight", () => {
     const rows = pageOf(TriageViewSchema).parse(await json(await h.app.request(routes.triage(P))));
     expect(rows.items[0]?.titleAtTriage).toBe(finding.title);
     expect(rows.items[0]?.drifted).toBe(false);
+    await h.close();
+  });
+});
+
+/**
+ * Deletion, and the thing it is actually for: a store you can get things OUT of. Every authored
+ * row in the product could be created and none of the ones a user sees on a dashboard could be
+ * removed, so a project made by mistake was permanent and the list only ever grew.
+ */
+describe("taking things out again", () => {
+  const del = async (h: Harness, path: string): Promise<Response> => h.app.request(path, { method: "DELETE" });
+
+  /** One real execution of the project's simulation, so there are produced rows to cascade over. */
+  const oneExecution = async (h: Harness): Promise<string> => {
+    const started = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(started.runId);
+    return started.runId;
+  };
+
+  it("deletes a project and every row underneath it, produced rows included", async () => {
+    const h = await harness({ policy: complains });
+    const runId = await oneExecution(h);
+
+    // Everything the cascade has to reach, asserted as present first: a test that deletes an
+    // empty project and finds nothing left proves nothing at all.
+    expect(await h.store.listTargets(P)).not.toHaveLength(0);
+    expect(await h.store.listPersonas(P)).not.toHaveLength(0);
+    expect(await h.store.listCohorts(P)).not.toHaveLength(0);
+    expect(await h.store.listPeople({ projectId: P })).not.toHaveLength(0);
+    expect(await h.store.listPopulations(P)).not.toHaveLength(0);
+    expect(await h.store.listSimulations({ projectId: P })).not.toHaveLength(0);
+    expect(await h.store.listRuns({ projectId: P })).not.toHaveLength(0);
+    const wakes = await h.store.listWakes({ runIds: [runId] });
+    expect(wakes).not.toHaveLength(0);
+    expect(await h.store.listFindings({ runIds: [runId] })).not.toHaveLength(0);
+    expect(await h.store.listAgents({ runId })).not.toHaveLength(0);
+    expect(await h.store.getTrace(wakes[0]!.id)).not.toHaveLength(0);
+
+    expect((await del(h, routes.project(P))).status).toBe(204);
+
+    expect(await h.store.getProject(P)).toBeUndefined();
+    expect(await h.store.listTargets(P)).toHaveLength(0);
+    expect(await h.store.listPersonas(P)).toHaveLength(0);
+    expect(await h.store.listCohorts(P)).toHaveLength(0);
+    expect(await h.store.listPeople({ projectId: P })).toHaveLength(0);
+    expect(await h.store.listPopulations(P)).toHaveLength(0);
+    expect(await h.store.listSimulations({ projectId: P, includeArchived: true })).toHaveLength(0);
+    expect(await h.store.listRuns({ projectId: P })).toHaveLength(0);
+    expect(await h.store.getSettings(P)).toBeUndefined();
+
+    // The produced rows are keyed by run, not by project, so this is the half a `DELETE FROM
+    // projects` would have left behind: invisible in every screen and counted by every COUNT(*).
+    expect(await h.store.listWakes({ runIds: [runId] })).toHaveLength(0);
+    expect(await h.store.listFindings({ runIds: [runId] })).toHaveLength(0);
+    expect(await h.store.listAgents({ runId })).toHaveLength(0);
+    expect(await h.store.getTrace(wakes[0]!.id)).toHaveLength(0);
+
+    // And the list the dashboard reads no longer has it — the actual complaint.
+    expect(pageOf(ProjectSummaryViewSchema).parse(await json(await h.app.request(routes.projects))).items).toHaveLength(0);
+    await h.close();
+  });
+
+  it("leaves the other project alone", async () => {
+    const h = await harness();
+    const created = await json(await post(h.app, routes.projects, { name: "Keep me" }));
+    const keep = (created as { id: string; slug: string }).slug;
+    const theirs = StoredTargetViewSchema.parse(
+      await json(
+        await post(h.app, routes.targets(keep), {
+          name: "Their target",
+          mcp: [{ name: "default", url: target.mcpUrl }],
+          identity: { strategy: "self-signup" as const, signupTool: "sign_up", tokenPath: "token", emailDomain: "populace.test" },
+        }),
+      ),
+    );
+
+    expect((await del(h, routes.project(P))).status).toBe(204);
+
+    expect(await h.store.getProject(P)).toBeUndefined();
+    expect(pageOf(StoredTargetViewSchema).parse(await json(await h.app.request(routes.targets(keep)))).items.map((t) => t.id)).toEqual([theirs.id]);
+    await h.close();
+  });
+
+  it("refuses to delete a project while an execution in it is running, and says which", async () => {
+    const h = await harness();
+    const runId = await oneExecution(h);
+
+    // The controller's own `runningIds` is what the guard reads, and a scripted wake is over
+    // before the next line of the test — there is no instant to race for. Holding the id here is
+    // the same thing a live wake does, stated rather than raced for.
+    const held = [runId];
+    Object.defineProperty(h.runs, "runningIds", { get: () => held, configurable: true });
+
+    const refused = await del(h, routes.project(P));
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain("running");
+    expect(await h.store.getProject(P)).toBeDefined();
+    expect(await h.store.listTargets(P)).not.toHaveLength(0);
+
+    held.length = 0;
+    expect((await del(h, routes.project(P))).status).toBe(204);
+    expect(await h.store.getProject(P)).toBeUndefined();
+    await h.close();
+  });
+
+  it("refuses to delete a running execution on its own, too", async () => {
+    const h = await harness();
+    const runId = await oneExecution(h);
+    Object.defineProperty(h.runs, "runningIds", { get: () => [runId], configurable: true });
+
+    const refused = await del(h, routes.run(runId));
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain("running");
+    expect(await h.store.getRun(runId)).toBeDefined();
+    await h.close();
+  });
+
+  it("still archives when asked to, so a caller that wants the row kept can have it", async () => {
+    const h = await harness();
+    expect((await del(h, `${routes.project(P)}?archive=1`)).status).toBe(204);
+    const project = await h.store.getProject(P);
+    expect(project?.archived).toBe(true);
+    expect(await h.store.listTargets(P)).not.toHaveLength(0);
+    await h.close();
+  });
+
+  it("deletes one execution and everything in it, and leaves its siblings whole", async () => {
+    const h = await harness({ policy: complains });
+    const first = await oneExecution(h);
+    const second = await oneExecution(h);
+
+    const wakes = await h.store.listWakes({ runIds: [first] });
+    expect(wakes).not.toHaveLength(0);
+    expect((await del(h, routes.run(first))).status).toBe(204);
+
+    expect(await h.store.getRun(first)).toBeUndefined();
+    expect(await h.store.listWakes({ runIds: [first] })).toHaveLength(0);
+    expect(await h.store.listFindings({ runIds: [first] })).toHaveLength(0);
+    expect(await h.store.listAgents({ runId: first })).toHaveLength(0);
+    expect(await h.store.getTrace(wakes[0]!.id)).toHaveLength(0);
+
+    // The other execution was independent of it to begin with, and stays that way.
+    expect(await h.store.getRun(second)).toBeDefined();
+    expect(await h.store.listWakes({ runIds: [second] })).not.toHaveLength(0);
+    await h.close();
+  });
+
+  /**
+   * The one refusal on an execution that is about the outside world: those rows are the only
+   * record of which accounts this run made on somebody else's product.
+   */
+  it("refuses to delete an execution whose accounts are still on the target, until forced", async () => {
+    const h = await harness({ policy: complains });
+    const runId = await oneExecution(h);
+    // Written rather than signed up for: the scripted model in this file never calls `sign_up`,
+    // and what is under test is the refusal, not the capture that puts the row there.
+    const agent = (await h.store.listAgents({ runId }))[0]!;
+    await h.store.saveIdentity({
+      id: "idn_still_there",
+      runId,
+      tag: tagForRun(runId),
+      agentId: agent.id,
+      personaId: agent.persona.id,
+      strategy: "self-signup",
+      credential: { email: "someone@populace.test", bearerToken: "tk_live", expiresAt: null, redeemable: null, extra: {} },
+      createdAt: new Date().toISOString(),
+      tornDownAt: null,
+    });
+    expect(await h.store.listIdentitiesByTag(tagForRun(runId))).not.toHaveLength(0);
+
+    const refused = await del(h, routes.run(runId));
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain("sweep");
+    expect(await h.store.getRun(runId)).toBeDefined();
+
+    expect((await del(h, `${routes.run(runId)}?force=1`)).status).toBe(204);
+    expect(await h.store.getRun(runId)).toBeUndefined();
+    await h.close();
+  });
+
+  it("archives a simulation that has run, and deletes it with its executions when told to", async () => {
+    const h = await harness();
+    const simulationId = (await ensureSimulation(h.store)).id;
+    const runId = await oneExecution(h);
+
+    // The default: off the list, executions untouched.
+    expect((await del(h, routes.simulation(P, simulationId))).status).toBe(204);
+    expect(await h.store.getRun(runId)).toBeDefined();
+    expect((await h.store.getSimulation(simulationId))?.archived).toBe(true);
+
+    expect((await del(h, `${routes.simulation(P, simulationId)}?runs=delete`)).status).toBe(204);
+    expect(await h.store.getSimulation(simulationId)).toBeUndefined();
+    expect(await h.store.getRun(runId)).toBeUndefined();
+    await h.close();
+  });
+
+  /** A refusal that names what to take apart first, not a 500 (SPEC §2.14). */
+  it("refuses a target a simulation still points at, and names the simulation", async () => {
+    const h = await harness();
+    await ensureSimulation(h.store);
+    const targetId = (await h.store.listTargets(P))[0]!.id;
+
+    const refused = await del(h, routes.target_(P, targetId));
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain("simulation");
+    expect(await h.store.getTarget(targetId)).toBeDefined();
+    await h.close();
+  });
+
+  it("refuses a population a simulation still names, and names the simulation", async () => {
+    const h = await harness();
+    await ensureSimulation(h.store);
+    const refused = await del(h, await populationRoute(h));
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain("simulation");
     await h.close();
   });
 });

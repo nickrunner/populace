@@ -1,11 +1,12 @@
-import { Fragment } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { Fragment, useId } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import type { LiveEvent, SimulationResults } from "../api.js";
+import { api, type LiveEvent, type SimulationResults } from "../api.js";
 import { q } from "../queries.js";
 import { useProject, useSimulation } from "../context.jsx";
 import { lasted, payloadNumber, payloadText, plural } from "../format.js";
 import {
+  AlertDialog,
   Button,
   Card,
   ExecutionPicker,
@@ -23,6 +24,7 @@ import {
   Skeleton,
   Stack,
   StateBlock,
+  WhatWentWrong,
   type Crumb,
   type FeedEvent,
   type MetaFact,
@@ -99,9 +101,47 @@ function beside(history: readonly Execution[], index: number, href: (path?: stri
 /** The band on the results screen: the last few executions, and the way to compare two. */
 export function ExecutionHistory({ results, limit }: { results: SimulationResults; limit?: number }) {
   const { href, runId } = useSimulation();
+  const queries = useQueryClient();
   const mode = results.simulation.mode;
   const newestFirst = [...results.history].sort((a, b) => b.seq - a.seq);
   const shown = limit === undefined ? newestFirst : newestFirst.slice(0, limit);
+
+  /**
+   * Deleting one execution. Unforced on the first press: the server refuses when the run made
+   * accounts that are still on the target, because these rows are the only record of which
+   * accounts those are. That refusal is not an error to apologise for — it is the one useful
+   * thing the product can say — so it is shown with the way past it beside it.
+   */
+  const remove = useMutation({
+    mutationFn: ({ id, force }: { id: string; force: boolean }) => api.removeRun(id, force),
+    onSuccess: () => queries.invalidateQueries(),
+  });
+  const removeErrorId = useId();
+
+  const dropping = (execution: (typeof newestFirst)[number]): string =>
+    `Execution ${String(execution.seq)} goes, and so does everything in it: ${plural(execution.visits, "visit")}, ${plural(execution.findings, "finding")} and what the people in it remembered. The other executions of this simulation are untouched — they were independent of this one to begin with.`;
+
+  const deleteControl = (execution: (typeof newestFirst)[number]) =>
+    execution.status === "running" ? null : (
+      <AlertDialog
+        title={`Delete execution ${String(execution.seq)}?`}
+        body={dropping(execution)}
+        confirmLabel="Delete this execution"
+        onConfirm={() => {
+          remove.mutate({ id: execution.runId, force: false });
+        }}
+        trigger={
+          <Button
+            variant="quiet"
+            size="sm"
+            disabled={remove.isPending}
+            aria-describedby={remove.isError && remove.variables?.id === execution.runId ? removeErrorId : undefined}
+          >
+            Delete
+          </Button>
+        }
+      />
+    );
 
   if (results.history.length === 0)
     return (
@@ -128,10 +168,36 @@ export function ExecutionHistory({ results, limit }: { results: SimulationResult
               execution={entry}
               current={entry.runId === runId}
               {...(to === undefined ? {} : { to })}
+              aside={deleteControl(entry)}
             />
           );
         })}
       </Ledger>
+
+      {/*
+        The refusal that matters here says the run left accounts on the target, and the answer to
+        it is a sweep — not a warning the reader has to work around. `Delete it anyway` is the
+        second press, and it says what it costs rather than pretending the refusal was noise.
+      */}
+      {remove.isError ? (
+        <WhatWentWrong
+          id={removeErrorId}
+          says="That execution was not deleted. Its visits, findings and people are all still here."
+          error={remove.error}
+        >
+          <Button
+            variant="danger"
+            size="sm"
+            pending={remove.isPending}
+            onClick={() => {
+              const id = remove.variables?.id;
+              if (id !== undefined) remove.mutate({ id, force: true });
+            }}
+          >
+            Delete it anyway, and lose the record of the accounts
+          </Button>
+        </WhatWentWrong>
+      ) : null}
 
       {/*
         The sentence is verbatim and stays verbatim (§7.3). The link after it is not a softening

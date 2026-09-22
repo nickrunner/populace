@@ -158,6 +158,7 @@ export class RecordingStore implements Store {
   saveProject: Store["saveProject"] = (...args) => this.inner.saveProject(...args);
   getProject: Store["getProject"] = (...args) => this.inner.getProject(...args);
   listProjects: Store["listProjects"] = (...args) => this.inner.listProjects(...args);
+  deleteProject: Store["deleteProject"] = (...args) => this.inner.deleteProject(...args);
   saveTarget: Store["saveTarget"] = (...args) => this.inner.saveTarget(...args);
   getTarget: Store["getTarget"] = (...args) => this.inner.getTarget(...args);
   listTargets: Store["listTargets"] = (...args) => this.inner.listTargets(...args);

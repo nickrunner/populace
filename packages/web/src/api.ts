@@ -147,6 +147,12 @@ export const api = {
   createProject: (body: ProjectInput) => send("POST", routes.projects, body, ProjectViewSchema),
   project: (p: string) => get(routes.project(p), ProjectOverviewViewSchema),
   saveProject: (p: string, body: ProjectInput) => send("PUT", routes.project(p), body, ProjectViewSchema),
+  /**
+   * Gone, and everything in it with it: the target, the personas, the cohorts and their people,
+   * the populations, the simulations, the settings, the triage and every execution with its
+   * visits, traces and findings. The server refuses while an execution in it is running.
+   */
+  removeProject: (p: string) => send("DELETE", routes.project(p), undefined, nothing),
   setup: (p: string) => get(routes.projectSetup(p), SetupStatusSchema),
 
   // ---- the library ---------------------------------------------------------
@@ -191,6 +197,8 @@ export const api = {
   populations: (p: string) => get(routes.populations(p), populations),
   createPopulation: (p: string, body: { name: string }) => send("POST", routes.populations(p), body, PopulationViewSchema),
   savePopulation: (p: string, pop: string, body: PopulationInput) => send("PUT", routes.population_(p, pop), body, PopulationViewSchema),
+  /** Refused, by name, while a simulation still names it. */
+  removePopulation: (p: string, pop: string) => send("DELETE", routes.population_(p, pop), undefined, nothing),
 
   settings: (p: string) => get(routes.settings(p), SettingsViewSchema),
   saveSettings: (p: string, body: SettingsInput) => send("PUT", routes.settings(p), body, SettingsViewSchema),
@@ -204,7 +212,12 @@ export const api = {
   simulation: (p: string, s: string) => get(routes.simulation(p, s), SimulationSummaryViewSchema),
   createSimulation: (p: string, body: SimulationInput) => send("POST", routes.simulations(p), body, SimulationSummaryViewSchema),
   saveSimulation: (p: string, s: string, body: SimulationInput) => send("PUT", routes.simulation(p, s), body, SimulationSummaryViewSchema),
-  removeSimulation: (p: string, s: string) => send("DELETE", routes.simulation(p, s), undefined, nothing),
+  /**
+   * Off the list. A simulation that has run is archived and its executions stay exactly where
+   * they are; `withRuns` is the user having been shown how many that is and said to take them.
+   */
+  removeSimulation: (p: string, s: string, withRuns = false) =>
+    send("DELETE", `${routes.simulation(p, s)}${withRuns ? "?runs=delete" : ""}`, undefined, nothing),
   /** Arithmetic over history. It spends nothing and never starts a run. */
   estimate: (p: string, s: string) => send("POST", routes.simulationEstimate(p, s), {}, RunEstimateSchema),
   preflight: (p: string, s: string) => get(routes.simulationPreflight(p, s), PreflightViewSchema),
@@ -240,6 +253,12 @@ export const api = {
   oneMoreRound: (id: string) => send("POST", routes.runRound(id), {}, z.object({ runId: z.string(), participants: z.number() })),
   sweepRun: (id: string, body: { dryRun?: boolean; keepData?: boolean }) => send("POST", routes.runSweep(id), body, JobViewSchema),
   buildDigest: (id: string) => send("POST", routes.runDigestJob(id), {}, JobViewSchema),
+  /**
+   * One execution and everything it produced. Refused while it is running, and refused when it
+   * made accounts that are still on the target — those rows are the only record of them, so the
+   * server says to sweep first. `force` is the reader accepting the strand.
+   */
+  removeRun: (id: string, force = false) => send("DELETE", `${routes.run(id)}${force ? "?force=1" : ""}`, undefined, nothing),
   setKillSwitch: (engaged: boolean, reason?: string) =>
     send("POST", routes.killSwitch, { engaged, ...(reason === undefined ? {} : { reason }) }, z.object({ engaged: z.boolean(), reason: z.string().nullable(), at: z.string().nullable() })),
   job: (id: string) => get(routes.job(id), JobViewSchema),

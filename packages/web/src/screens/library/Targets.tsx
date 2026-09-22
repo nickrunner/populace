@@ -1,8 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
+import { useId } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { api } from "../../api.js";
 import { q } from "../../queries.js";
 import { useProject } from "../../context.jsx";
 import {
+  AlertDialog,
   Button,
   Chip,
   DocumentPage,
@@ -19,6 +22,7 @@ import {
   Stack,
   StateBlock,
   Text,
+  WhatWentWrong,
   type StateKind,
 } from "../../design/index.js";
 
@@ -35,7 +39,16 @@ import {
  */
 export function Targets() {
   const { key, project, href } = useProject();
+  const queries = useQueryClient();
   const targets = useQuery(q.targets(key));
+
+  // The project overview counts targets and names the one each simulation points at, so a
+  // removal that only invalidated the targets list would leave both stale on this very screen.
+  const remove = useMutation({
+    mutationFn: (id: string) => api.removeTarget(key, id),
+    onSuccess: () => queries.invalidateQueries(),
+  });
+  const removeErrorId = useId();
 
   const items = targets.data?.items ?? [];
   const usedBy = (id: string): string[] => project.simulations.filter((s) => s.target.id === id).map((s) => s.name);
@@ -116,6 +129,35 @@ export function Targets() {
                   </Mono>
                 }
                 to={href(`library/target/${encodeURIComponent(target.id)}`)}
+                aside={
+                  // A target a simulation still names cannot go, and the server's refusal names
+                  // the simulation. The control is at a bound rather than gone (§6): it keeps its
+                  // tab stop and says why in the dialog it would have opened.
+                  used.length > 0 ? (
+                    <Button variant="quiet" size="sm" atBound>
+                      Remove
+                    </Button>
+                  ) : (
+                    <AlertDialog
+                      title={`Remove ${target.name}?`}
+                      body={`No simulation points at ${target.name}, so nothing else in this project moves. Executions that have already run keep their visits and their findings — those name the target they went to, and that record does not change.`}
+                      confirmLabel="Remove this target"
+                      onConfirm={() => {
+                        remove.mutate(target.id);
+                      }}
+                      trigger={
+                        <Button
+                          variant="quiet"
+                          size="sm"
+                          disabled={remove.isPending}
+                          aria-describedby={remove.isError && remove.variables === target.id ? removeErrorId : undefined}
+                        >
+                          Remove
+                        </Button>
+                      }
+                    />
+                  )
+                }
               >
                 <Stack gap={1}>
                   <Inline gap={3} align="baseline" wrap>
@@ -152,6 +194,14 @@ export function Targets() {
             );
           })}
         </Ledger>
+
+        {remove.isError ? (
+          <WhatWentWrong
+            id={removeErrorId}
+            says="That target was not removed. It is still connected, and nothing about it has changed."
+            error={remove.error}
+          />
+        ) : null}
       </Section>
     </DocumentPage>
   );

@@ -633,7 +633,20 @@ export class SqliteStore implements Store {
     return Promise.resolve(rows(this.db.prepare(sql).all(...params)).map((r) => parseRow(RunSchema, r)));
   }
 
+  /**
+   * The run and everything produced under it. `trace_events` is keyed by wake and `memories` by
+   * `(run_id, agent_id)`, so both have to go before their parents do or they are keyed to nothing:
+   * that is exactly what the old two-statement version left behind, rows invisible to every screen
+   * and counted by every `COUNT(*)`.
+   */
   deleteRun(id: string): Promise<void> {
+    this.db.prepare("DELETE FROM trace_events WHERE wake_id IN (SELECT id FROM wakes WHERE run_id = ?)").run(id);
+    this.db.prepare("DELETE FROM wakes WHERE run_id = ?").run(id);
+    this.db.prepare("DELETE FROM findings WHERE run_id = ?").run(id);
+    this.db.prepare("DELETE FROM memories WHERE run_id = ?").run(id);
+    this.db.prepare("DELETE FROM agents WHERE run_id = ?").run(id);
+    this.db.prepare("DELETE FROM identities WHERE run_id = ?").run(id);
+    this.db.prepare("DELETE FROM jobs WHERE run_id = ?").run(id);
     this.db.prepare("DELETE FROM runs WHERE id = ?").run(id);
     this.db.prepare("DELETE FROM events WHERE run_id = ?").run(id);
     return Promise.resolve();
@@ -701,6 +714,51 @@ export class SqliteStore implements Store {
 
   listProjects(): Promise<Project[]> {
     return Promise.resolve(rows(this.db.prepare("SELECT json FROM projects ORDER BY id").all()).map((r) => parseRow(ProjectSchema, r)));
+  }
+
+  /**
+   * The project and everything under it, in one transaction. Every other delete in this file
+   * refuses when something still points at the row; this one is the exception the interface
+   * documents, because a project IS the scope those references live in.
+   *
+   * Order is by dependency, not by table name: the produced rows are keyed by run and the runs by
+   * project, so the runs go first and through `deleteRun`, which is the single place that knows
+   * what an execution produces. `cohort_id` and `wake_id` have no project column of their own, so
+   * people and trace events are reached through the rows that do.
+   *
+   * All of it, or none of it. A half-deleted project — its target gone and its simulations still
+   * naming it — is worse than the pile-up this fixes, and `busy_timeout` plus WAL means the
+   * transaction is the only thing that makes that impossible rather than merely unlikely.
+   */
+  async deleteProject(id: string): Promise<void> {
+    const existing = await this.getProject(id);
+    if (!existing) return;
+    const runIds = (await this.listRuns({ projectId: id })).map((run) => run.id);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const runId of runIds) await this.deleteRun(runId);
+      // Trace events are keyed by wake alone, so a wake left by a run row that never existed —
+      // an M1 database, where runs became rows only at M2 — is reached through its population.
+      this.db
+        .prepare("DELETE FROM trace_events WHERE wake_id IN (SELECT id FROM wakes WHERE population_id IN (SELECT id FROM populations WHERE project_id = ?))")
+        .run(id);
+      this.db.prepare("DELETE FROM wakes WHERE population_id IN (SELECT id FROM populations WHERE project_id = ?)").run(id);
+      this.db.prepare("DELETE FROM people WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM simulations WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM populations WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM cohorts WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM personas WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM targets WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM triage WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM settings WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM jobs WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM events WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   saveTarget(target: StoredTarget): Promise<void> {
@@ -881,16 +939,19 @@ export class SqliteStore implements Store {
   }
 
   /**
-   * A simulation that has ever run is the user's history: it is archived, not deleted, and its
-   * runs are left exactly where they are.
+   * A simulation that has ever run is the user's history: by default it is archived, not deleted,
+   * and its runs are left exactly where they are. `withRuns` is the caller passing on a user who
+   * was shown how many executions that is and said to delete them anyway.
    */
-  async deleteSimulation(id: string): Promise<void> {
+  async deleteSimulation(id: string, options: { withRuns?: boolean } = {}): Promise<void> {
     const existing = await this.getSimulation(id);
     if (!existing) return;
-    if (countOf(this.db, "SELECT COUNT(*) AS n FROM runs WHERE simulation_id = ?", id) > 0) {
+    const runs = await this.listRuns({ simulationId: id });
+    if (runs.length > 0 && options.withRuns !== true) {
       await this.saveSimulation({ ...existing, archived: true, updatedAt: new Date().toISOString() });
       return;
     }
+    for (const run of runs) await this.deleteRun(run.id);
     this.db.prepare("DELETE FROM simulations WHERE id = ?").run(id);
   }
 

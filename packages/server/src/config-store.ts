@@ -91,14 +91,23 @@ export function simulationPlanOf(config: PopulaceConfig): SimulationPlan {
   };
 }
 
-export async function ensureProject(store: Store, projectId = DEFAULT_PROJECT_ID): Promise<Project> {
+/**
+ * The project a config is imported into, created if it is not there yet.
+ *
+ * `name` is what the caller knows and this function does not: `serve` passes the target's name,
+ * so importing a `populace.yaml` for Tasklet lands in a project called "Tasklet". Without it the
+ * fallback used to be the literal word "Default", which told a reader nothing about what was in
+ * the project and was the first row on their dashboard.
+ */
+export async function ensureProject(store: Store, projectId = DEFAULT_PROJECT_ID, options: { name?: string } = {}): Promise<Project> {
   const existing = await store.getProject(projectId);
   if (existing) return existing;
   const at = now();
+  const fallback = projectId === DEFAULT_PROJECT_ID ? "Your first project" : projectId;
   const project: Project = {
     id: projectId,
     slug: projectId === DEFAULT_PROJECT_ID ? DEFAULT_PROJECT_ID : projectId,
-    name: projectId === DEFAULT_PROJECT_ID ? "Default" : projectId,
+    name: options.name?.trim() || fallback,
     description: "",
     archived: false,
     createdAt: at,

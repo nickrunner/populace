@@ -1,4 +1,4 @@
-import { forwardRef } from "react";
+import { forwardRef, type ReactNode } from "react";
 import type { ExecutionHistoryEntry, RunStatus } from "@populace/contract";
 
 import { plural } from "../../format.js";
@@ -55,10 +55,16 @@ export interface ExecutionRowProps {
    * somewhere a reader did not ask to go.
    */
   to?: string;
+  /**
+   * A control that acts on this execution rather than opening it — in practice, deleting it.
+   * It goes to `LedgerRow`'s `aside`, which renders outside the row's link, because a button
+   * inside an anchor is a control that navigates instead of doing what it says.
+   */
+  aside?: ReactNode;
 }
 
 export const ExecutionRow = forwardRef<HTMLElement, ExecutionRowProps>(
-  function ExecutionRow({ execution, current, to }, ref) {
+  function ExecutionRow({ execution, current, to, aside }, ref) {
     const facts: readonly MetaFact[] = [
       { key: "visits", node: plural(execution.visits, "visit") },
       { key: "findings", node: plural(execution.findings, "finding") },
@@ -70,6 +76,7 @@ export const ExecutionRow = forwardRef<HTMLElement, ExecutionRowProps>(
       <LedgerRow
         ref={ref}
         {...(to === undefined ? {} : { to })}
+        {...(aside === undefined ? {} : { aside })}
         selected={current}
         density="tight"
         /**
