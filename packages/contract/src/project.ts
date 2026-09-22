@@ -4,6 +4,7 @@ import {
   ContinuedFromSchema,
   FindingKindSchema,
   FindingSchema,
+  FirstContactOutcomeSchema,
   MemorySchema,
   PersonaSchema,
   RetiredReasonSchema,
@@ -180,6 +181,35 @@ export type TriageInput = z.infer<typeof TriageInputSchema>;
  */
 export const ProjectOverviewViewSchema = ProjectSummaryViewSchema.extend({
   simulations: z.array(SimulationSummaryViewSchema),
+  /**
+   * The two libraries, as rows rather than counts.
+   *
+   * The dashboard drew both from separate list requests, which is one round trip each for data
+   * the overview was already most of the way to holding — and the pairings grid needs both axes
+   * in one payload or it renders in two frames with the cells jumping. `reachable` is deliberately
+   * absent: asking whether an endpoint answers opens a connection to somebody else's server, and
+   * that is a POST somebody presses, never a field an index fills in.
+   */
+  targets: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      endpoint: z.string().nullable(),
+      /** The stored first-contact outcome, or null when nobody has run one. */
+      contacted: FirstContactOutcomeSchema.nullable(),
+      /** How many simulations point at it. Nought is a loose end; two or more is a hazard. */
+      simulations: z.number().int().nonnegative(),
+    }),
+  ),
+  populations: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      cohorts: z.number().int().nonnegative(),
+      people: z.number().int().nonnegative(),
+      simulations: z.number().int().nonnegative(),
+    }),
+  ),
   /** "Seen in more than one simulation" — the same signature, wherever it has shown up. */
   crossSimulation: z.array(
     z.object({

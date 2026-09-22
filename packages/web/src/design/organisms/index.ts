@@ -250,6 +250,10 @@ export { ConnectionStatusBar } from "./ConnectionStatusBar.js";
 export type { ConnectionStatusBarProps } from "./ConnectionStatusBar.js";
 
 export { FirstContactPanel, OUTCOME_WORDS, OUTCOME_TONES } from "./FirstContactPanel.js";
+// The pairings grid — targets down, populations across. Named for what a cell IS, because
+// "coverage" already means tool coverage one click down (`Gaps`).
+export { PairingsGrid } from "./PairingsGrid.js";
+export type { PairingsGridProps, PairingAxis } from "./PairingsGrid.js";
 export type { FirstContactPanelProps } from "./FirstContactPanel.js";
 
 export { SamplePreview } from "./SamplePreview.js";

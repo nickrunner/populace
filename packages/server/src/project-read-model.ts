@@ -133,13 +133,16 @@ export class ProjectReadModel {
    * in more than one of them — and NOT ONE PERSON'S NAME (SPEC §7.1).
    */
   async overview(project: Project): Promise<ProjectOverviewView> {
-    const [base, simulations, runs, triage, settings, killSwitch] = await Promise.all([
+    const [base, simulations, runs, triage, settings, killSwitch, targets, populations, cohorts] = await Promise.all([
       this.summary(project),
       this.store.listSimulations({ projectId: project.id }),
       this.store.listRuns({ projectId: project.id }),
       this.store.listTriage(project.id),
       this.store.getSettings(project.id),
       this.store.getKillSwitch(),
+      this.store.listTargets(project.id),
+      this.store.listPopulations(project.id),
+      this.store.listCohorts(project.id),
     ]);
     const findings = runs.length === 0 ? [] : await this.store.listFindings({ runIds: runs.map((r) => r.id) });
     // The same question the people writer's ceiling asks, asked the same way. Two numerators under
@@ -186,6 +189,31 @@ export class ProjectReadModel {
       spentTodayUsd: round(spentToday),
       dailyCeilingUsd: settings?.guardrails.dailyUsd ?? 0,
       killSwitch,
+      /*
+        The two libraries as rows. Both are derived from lists this method now holds, and the
+        per-row simulation counts come off the `simulations` array it already has — so the whole
+        thing is two extra list calls in an existing `Promise.all` and no per-row query.
+
+        `contacted` is the STORED outcome. Nothing here dials a target: asking whether an endpoint
+        answers opens a connection to somebody else's server, and that is a POST somebody presses.
+      */
+      targets: targets.map((target) => ({
+        id: target.id,
+        name: target.name,
+        endpoint: target.mcp[0]?.url ?? null,
+        contacted: target.firstContact?.outcome ?? null,
+        simulations: simulations.filter((simulation) => simulation.targetId === target.id).length,
+      })),
+      populations: populations.map((population) => {
+        const held = new Set(population.cohortIds);
+        return {
+          id: population.id,
+          name: population.name,
+          cohorts: population.cohortIds.length,
+          people: cohorts.filter((cohort) => held.has(cohort.id)).reduce((sum, cohort) => sum + cohort.size, 0),
+          simulations: simulations.filter((simulation) => simulation.populationId === population.id).length,
+        };
+      }),
     };
   }
 

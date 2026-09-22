@@ -22,6 +22,7 @@ import {
   OUTCOME_TONES,
   OUTCOME_WORDS,
   PageHeader,
+  PairingsGrid,
   RelativeTime,
   Ring,
   Section,
@@ -204,6 +205,32 @@ export function ProjectHome() {
         <TargetsBand />
 
         <WhoCanGoBand />
+
+        {/*
+          The grid appears only once there is something to cross: with one target and one
+          population it is a single cell restating the row below it. Two of either and the
+          question changes from "what have I run" to "what have I not run", which a flat ledger
+          cannot answer.
+        */}
+        {project.targets.length > 1 || project.populations.length > 1 ? (
+          <Section
+            title="Pairings"
+            trailing={`${plural(project.targets.length, "target")} × ${plural(project.populations.length, "population")}`}
+          >
+            <PairingsGrid
+              targets={project.targets}
+              populations={project.populations}
+              simulations={project.simulations.map((s) => ({
+                id: s.id,
+                slug: s.slug,
+                targetId: s.target.id,
+                populationId: s.population.id,
+              }))}
+              newSimulationHref={href("s/new")}
+              simulationHref={(slug) => href(`s/${encodeURIComponent(slug)}`)}
+            />
+          </Section>
+        ) : null}
 
         {/*
           The panel, on a project that has not begun. Below the bands deliberately: the reader's
