@@ -1,4 +1,7 @@
+import { useQuery } from "@tanstack/react-query";
+
 import type { ProjectOverview, SimulationSummary } from "../api.js";
+import { q } from "../queries.js";
 import { useProject } from "../context.jsx";
 import { people, plural } from "../format.js";
 import { GetStarted } from "./GetStarted.jsx";
@@ -15,6 +18,7 @@ import {
   Measure,
   MetaLine,
   Money,
+  Mono,
   PageHeader,
   RelativeTime,
   Ring,
@@ -51,17 +55,72 @@ import {
  * `SimulationActions` that drew its primary button as `bg-accent text-white border-accent`,
  * which is white on lime at 1.22:1: "Send them in" was illegible on the project's most
  * important screen. The organism, whose every variant is written against a token, is the fix.
+ *
+ * ---
+ *
+ * **AMENDED — this screen is the project's dashboard, and a form no longer stands in front of
+ * it.**
+ *
+ * It used to be two screens behind one address — `zero ? <GetStarted /> : <the dashboard>`, with
+ *
+ * ```ts
+ * zero = !configured || (!everRan && project.simulations.length <= 1)
+ * ```
+ *
+ * — so a new project opened on the three-step wizard *instead of* on itself, and kept opening on
+ * it after setup was finished, because `everRan` was still false and there was exactly one
+ * simulation. The project's own address was a form right up until an execution completed, which
+ * is the one stretch in which a reader most needs telling where they are and what is in front of
+ * them. `GetStarted`'s own docstring already promised the opposite — *"a panel on project home
+ * rather than a mode the product puts you in"* — and it was a mode. Now it is a panel.
+ *
+ * **What the page always shows now, in whatever state the project is in:**
+ *
+ *  1. The setup panel, while nothing has ever run. `GetStarted` is unchanged: it already
+ *     collapses a finished step to a line carrying its own answer, so as the project fills in it
+ *     becomes a band of ticks with the one remaining step open — which is what it should have
+ *     looked like all along.
+ *  2. **The lay of the land** — the target, the people, the spend — as one ruled strip with the
+ *     way into each underneath it. All three of those lived *only* in the rail: the target and
+ *     the meter at its foot, the headcount as an 11px number beside a nav row. The page itself
+ *     never said what the project was pointed at, who was in it, or what it was costing. A strip
+ *     and not a row of cards, because §1.4's ground is ruled, not empty.
+ *  3. The simulations, as a ledger, with their controls. Unchanged.
+ *  4. What has shown up in more than one simulation, once there are two. Unchanged.
+ *
+ * **The headline sentence waits for the panel to go.** While `GetStarted` is up it is already
+ * saying what is left, and the product does not say a thing twice (§7.4).
  */
 
-/** What this project is, in one sentence assembled from what is actually in it. */
+/**
+ * What this project is, in one sentence assembled from what is actually in it.
+ *
+ * **AMENDED to cover the states the panel used to stand in front of.** This sentence only ever
+ * ran on a project that had already been set up, because the takeover meant a half-built project
+ * never reached it — so the whole of "nothing is connected yet" collapsed into one line,
+ * `Nothing has been set up in X yet.`, which was also printed at a project that had a target and
+ * three people and simply had not been sent anywhere. The order below is the order a project
+ * actually fills up in, and each rung says the true thing about that rung.
+ *
+ * Running comes first because it is the only one of these that is happening rather than pending.
+ * Nothing here promises what an execution will find (§7.3).
+ */
 function headline(project: ProjectOverview): string {
   const running = project.runningRunIds.length;
+  if (running > 0)
+    return `${running === 1 ? "One simulation is" : `${running} simulations are`} running right now.`;
+  if (project.counts.targets === 0) return `${project.name} is not pointed at anything yet.`;
+  if (project.counts.people === 0) return `Nobody has been picked to visit ${project.name} yet.`;
+
   const sims = project.simulations.length;
-  const open = project.crossSimulation.length;
-  if (sims === 0) return `Nothing has been set up in ${project.name} yet.`;
-  if (running > 0) return `${running === 1 ? "One simulation is" : `${running} simulations are`} running right now.`;
+  if (sims === 0)
+    return `${people(project.counts.people)} are ready, and there is nothing to send them on yet.`;
+
   const ran = project.simulations.filter((s) => s.latest !== null).length;
-  if (ran === 0) return `${sims === 1 ? "One simulation is" : `${sims} simulations are`} ready to go, and nobody has gone yet.`;
+  if (ran === 0)
+    return `${sims === 1 ? "One simulation is" : `${sims} simulations are`} ready to go, and nobody has gone yet.`;
+
+  const open = project.crossSimulation.length;
   return open === 0
     ? `Nothing has shown up in more than one simulation.`
     : `${open === 1 ? "One problem has" : `${open} problems have`} shown up in more than one simulation.`;
@@ -69,14 +128,11 @@ function headline(project: ProjectOverview): string {
 
 export function ProjectHome() {
   const { project, href } = useProject();
-  // Get started stands until the project HAS got started, which is an execution behind it and not
-  // a form filled in: step 3 is the only place the card sends anybody, and gating on the headcount
-  // alone took the card away the moment people were picked, leaving its last step unreachable
-  // (SPEC §7.5). A project driven far enough to hold a second simulation has plainly found its
-  // way and gets the real screen whether or not anything has run.
-  const configured = project.counts.targets > 0 && project.counts.people > 0;
+  // The panel stands until the project HAS got started, which is an execution behind it and not a
+  // form filled in: step 3 is the only place it sends anybody, and gating on the headcount alone
+  // took it away the moment people were picked, leaving its last step unreachable (SPEC §7.5).
+  // The old `simulations.length <= 1` clause went with the takeover it was compensating for.
   const everRan = project.simulations.some((simulation) => simulation.latest !== null);
-  const zero = !configured || (!everRan && project.simulations.length <= 1);
 
   return (
     <DocumentPage
@@ -99,111 +155,217 @@ export function ProjectHome() {
         />
       }
     >
-      {zero ? (
-        <GetStarted />
-      ) : (
-        <Stack gap={12}>
-          <Measure width="statement" as="div">
-            <Text size="statement" as="p">
-              {headline(project)}
-            </Text>
-          </Measure>
+      <Stack gap={12}>
+        {/* Where the project stands, in one line, in every state it can be in. */}
+        <Measure width="statement" as="div">
+          <Text size="statement" as="p">
+            {headline(project)}
+          </Text>
+        </Measure>
 
-          <StatGroup cols={3} ruled>
-            <Stat
-              label="Simulations"
-              value={project.counts.simulations}
-              sub={`${plural(project.counts.cohorts, "cohort")} between them`}
-            />
-            <Stat
-              label="People configured"
-              value={project.counts.people}
-              sub={plural(project.counts.personas, "persona")}
-            />
-            <Stat
-              label="Spent today"
-              value={<Money usd={project.spentTodayUsd} />}
-              sub={
-                <>
-                  of the <Money usd={project.dailyCeilingUsd} /> daily ceiling
-                </>
-              }
-            />
-          </StatGroup>
+        <LayOfTheLand />
 
+        {/*
+          Until something has run, the panel — and it is a panel now, sitting on the page rather
+          than standing in front of it. It is BELOW the strip deliberately: the reader's first
+          question on opening a project is what is in it, and the panel's open step is a form
+          that would push the answer under the fold. What is left to do comes after where you
+          are. Once an execution is behind the project the panel has nothing to say and goes.
+        */}
+        {everRan ? null : <GetStarted />}
+
+        <Section
+          title="Simulations"
+          trailing={plural(project.counts.simulations, "simulation")}
+          actions={<Link to={href("s/new")}>New simulation</Link>}
+        >
+          {project.simulations.length === 0 ? (
+            <StateBlock kind="empty" what="this project's simulations">
+              No simulations yet. One is a population, a target and a way of sending them.
+            </StateBlock>
+          ) : (
+            <Ledger>
+              {project.simulations.map((simulation) => (
+                <SimulationRow key={simulation.id} simulation={simulation} />
+              ))}
+            </Ledger>
+          )}
+        </Section>
+
+        {/* The roll-up across simulations, which presupposes two of them. With one, "nothing has
+            turned up in two simulations yet" is a sentence about the product's own machinery. */}
+        {project.simulations.length > 1 ? (
           <Section
-            title="Simulations"
-            trailing={plural(project.counts.simulations, "simulation")}
-            actions={<Link to={href("s/new")}>New simulation</Link>}
+            id="problems"
+            title="Seen in more than one simulation"
+            trailing={plural(project.crossSimulation.length, "problem")}
           >
-            {project.simulations.length === 0 ? (
-              <StateBlock kind="empty" what="this project's simulations">
-                No simulations yet. One is a population, a target and a way of sending them.
+            {project.crossSimulation.length === 0 ? (
+              <StateBlock kind="empty" what="problems seen in more than one simulation">
+                Nothing has turned up in two simulations yet.
               </StateBlock>
             ) : (
               <Ledger>
-                {project.simulations.map((simulation) => (
-                  <SimulationRow key={simulation.id} simulation={simulation} />
+                {project.crossSimulation.map((problem) => (
+                  <LedgerRow
+                    key={problem.signature}
+                    stub={<SeverityStack level={problem.severity} />}
+                  >
+                    <Stack gap={1}>
+                      <Inline gap={3} align="baseline" wrap>
+                        <SeverityTag level={problem.severity} kind={problem.kind} />
+                        <Text size="finding" as="span">
+                          {problem.title}
+                        </Text>
+                      </Inline>
+
+                      <MetaLine facts={incidenceOf(problem)} />
+
+                      {/* One link per simulation it showed up in: the same signature, read
+                          where it was reported, because the evidence for it is that
+                          execution's. */}
+                      <Inline gap={3} wrap>
+                        {problem.simulations.map((simulation) => (
+                          <Link
+                            key={simulation.id}
+                            size="meta"
+                            to={href(
+                              `s/${encodeURIComponent(simulation.id)}/f/${encodeURIComponent(problem.signature)}`,
+                            )}
+                          >
+                            {simulation.name}
+                          </Link>
+                        ))}
+                      </Inline>
+                    </Stack>
+                  </LedgerRow>
                 ))}
               </Ledger>
             )}
           </Section>
-
-          {/* The roll-up across simulations, which presupposes two of them. With one, "nothing has
-              turned up in two simulations yet" is a sentence about the product's own machinery. */}
-          {project.simulations.length > 1 ? (
-            <Section
-              id="problems"
-              title="Seen in more than one simulation"
-              trailing={plural(project.crossSimulation.length, "problem")}
-            >
-              {project.crossSimulation.length === 0 ? (
-                <StateBlock kind="empty" what="problems seen in more than one simulation">
-                  Nothing has turned up in two simulations yet.
-                </StateBlock>
-              ) : (
-                <Ledger>
-                  {project.crossSimulation.map((problem) => (
-                    <LedgerRow
-                      key={problem.signature}
-                      stub={<SeverityStack level={problem.severity} />}
-                    >
-                      <Stack gap={1}>
-                        <Inline gap={3} align="baseline" wrap>
-                          <SeverityTag level={problem.severity} kind={problem.kind} />
-                          <Text size="finding" as="span">
-                            {problem.title}
-                          </Text>
-                        </Inline>
-
-                        <MetaLine facts={incidenceOf(problem)} />
-
-                        {/* One link per simulation it showed up in: the same signature, read
-                            where it was reported, because the evidence for it is that
-                            execution's. */}
-                        <Inline gap={3} wrap>
-                          {problem.simulations.map((simulation) => (
-                            <Link
-                              key={simulation.id}
-                              size="meta"
-                              to={href(
-                                `s/${encodeURIComponent(simulation.id)}/f/${encodeURIComponent(problem.signature)}`,
-                              )}
-                            >
-                              {simulation.name}
-                            </Link>
-                          ))}
-                        </Inline>
-                      </Stack>
-                    </LedgerRow>
-                  ))}
-                </Ledger>
-              )}
-            </Section>
-          ) : null}
-        </Stack>
-      )}
+        ) : null}
+      </Stack>
     </DocumentPage>
+  );
+}
+
+/**
+ * The lay of the land: what this project is pointed at, who is in it, and what it is costing —
+ * with the way into each one underneath it.
+ *
+ * **Why it exists.** All three facts were in the product already and none of them were on this
+ * page. The target's name and endpoint were at the foot of the rail, the spend was the meter
+ * above them, and the headcount was an 11px number beside a nav row. A reader who had just made
+ * a project and wanted to know what the lay of the land was had to read the chrome to find out,
+ * and the chrome is 11px and down the left-hand side.
+ *
+ * **A ruled strip and not three cards.** §1.4: the ground is ruled, not empty. `StatGroup ruled`
+ * draws the hairlines between the cells and wraps 3 → 2 below 860px on its own, which is the
+ * same band the ledger below it already keeps.
+ *
+ * **The acts are links, never buttons** — `Stat`'s `foot`. Nothing in this strip spends anything
+ * or changes anything; each one is a door to the screen that can. A row of figures with a button
+ * in every cell is the card kit this direction is defined against.
+ *
+ * **It asks the state, never the target.** Whether the endpoint actually answers is a POST that
+ * the target's own screen makes when a reader presses Check — the same rule `TargetStatus` keeps
+ * at the foot of the rail. This cell reports what is *configured*, and the word it prints is a
+ * word (§4.2), never a hue on its own.
+ */
+function LayOfTheLand() {
+  const { key, project, href } = useProject();
+  // The query `ProjectRail` already runs, served from the one cache entry, so the strip costs no
+  // round trip of its own. `ProjectOverviewView` carries counts and no target, which is why this
+  // is here and not in the payload.
+  const targets = useQuery(q.targets(key));
+  const target = targets.data?.items[0];
+  const endpoint = target?.mcp[0]?.url ?? null;
+
+  const running = project.runningRunIds.length > 0;
+  const state = project.killSwitch.engaged
+    ? "stopped"
+    : running
+      ? "running"
+      : target === undefined
+        ? "none"
+        : "configured";
+
+  return (
+    <StatGroup cols={3} ruled>
+      <Stat
+        label="The target"
+        value={
+          <Inline gap={3} align="baseline" wrap>
+            <span className="min-w-0 truncate">{target?.name ?? "None yet"}</span>
+            {state === "stopped" ? (
+              <Chip tone="bad">Stopped</Chip>
+            ) : state === "running" ? (
+              <Chip tone="live">Running</Chip>
+            ) : null}
+          </Inline>
+        }
+        sub={
+          endpoint === null ? (
+            "nothing is connected"
+          ) : (
+            /* `break-all`: a URL is one word to CSS and four lines to a reader. */
+            <Mono size="code-sm" tone="muted" className="block break-all">
+              {endpoint}
+            </Mono>
+          )
+        }
+        foot={
+          target === undefined ? (
+            <Link size="meta" to={href("library/target")}>
+              Connect your app
+            </Link>
+          ) : (
+            <Link size="meta" to={href(`library/target/${encodeURIComponent(target.id)}`)}>
+              Check it answers
+            </Link>
+          )
+        }
+      />
+
+      <Stat
+        label="The people"
+        value={project.counts.people}
+        sub={`${plural(project.counts.cohorts, "cohort")}, ${plural(project.counts.personas, "persona")}`}
+        foot={
+          /* With nobody in the project, "who they are" is a door onto an empty room. One act
+             until there is somebody, two once there are. */
+          project.counts.people === 0 ? (
+            <Link size="meta" to={href("library/personas")}>
+              Pick who visits it
+            </Link>
+          ) : (
+            <>
+              <Link size="meta" to={href("library/people")}>
+                Who they are
+              </Link>
+              <Link size="meta" to={href("library/personas")}>
+                Add someone
+              </Link>
+            </>
+          )
+        }
+      />
+
+      <Stat
+        label="Spent today"
+        value={<Money usd={project.spentTodayUsd} />}
+        sub={
+          <>
+            of the <Money usd={project.dailyCeilingUsd} /> daily ceiling
+          </>
+        }
+        foot={
+          <Link size="meta" to={href("settings")}>
+            Change the ceiling
+          </Link>
+        }
+      />
+    </StatGroup>
   );
 }
 

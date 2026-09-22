@@ -28,6 +28,15 @@ import { Text } from "../atoms/index.js";
  * `marked` is appearance 1 of the five sanctioned limes (§5.4) — the marker band behind the ink
  * in light, a 2px lime rule beneath it in dark, flipped entirely in the cascade. **Exactly one
  * marked thing per screen**, which is the screen's call to make, not this molecule's.
+ *
+ * **`foot` is the way to act on the measurement, and it is a fourth line, not a button.** A
+ * figure on a dashboard almost always has one thing a reader wants to do about it — see the
+ * people the count counts, open the target the name names, change the ceiling the spend is
+ * measured against — and without somewhere to put it that link ends up beside the strip, where
+ * it belongs to no figure in particular. It is `t-meta` links and nothing heavier: a strip of
+ * figures with a button in every cell is a strip of cards, and §1.4 is the rule against exactly
+ * that. The slot takes what it is given, so a cell with nothing to do about it simply has three
+ * lines, as every `Stat` in the product did before this existed.
  */
 export interface StatProps {
   /** The `t-label` caption. Sentence content, rendered in caps by the type step (§3.3). */
@@ -36,12 +45,17 @@ export interface StatProps {
   value: ReactNode;
   /** One `t-meta` line beneath, for what the figure is out of or where it came from. */
   sub?: ReactNode;
+  /**
+   * What to do about it: one or two `t-meta` links, on the line under `sub`. Never a button —
+   * see the note above.
+   */
+  foot?: ReactNode;
   /** The lime marker. One per screen, across every component on it (§5.4). */
   marked?: boolean;
 }
 
 export const Stat = forwardRef<HTMLDivElement, StatProps>(function Stat(
-  { label, value, sub, marked = false },
+  { label, value, sub, foot, marked = false },
   ref,
 ) {
   return (
@@ -58,6 +72,14 @@ export const Stat = forwardRef<HTMLDivElement, StatProps>(function Stat(
         <Text as="div" size="meta" tone="muted" className="mt-1">
           {sub}
         </Text>
+      )}
+      {/*
+        `mt-2` rather than `mt-1`: the acts are a different KIND of line from the sub, which is
+        part of the measurement, so they sit one step further off it. `flex-wrap` because two
+        links in a narrow grid track wrap rather than widen the strip.
+      */}
+      {foot === undefined ? null : (
+        <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1">{foot}</div>
       )}
     </div>
   );
