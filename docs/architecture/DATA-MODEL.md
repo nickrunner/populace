@@ -210,6 +210,21 @@ re-cast the same people every time they were run, which destroys comparison acro
 generator is deterministic: `ensureRoster` fills empty slots only and never overwrites, a shrink
 archives rather than deletes, and changing the seed renames nobody (ADR-0031).
 
+**Deletes refuse, except at the project boundary.** A row another authored row points at cannot be
+deleted: `deleteTarget`, `deletePersona`, `deleteCohort` and `deletePopulation` throw
+`ReferencedError` naming the referrers, and the API turns that into a 409 that says which thing to
+take apart first, because the user is being asked which of two things they meant. `deleteProject`
+is the one exception and cascades, because a project IS the scope those references live in, so
+there is no second thing to mean. It runs in one transaction and reaches everything scoped to the
+project — including the produced rows, which are keyed by RUN rather than by project and so go
+through `deleteRun`. `deleteRun` is the single place that knows what an execution produces: agents,
+memories, identities, wakes, their trace events, findings and the event log. A delete that only
+touched the tables with a `project_id` column would leave the rest keyed to a run id nothing could
+resolve — invisible in every screen and counted by every `COUNT(*)`.
+
+A simulation is the one thing ARCHIVED rather than deleted by default, because its executions are
+history worth keeping under a name; deleting it with them is an explicit ask.
+
 **Cohorts and populations reference; snapshots inline.** `Population.cohortIds` and
 `Cohort.personaId` are references, so one cohort can be in two populations and one persona behind
 two cohorts. The snapshot inlines the full `PersonaSpec` *and the roster* — `member.people[]` with
