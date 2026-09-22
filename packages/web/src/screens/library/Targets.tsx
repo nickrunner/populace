@@ -71,7 +71,7 @@ export function Targets() {
     <DocumentPage
       header={
         <PageHeader
-          title={items.length === 1 ? "The target" : "The targets"}
+          title="Targets"
           lede="Where the people go. What a target says about itself is what they are told before their first visit, and its tool list is everything they are able to reach."
         />
       }
@@ -103,7 +103,7 @@ export function Targets() {
         <StateBlock kind="empty" what={what}>
           Nothing is connected yet. A target is one MCP endpoint and the policy that governs it;
           connect one and the people in this project have somewhere to go.{" "}
-          <Link to={href("library/target/new")} size="ui">
+          <Link to={href("library/targets/new")} size="ui">
             Connect a target
           </Link>
         </StateBlock>
@@ -112,7 +112,7 @@ export function Targets() {
       <Section
         title="Connected"
         actions={
-          <Link to={href("library/target/new")} size="ui">
+          <Link to={href("library/targets/new")} size="ui">
             Connect another
           </Link>
         }
@@ -128,7 +128,7 @@ export function Targets() {
                     {index + 1}
                   </Mono>
                 }
-                to={href(`library/target/${encodeURIComponent(target.id)}`)}
+                to={href(`library/targets/${encodeURIComponent(target.id)}`)}
                 aside={
                   // A target a simulation still names cannot go, and the server's refusal names
                   // the simulation. The control is at a bound rather than gone (§6): it keeps its

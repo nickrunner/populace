@@ -29,7 +29,7 @@ import { Targets } from "./screens/library/Targets.jsx";
 import { Target } from "./screens/library/Target.jsx";
 import { Personas } from "./screens/library/Personas.jsx";
 import { PersonaEditor } from "./screens/library/PersonaEditor.jsx";
-import { People } from "./screens/library/People.jsx";
+import { Cohorts } from "./screens/library/Cohorts.jsx";
 import { Cohort } from "./screens/library/Cohort.jsx";
 import { Settings } from "./screens/Settings.jsx";
 import { SimulationResults } from "./screens/SimulationResults.jsx";
@@ -162,12 +162,32 @@ function ProjectShell() {
           <Route index element={<ProjectHome />} />
           <Route path="s/new" element={<NewSimulation />} />
           <Route path="s/:sim/*" element={<SimulationShell />} />
-          <Route path="library/target" element={<Targets />} />
-          <Route path="library/target/:t" element={<Target />} />
+          {/*
+            The library, in the order the mental model runs: the addresses the product answers on,
+            the kinds of person, the groups cut from them. Every segment is a BARE PLURAL — the
+            noun does not inflect on how many there are, because a label that changes with the
+            data cannot be learned, searched for or read without flicker. The count lives in the
+            rail's trailing figure.
+          */}
+          <Route path="library/targets" element={<Targets />} />
+          <Route path="library/targets/:t" element={<Target />} />
           <Route path="library/personas" element={<Personas />} />
           <Route path="library/personas/:x" element={<PersonaEditor />} />
-          <Route path="library/people" element={<People />} />
-          <Route path="library/people/:cohortSlug" element={<Cohort />} />
+          <Route path="library/cohorts" element={<Cohorts />} />
+          <Route path="library/cohorts/:cohortSlug" element={<Cohort />} />
+          {/*
+            The singular addresses these moved off, kept as redirects because they have been in
+            the product's URL bar and a bookmark is a promise. `replace`, so Back does not bounce
+            off the redirect and land where the reader just came from.
+
+            These are the project's FIRST route-level redirects. `REHOMED` further down is not a
+            precedent for them — it is a map of trailing SEGMENTS rewritten inside `RunRedirect`
+            while resolving a bookmarked `/runs/:id`, not a `<Route>` at all.
+          */}
+          <Route path="library/target" element={<Navigate to="../library/targets" replace />} />
+          <Route path="library/target/:t" element={<RehomedTarget />} />
+          <Route path="library/people" element={<Navigate to="../library/cohorts" replace />} />
+          <Route path="library/people/:cohortSlug" element={<RehomedCohort />} />
           {/* One person, across every simulation they have ever been in (SPEC §7.3). */}
           <Route path="people/:personId" element={<PersonAcrossProject />} />
           <Route path="settings" element={<Settings />} />
@@ -179,6 +199,20 @@ function ProjectShell() {
       </Frame>
     </ProjectProvider>
   );
+}
+
+/**
+ * The two library redirects that carry a parameter. `<Navigate>` cannot interpolate one, so the
+ * param is read and re-encoded here; `replace` keeps the old address out of the history.
+ */
+function RehomedTarget() {
+  const { t = "" } = useParams();
+  return <Navigate to={`../library/targets/${encodeURIComponent(t)}`} replace />;
+}
+
+function RehomedCohort() {
+  const { cohortSlug = "" } = useParams();
+  return <Navigate to={`../library/cohorts/${encodeURIComponent(cohortSlug)}`} replace />;
 }
 
 /**

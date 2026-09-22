@@ -182,7 +182,7 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
   const targetStatus: TargetStatusView = {
     name: target?.name ?? null,
     endpoint: target?.endpoint ?? null,
-    to: target === null ? href("library/target") : href(`library/target/${encodeURIComponent(target.id)}`),
+    to: target === null ? href("library/targets") : href(`library/targets/${encodeURIComponent(target.id)}`),
     state: project.killSwitch.engaged
       ? "stopped"
       : running
@@ -281,21 +281,51 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
             </NavGroup>
           ) : null}
 
-          <NavGroup label="Set up">
-            <NavItem
-              to={href("library/target")}
-              label={project.counts.targets > 1 ? "The targets" : "The target"}
-              count={project.counts.targets > 1 ? project.counts.targets : undefined}
-            />
+          {/*
+            **Library**, not "Set up". "Set up" names a sequence you finish, which is exactly the
+            wrong idea for four durable things you come back and add to — a project grows a qa
+            target in month three — and it is most of why this run read as an unordered pile of
+            peers. "Library" is already the product's own word for these screens: `Targets`'s
+            empty state and `NewSimulation` both say "in the library first". It is a nav group
+            label rather than an entity, so §7.1's closed vocabulary is not in play.
+
+            The ORDER is the mental model, stated in the cheapest possible way: the addresses the
+            product answers on, the kinds of person, the groups cut from those kinds, the casts
+            made of those groups. Settings is not one of them and sits under a rule.
+          */}
+          <NavGroup label="Library">
+            {/*
+              **Bare plurals, and no article.** The label does not inflect: "Targets" at nought,
+              at one and at nine, with the number in the trailing figure where §7.4 puts facts.
+              This row used to read `counts.targets > 1 ? "The targets" : "The target"` while the
+              screen it opens read `items.length === 1 ? "The target" : "The targets"` — two
+              data-driven rules that DISAGREE AT ZERO, so an empty project's rail said "The
+              target" and the page it opened said "The targets". A label that changes with the
+              data cannot be learned, searched for, or read without flicker.
+            */}
+            <NavItem to={href("library/targets")} label="Targets" count={project.counts.targets} />
             <NavItem to={href("library/personas")} label="Personas" count={project.counts.personas} />
-            <NavItem to={href("library/people")} label="The people" count={project.counts.people} />
+            {/*
+              "Cohorts", and the count is the COHORT count. It was "The people" trailing
+              `counts.people`, which at least agreed with itself — but the screen behind it
+              creates and resizes cohorts, and `people/:personId` one level up already means an
+              individual. Relabelling without moving the figure would have left a label and a
+              trailing fact disagreeing, which §7.4 forbids outright.
+            */}
+            <NavItem to={href("library/cohorts")} label="Cohorts" count={project.counts.cohorts} />
+            {/*
+              Populations stays gated for now — nothing in the browser can create a second one
+              yet, so `populationCount > 1` is unreachable and this row is dead code until the
+              population editor lands. It keeps its place in the order so that when it appears it
+              appears where it belongs. The dead `library/people#populations` anchor it used to
+              point at is gone with the screen section it jumped to.
+            */}
             {populationCount > 1 ? (
-              <NavItem
-                to={href("library/people#populations")}
-                label="Populations"
-                count={populationCount}
-              />
+              <NavItem to={href("library/populations")} label="Populations" count={populationCount} />
             ) : null}
+          </NavGroup>
+
+          <NavGroup>
             <NavItem to={href("settings")} label="Settings" />
           </NavGroup>
 

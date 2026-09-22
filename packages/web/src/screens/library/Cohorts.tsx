@@ -44,7 +44,15 @@ import {
 } from "../../design/index.js";
 
 /**
- * The composition screen (SPEC sketch 4): cohorts on the left, what they add up to on the right.
+ * Cohorts — the composition screen (SPEC sketch 4): cohorts on the left, what they add up to on
+ * the right.
+ *
+ * **It used to be called `People`, at `library/people`, and the rename is the whole of stage 1's
+ * argument in one file.** The screen creates cohorts, resizes cohorts and lists cohorts; it was
+ * the only item in a library reading Targets / Personas / ? / Populations that was not named
+ * after the thing it holds. "People" also had to mean three things at once here — a cohort, a
+ * population and a roster — while `people/:personId` one level up already means an individual.
+ * `cohort` is in the closed vocabulary (§7.1); "the people" is not. The old path redirects.
  *
  * It is ONE screen for two entities on purpose. A population is an ordered set of cohorts, and
  * while there is one of them it is a concept with no payoff — so it stays implicit and unnamed
@@ -146,7 +154,7 @@ function cadenceOf(cohort: CohortView): string {
     : `comes back every ${String(Math.round(cohort.cadence.every / 1000))}s`;
 }
 
-export function People() {
+export function Cohorts() {
   const { key, project, href } = useProject();
   const queries = useQueryClient();
   const cohorts = useQuery(q.cohorts(key));
@@ -231,10 +239,10 @@ export function People() {
     <SplitPage
       header={
         <PageHeader
-          title="The people"
+          title="Cohorts"
           lede={
             <>
-              Everyone who visits the target, grouped into cohorts. A cohort is N people on one
+              Everyone who visits a target, grouped into cohorts. A cohort is N people on one
               persona; each of them has a name and a life of their own and keeps both between
               executions.{" "}
               {/*
@@ -282,7 +290,7 @@ export function People() {
                     key={cohort.id}
                     cohort={cohort}
                     ordinal={index + 1}
-                    to={href(`library/people/${encodeURIComponent(cohort.slug)}`)}
+                    to={href(`library/cohorts/${encodeURIComponent(cohort.slug)}`)}
                     onSize={(size) => {
                       resize.mutate({ id: cohort.id, size });
                     }}

@@ -246,7 +246,7 @@ export function Gaps() {
             >
               The target could not be reached, so we cannot say which of its tools went
               untouched — only the ones somebody called are listed above.{" "}
-              <Link to={projectHref("library/target")}>Open the target</Link> to check the
+              <Link to={projectHref("library/targets")}>Open the target</Link> to check the
               connection.
             </StateBlock>
           ) : (

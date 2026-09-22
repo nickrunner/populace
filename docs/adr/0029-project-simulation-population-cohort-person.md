@@ -80,3 +80,48 @@ are two: the sidebar has one "The people" item, not a "Cohorts" and a "Populatio
 The cost is a deeper authoring model than a single-target local tool strictly needs, and the
 mitigation is that the setup flow creates all of it without naming any of it: adopting a starter
 persona creates a cohort, a population called "Everyone" and a roster in one request.
+
+## Amendment — the rail names cohorts, and populations wait for the second cohort
+
+*Added when the project IA was rebuilt around several targets and several populations.*
+
+**Two sentences above are superseded.** The rail no longer has one "The people" item; it has a
+`Library` group reading **Targets, Personas, Cohorts** — each a bare plural with its count in the
+trailing figure — and **Populations**, which appears at `counts.cohorts > 1 || counts.populations > 1`.
+
+Three things forced it.
+
+**The threshold was on the wrong noun, and it was unreachable.** "Implicit until there are two"
+gated on the number of *populations*, and nothing in the browser could create a second one — so the
+row and the read-only section it jumped to were dead code that no user could ever reach. The first
+moment a subset is a real choice is the **second cohort**, not the second population: with two
+cohorts, "who goes" stops having one answer. The gate moves to the cohort count.
+
+**"The people" could not survive four siblings.** In a run reading Targets / Personas / ? /
+Populations it was the only item not named after the thing it holds, while the screen behind it
+creates and resizes cohorts and `people/:personId` one level up already means an individual. The
+word had to mean a cohort, a population and a roster at once. `cohort` is in the closed vocabulary
+(DESIGN-SYSTEM §7.1); "the people" is not.
+
+**The labels stop inflecting.** The rail read `counts.targets > 1 ? "The targets" : "The target"`
+while the screen it opened read `items.length === 1 ? "The target" : "The targets"` — two
+data-driven rules that disagreed *at zero*. A label that changes with the data cannot be learned,
+searched for, or read without flicker. The count is a fact and lives in the trailing figure (§7.4).
+
+**What this costs, stated plainly.** The mitigation above — "the setup flow creates all of it
+without naming any of it" — **is now scoped to the first run and no further**. It still holds where
+it matters: adopting a starter persona still creates the persona, the cohort, the roster and the
+"Everyone" population in one request, and a first-time user still reaches a first execution without
+reading the word *cohort*. But "Cohorts" is in the rail from the first adoption, so the word is on
+screen for every user from then on. That is the deliberate trade: the model is one noun more
+visible, in exchange for a library whose four items are named after what they hold and an ordering
+that states the mental model. **The mitigation is narrowed, not abandoned** — a population wizard
+standing in front of a first run would abandon it, and that was considered and refused.
+
+The chain itself is untouched. So is every id format, `expandPopulation`, and the rule that
+anything keyed by agent id alone leaks between executions.
+
+**Containment is not authoring order.** The chain above says what contains what. It does not say
+what you make first — and Target hangs off Project as a *sibling* of the population spine, so
+authoring a target before a population contradicts nothing here. That sentence is added because its
+absence is most of why the IA was read as contradictory.

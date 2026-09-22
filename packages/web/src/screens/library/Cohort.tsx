@@ -142,7 +142,7 @@ export function Cohort() {
         <PageHeader
           title={cohort?.name ?? "This cohort"}
           crumbs={[
-            { label: "The people", to: href("library/people") },
+            { label: "Cohorts", to: href("library/cohorts") },
             { label: cohort?.name ?? cohortSlug },
           ]}
           lede={
@@ -183,7 +183,7 @@ export function Cohort() {
               It may have been renamed, or removed with the persona it was drawn from.
             </span>
             <Button variant="secondary" asChild>
-              <Link to={href("library/people")}>Back to the people</Link>
+              <Link to={href("library/cohorts")}>Back to the cohorts</Link>
             </Button>
           </Stack>
         </StateBlock>

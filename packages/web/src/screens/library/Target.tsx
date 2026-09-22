@@ -221,7 +221,7 @@ export function Target() {
       setDraft(draftFrom(saved));
       await queries.invalidateQueries();
       // A target that has just been created has an id now, and the URL should say which one it is.
-      if (existing === undefined) void navigate(href(`library/target/${encodeURIComponent(saved.id)}`), { replace: true });
+      if (existing === undefined) void navigate(href(`library/targets/${encodeURIComponent(saved.id)}`), { replace: true });
     },
   });
 
@@ -293,7 +293,7 @@ export function Target() {
       header={
         <PageHeader
           title={existing?.name ?? "Connect a target"}
-          crumbs={[{ label: "The target", to: href("library/target") }, { label: existing?.name ?? "New target" }]}
+          crumbs={[{ label: "Targets", to: href("library/targets") }, { label: existing?.name ?? "New target" }]}
           lede="Where the people go. Everything here is what they are told before their first visit, and what they are allowed to reach when they get there."
         />
       }

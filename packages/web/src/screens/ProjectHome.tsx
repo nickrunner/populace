@@ -293,7 +293,7 @@ function LayOfTheLand() {
   return (
     <StatGroup cols={3} ruled>
       <Stat
-        label="The target"
+        label="Targets"
         value={
           <Inline gap={3} align="baseline" wrap>
             <span className="min-w-0 truncate">{target?.name ?? "None yet"}</span>
@@ -316,11 +316,11 @@ function LayOfTheLand() {
         }
         foot={
           target === undefined ? (
-            <Link size="meta" to={href("library/target")}>
+            <Link size="meta" to={href("library/targets")}>
               Connect your app
             </Link>
           ) : (
-            <Link size="meta" to={href(`library/target/${encodeURIComponent(target.id)}`)}>
+            <Link size="meta" to={href(`library/targets/${encodeURIComponent(target.id)}`)}>
               Check it answers
             </Link>
           )
@@ -328,7 +328,7 @@ function LayOfTheLand() {
       />
 
       <Stat
-        label="The people"
+        label="People"
         value={project.counts.people}
         sub={`${plural(project.counts.cohorts, "cohort")}, ${plural(project.counts.personas, "persona")}`}
         foot={
@@ -340,7 +340,7 @@ function LayOfTheLand() {
             </Link>
           ) : (
             <>
-              <Link size="meta" to={href("library/people")}>
+              <Link size="meta" to={href("library/cohorts")}>
                 Who they are
               </Link>
               <Link size="meta" to={href("library/personas")}>

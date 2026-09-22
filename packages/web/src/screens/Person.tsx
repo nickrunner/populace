@@ -664,7 +664,7 @@ export function PersonAcrossProject() {
     },
   });
 
-  const trail: readonly Crumb[] = [{ label: "The people", to: href("library/people") }];
+  const trail: readonly Crumb[] = [{ label: "Cohorts", to: href("library/cohorts") }];
 
   const state: StateKind | undefined = runs.isError || found.isError
     ? "failed"
@@ -716,7 +716,7 @@ export function PersonAcrossProject() {
                 roster and will turn up here the first time they are sent.
               </span>
               <Button variant="secondary" asChild>
-                <Link to={href("library/people")}>Back to the people</Link>
+                <Link to={href("library/cohorts")}>Back to the cohorts</Link>
               </Button>
             </Stack>
           </StateBlock>

@@ -13,7 +13,7 @@ export interface ProjectScope {
   /** The URL segment, exactly as it was written: a slug or an id, and never re-spelled. */
   key: string;
   project: ProjectOverview;
-  /** `/p/my-app`, or `/p/my-app/library/people` with a path. */
+  /** `/p/my-app`, or `/p/my-app/library/cohorts` with a path. */
   href: (path?: string) => string;
 }
 
