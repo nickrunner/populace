@@ -7,7 +7,7 @@ import { DEFAULT_PROJECT_ID, type Job, type PopulaceConfig, type Store } from "@
 import type { ModelProvider } from "@populace/runner";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
-import { ensureProject, ensureSettings, ensureSimulation, resolveSimulationConfig, seedProjectFromConfig, type ProcessConfig, type SimulationPlan } from "./config-store.js";
+import { ensureProject, ensureSettings, ensureSimulation, liveConfigForRun, resolveSimulationConfig, seedProjectFromConfig, type ProcessConfig, type SimulationPlan } from "./config-store.js";
 import type { ControlDeps } from "./deps.js";
 import { EventHub, RecordingStore } from "./events.js";
 import { JobRunner } from "./jobs.js";
@@ -95,6 +95,12 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
   let runs: RunController | undefined;
   let store = options.store;
 
+  /**
+   * The live config of one simulation, credentials and all. Secrets live in the rows and nowhere
+   * else, so this is the only place the redacted halves of a snapshot can be filled back in from.
+   */
+  const resolveLive = async (simulationId: string): Promise<PopulaceConfig> => (await resolveSimulationConfig(store, processConfig, simulationId)).config;
+
   if (!options.readOnly) {
     lock = await takeLock(options.store, options.force === undefined ? {} : { force: options.force });
     // A project is created when there is a REASON for one, not on every boot. This used to run
@@ -125,7 +131,7 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
       },
       // Resuming an execution needs the live credentials a snapshot does not carry, and applying
       // changes to one is a re-resolve by definition.
-      resolve: async (simulationId: string) => (await resolveSimulationConfig(store, processConfig, simulationId)).config,
+      resolve: resolveLive,
       log,
     });
 
@@ -152,12 +158,22 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
       log("populace serve: --resume needs ANTHROPIC_API_KEY; the paused executions were left where they are.");
     }
 
+    /**
+     * The config a run is executing, for everything that then CONNECTS with it: the sweep job, the
+     * digest job's verification replay and the tool list behind a run's coverage. It is the
+     * snapshot with the live credentials put back, never the snapshot verbatim — and when the
+     * credentials cannot be had it throws, because `[redacted]` on the wire is the failure this is
+     * here to prevent and it is invisible from every other vantage point.
+     */
     const configForRun = async (runId: string): Promise<PopulaceConfig> => {
+      const live = await liveConfigForRun(store, runId, resolveLive);
+      if (live) return live;
       const run = await store.getRun(runId);
-      const snapshot = run?.configSnapshotId ? await store.getConfigSnapshot(run.configSnapshotId) : undefined;
-      if (snapshot) return snapshot.config;
-      const simulationId = run?.simulationId ?? (await ensureSimulation(store, projectId)).id;
-      return (await resolveSimulationConfig(store, processConfig, simulationId)).config;
+      // No such run at all: the project's own simulation, as before.
+      if (!run) return resolveLive((await ensureSimulation(store, projectId)).id);
+      // The run is there but its rows no longer resolve, so there are no live credentials to
+      // restore. `resolveLive` is asked again for the reason, which names what is missing.
+      return resolveLive(run.simulationId);
     };
 
     control = {
@@ -194,17 +210,7 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
    * that run's SIMULATION — there is no process-wide "the config" any more, because there is no
    * process-wide project (SPEC §6).
    */
-  const configForRunRead = async (runId: string): Promise<PopulaceConfig | undefined> => {
-    const run = await store.getRun(runId);
-    const snapshot = run?.configSnapshotId ? await store.getConfigSnapshot(run.configSnapshotId) : undefined;
-    if (snapshot) return snapshot.config;
-    if (!run) return undefined;
-    try {
-      return (await resolveSimulationConfig(store, processConfig, run.simulationId)).config;
-    } catch {
-      return undefined;
-    }
-  };
+  const configForRunRead = (runId: string): Promise<PopulaceConfig | undefined> => liveConfigForRun(store, runId, resolveLive);
 
   const app = createApp({
     store,

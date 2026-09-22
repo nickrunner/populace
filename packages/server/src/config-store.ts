@@ -471,6 +471,57 @@ export function withLiveSecrets(frozen: PopulaceConfig, live: PopulaceConfig): P
 }
 
 /**
+ * The config a run is executing, ready to CONNECT with: its frozen snapshot (ADR-0024) with the
+ * live credentials put back, or a live resolve when the run froze nothing.
+ *
+ * EVERY path that opens a connection to the target from a stored run belongs here — sweep,
+ * verification's replay, the tool list a run's coverage is measured against — because a redacted
+ * snapshot handed to any of them authenticates with the literal string `[redacted]`. That is not a
+ * visible failure: verification comes back "not reproduced" with nothing on screen to say why, and
+ * sweep reports accounts removed that are still sitting on somebody's product.
+ *
+ * Which is why this is STRICT and has no fallback to the frozen plan. Secrets live in the rows and
+ * nowhere else, so a run whose rows no longer resolve — a deleted target, a persona a cohort still
+ * points at, a cohort edited down to nobody — has no live credentials to be had, and the only
+ * honest answers are "here they are" and `undefined`. Handing back the snapshot instead would be
+ * the same silent `[redacted]` by a different door. Describing a run is the other job and it is
+ * `frozenConfigForRun`'s; a caller that connects must never fall back to that one.
+ */
+export async function liveConfigForRun(
+  store: Store,
+  runId: string,
+  resolveLive: (simulationId: string) => Promise<PopulaceConfig>,
+): Promise<PopulaceConfig | undefined> {
+  const run = await store.getRun(runId);
+  if (!run) return undefined;
+  let live: PopulaceConfig;
+  try {
+    live = await resolveLive(run.simulationId);
+  } catch {
+    return undefined;
+  }
+  const snapshot = run.configSnapshotId ? await store.getConfigSnapshot(run.configSnapshotId) : undefined;
+  // The plan comes from the snapshot, the credentials from the rows. With no snapshot there is no
+  // frozen plan to execute and the live one is what this run is running.
+  return snapshot ? withLiveSecrets(snapshot.config, live) : live;
+}
+
+/**
+ * The plan a run executed, for DESCRIBING it: the frozen snapshot exactly as stored, credentials
+ * and all redacted out of it.
+ *
+ * A digest rendered today, a spend ceiling, a cohort's display name: all of them have to describe
+ * what ran rather than what the forms say now, and all of them are better served by a redacted
+ * plan than by nothing — a run whose target has since been deleted is still a run somebody wants
+ * to read. Nothing that connects may use this.
+ */
+export async function frozenConfigForRun(store: Store, runId: string): Promise<PopulaceConfig | undefined> {
+  const run = await store.getRun(runId);
+  if (!run?.configSnapshotId) return undefined;
+  return (await store.getConfigSnapshot(run.configSnapshotId))?.config;
+}
+
+/**
  * Writes a resolved `PopulaceConfig` into the authored tables. This is how a `populace.yaml`
  * becomes rows on first open and how `POST /config/import` works; both go through one path so a
  * YAML file and a form produce the same rows.

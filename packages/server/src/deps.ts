@@ -25,8 +25,10 @@ export interface ControlDeps {
   runs: RunController;
   hub: EventHub;
   /**
-   * The config a past run actually executed, read from its snapshot. A digest rebuilt today must
-   * use the config that produced the findings, not whatever the forms say now (ADR-0024).
+   * The config a past run actually executed, ready to connect with: its snapshot (ADR-0024) with
+   * the live credentials put back (`liveConfigForRun`). Everything reached through here goes on to
+   * call the target — sweep, the digest job's replay, a coverage tool list — so it THROWS rather
+   * than hand back a plan whose credentials are still `[redacted]`.
    */
   configForRun(runId: string): Promise<PopulaceConfig>;
   sweep(runId: string, options: SweepOptions, report: (progress: Partial<Job["progress"]>) => Promise<void>): Promise<SweepResult>;
@@ -37,10 +39,13 @@ export interface ServerDeps {
   storePath: string;
   version: string;
   /**
-   * The config ONE RUN executed, for the read routes that cannot be rendered without one: the
-   * tool list a coverage-gaps screen measures against, and the guardrail a spend view is read
-   * against. It is per run, from that run's snapshot — the process-wide `config()` thunk it
+   * The config ONE RUN executed, with its live credentials (`liveConfigForRun`): the tool list a
+   * coverage-gaps screen measures against, and the replay behind `?verify=1`, both of which call
+   * the target. It is per run, from that run's snapshot — the process-wide `config()` thunk it
    * replaces was the last place a singleton project was assumed.
+   *
+   * `undefined` means this run cannot be connected as, and nothing may fall back to its redacted
+   * snapshot to try anyway; the routes that only DESCRIBE a run read that snapshot directly.
    */
   configForRun?: (runId: string) => Promise<PopulaceConfig | undefined>;
   /** Model provider for the verifier. Absent means a `model` judge cannot run; a heuristic one can. */

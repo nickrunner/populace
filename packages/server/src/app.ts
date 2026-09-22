@@ -3,6 +3,7 @@ import { API_BASE, DigestQuerySchema, FindingListQuerySchema, RunListQuerySchema
 import type { Finding, PopulaceConfig, TraceEvent } from "@populace/core";
 import { buildDigest, verifyPending } from "@populace/reports";
 import { Hono } from "hono";
+import { frozenConfigForRun } from "./config-store.js";
 import { mountControl } from "./control.js";
 import type { ServerDeps } from "./deps.js";
 import { fail, page, parseQuery } from "./http.js";
@@ -89,13 +90,24 @@ export function createApp(deps: ServerDeps): Hono {
   app.get(`${API_BASE}/runs/:id/spend`, async (c) => {
     // The ceiling this run was actually running under, from the config it froze — not whatever
     // the settings form says today.
-    const config = await configForRun(c.req.param("id"));
+    const config = await describeRun(c.req.param("id"));
     return c.json(await new ReadModel(deps.store, config?.guardrails).spend(c.req.param("id")));
   });
 
+  /**
+   * The tool list this run's coverage is measured against. It CONNECTS, so it needs the live
+   * credentials: a run whose rows no longer resolve says so rather than listing what a redacted
+   * credential was shown.
+   */
   app.get(`${API_BASE}/runs/:id/tools`, async (c) => {
-    const config = await configForRun(c.req.param("id"));
-    return c.json(await read.toolUsage(c.req.param("id"), config ? await targetView(config) : { name: "", endpoints: [], webBaseUrl: null, description: null, identityStrategy: "", tools: null, toolsError: "no target is set up" }));
+    const runId = c.req.param("id");
+    const config = await connectAsRun(runId);
+    if (config) return c.json(await read.toolUsage(runId, await targetView(config)));
+    const frozen = await describeRun(runId);
+    const toolsError = frozen
+      ? "this run's target cannot be reached with what is stored now, so its tool list could not be read; check the simulation it ran"
+      : "no target is set up";
+    return c.json(await read.toolUsage(runId, { name: frozen?.target.name ?? "", endpoints: [], webBaseUrl: null, description: null, identityStrategy: "", tools: null, toolsError }));
   });
 
   app.get(`${API_BASE}/runs/:id/participants/:pid/memory`, async (c) => {
@@ -106,19 +118,29 @@ export function createApp(deps: ServerDeps): Hono {
   });
 
   /**
-   * The config a run actually executed, from its snapshot. A digest or a tool list rebuilt today
-   * has to describe what ran, not what the forms happen to say now — which is the whole reason a
-   * snapshot exists (ADR-0024). `deps.configForRun` is the fallback for a run with no snapshot,
-   * and it resolves that run's SIMULATION rather than "the project's config".
+   * Reading a run: the plan it executed, credentials redacted. A digest or a spend ceiling rebuilt
+   * today has to describe what ran, not what the forms happen to say now — which is the whole
+   * reason a snapshot exists (ADR-0024) — and a run whose target has since been deleted is still a
+   * run somebody wants to read, so the redacted plan is better than nothing here.
    */
-  async function configForRun(runId: string): Promise<PopulaceConfig | undefined> {
-    const stored = await deps.store.getRun(runId);
-    if (stored?.configSnapshotId) {
-      const snapshot = await deps.store.getConfigSnapshot(stored.configSnapshotId);
-      if (snapshot) return snapshot.config;
-    }
-    if (!deps.configForRun) return undefined;
-    return deps.configForRun(runId).catch(() => undefined);
+  async function describeRun(runId: string): Promise<PopulaceConfig | undefined> {
+    const frozen = await frozenConfigForRun(deps.store, runId);
+    if (frozen) return frozen;
+    // No snapshot means no frozen plan: the live one is what this run is running.
+    return deps.configForRun ? deps.configForRun(runId).catch(() => undefined) : undefined;
+  }
+
+  /**
+   * CONNECTING as a run: the same plan with its live credentials, or nothing at all.
+   *
+   * `deps.configForRun` is `liveConfigForRun`, which is strict on purpose, and there is
+   * deliberately no fallback to the frozen plan here. The two routes below that dial out — the
+   * tool list, and the verification replay behind `?verify=1` — would otherwise authenticate with
+   * the literal string `[redacted]` and fail in the one way nobody can see: a replay turned away
+   * at the door reads exactly like a target that has stopped misbehaving.
+   */
+  function connectAsRun(runId: string): Promise<PopulaceConfig | undefined> {
+    return deps.configForRun ? deps.configForRun(runId).catch(() => undefined) : Promise.resolve(undefined);
   }
 
   app.get(`${API_BASE}/runs/:id/digest`, async (c) => {
@@ -127,13 +149,18 @@ export function createApp(deps: ServerDeps): Hono {
     const runId = c.req.param("id");
     const run = await read.getRun(runId);
     if (!run) return fail(c, "not_found", `no run ${runId}`);
-    const config = await configForRun(runId);
+    const config = await describeRun(runId);
     if (!config) return fail(c, "conflict", "this run has no config to read it by; connect a target first");
     if (q.value.verify) {
       if (config.verifier.judge === "model" && !deps.verifier) {
         return fail(c, "unavailable", "the model judge needs an API key; set ANTHROPIC_API_KEY or configure verifier.judge: heuristic");
       }
-      await verifyPending({ store: deps.store, config, identityProvider: identityProviderFor(config.identity), ...(deps.verifier ? { provider: deps.verifier } : {}) }, { runIds: [runId] });
+      // Re-checking a finding means calling the target as the person who filed it, so it takes the
+      // live credentials and refuses out loud without them. A replay that cannot authenticate
+      // would file a page of `not-reproduced` verdicts nobody could account for.
+      const live = await connectAsRun(runId);
+      if (!live) return fail(c, "conflict", "this run's target cannot be reached with what is stored now, so its findings cannot be re-checked; check the simulation it ran");
+      await verifyPending({ store: deps.store, config: live, identityProvider: identityProviderFor(live.identity), ...(deps.verifier ? { provider: deps.verifier } : {}) }, { runIds: [runId] });
     }
     // The digest window is the run, not a clock window: a run is the unit the dashboard shows.
     const since = run.startedAt ? new Date(run.startedAt) : new Date(0);
