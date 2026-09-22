@@ -33,6 +33,7 @@ import { Cohorts } from "./screens/library/Cohorts.jsx";
 import { Cohort } from "./screens/library/Cohort.jsx";
 import { Settings } from "./screens/Settings.jsx";
 import { SimulationResults } from "./screens/SimulationResults.jsx";
+import { SimulationSettings } from "./screens/SimulationSettings.jsx";
 import { FindingInFull } from "./screens/FindingInFull.jsx";
 import { PeopleWhoHit } from "./screens/PeopleWhoHit.jsx";
 import { Gaps } from "./screens/Gaps.jsx";
@@ -273,6 +274,14 @@ function SimulationShell() {
             never been sent says so on the same screen rather than on a different one. */}
         <Route index element={<SimulationResults />} />
         <Route path="preflight" element={<Preflight />} />
+        {/*
+          What this simulation IS — its name, its target, its population, its mode. It lands with
+          the removal of the Settings screen's population block, which was the last place in the
+          browser that could change an existing simulation's visit cap; and the cap decides the
+          mode (ADR-0030), so without this a wrong mode was fixable only by deleting the
+          simulation and making it again.
+        */}
+        <Route path="settings" element={<SimulationSettings />} />
         <Route path="f/:signature" element={<FindingInFull />} />
         <Route path="f/:signature/people" element={<PeopleWhoHit />} />
         <Route path="coverage" element={<Gaps />} />

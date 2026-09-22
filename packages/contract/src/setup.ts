@@ -1,5 +1,4 @@
 import {
-  CadenceSchema,
   DaemonConfigSchema,
   EventSchema,
   FirebaseAdminConfigSchema,
@@ -203,9 +202,6 @@ export const PopulationViewSchema = z.object({
   id: z.string(),
   slug: z.string(),
   name: z.string(),
-  seed: z.string(),
-  cadence: CadenceSchema,
-  maxWakes: z.number().int().positive().nullable(),
   members: z.array(
     z.object({
       cohortId: z.string(),
@@ -215,17 +211,32 @@ export const PopulationViewSchema = z.object({
       slug: z.string(),
       name: z.string(),
       count: z.number().int().nonnegative(),
-      maxWakes: z.number().int().positive().nullable(),
+      /** The cohort's own visit cap. `maxWakes` on the row; the wire says visits (ADR-0032). */
+      maxVisits: z.number().int().positive().nullable(),
     }),
   ),
 });
 export type PopulationView = z.infer<typeof PopulationViewSchema>;
 
+/**
+ * **A population is composition and nothing else** (ADR-0029), and this schema finally says so.
+ *
+ * `seed`, `cadence` and `maxWakes` are gone. They were written to the project's settings row and
+ * then fanned onto every simulation running this population — and because the visit cap decides
+ * the mode (`visits === null ? "longitudinal" : "ephemeral"`), editing a population could flip a
+ * simulation between the two. That is an ADR-0030 property of the SIMULATION, changed from a
+ * screen that never says the word mode, for every simulation on the population at once. The cap,
+ * the cadence and the seed belong to the cohort and the simulation, and are set there.
+ *
+ * `cohortIds`, when sent, IS the composition: the whole ordered set, so one PUT is both the add
+ * and the remove and there is no separate route for either. `members` stays for the persona-keyed
+ * path the setup screens use, and it now applies to the population in the URL rather than to
+ * whichever row happened to be called "everyone".
+ */
 export const PopulationInputSchema = z.object({
-  seed: z.string().optional(),
-  cadence: CadenceSchema.partial().optional(),
-  maxWakes: z.number().int().positive().nullable().optional(),
-  members: z.array(z.object({ personaId: z.string(), count: z.number().int().nonnegative(), maxWakes: z.number().int().positive().nullable().optional() })).optional(),
+  /** The ordered set of cohorts. Authoritative when present: what is not in it is taken out. */
+  cohortIds: z.array(z.string()).optional(),
+  members: z.array(z.object({ personaId: z.string(), count: z.number().int().nonnegative(), maxVisits: z.number().int().positive().nullable().optional() })).optional(),
 });
 export type PopulationInput = z.infer<typeof PopulationInputSchema>;
 

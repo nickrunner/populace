@@ -395,10 +395,10 @@ describe("authoring config into the database", () => {
     const power = PersonaViewSchema.parse(await json(await post(h.app, routes.personaStarters(P), { slug: "power-user", count: 3 })));
     expect(PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h)))).members).toHaveLength(2);
 
-    const view = PopulationViewSchema.parse(await json(await put(h.app, await populationRoute(h), { members: [{ personaId: power.id, count: 3, maxWakes: 6 }] })));
+    const view = PopulationViewSchema.parse(await json(await put(h.app, await populationRoute(h), { members: [{ personaId: power.id, count: 3, maxVisits: 6 }] })));
     expect(view.members.map((m) => m.personaId)).toEqual([power.id]);
     expect(view.members[0]?.count).toBe(3);
-    expect(view.members[0]?.maxWakes).toBe(6);
+    expect(view.members[0]?.maxVisits).toBe(6);
     expect(await memberSlugs(h)).toEqual([power.slug]);
     // Out of the population, still written down: removing a member never deletes the persona.
     expect(pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas(P)))).items.map((p) => p.slug)).toContain(seeded.slug);
@@ -428,25 +428,69 @@ describe("authoring config into the database", () => {
   });
 
   /**
-   * The composition screen edits how often people come back and how many visits each gets. Those
-   * live on the SIMULATION now (SPEC §2.6), so writing them only to the project's settings row
-   * answered 200, redisplayed the new number, and changed nothing about the next execution.
+   * **The bug this stage exists for.** `PUT /projects/:p/populations/:pop` parsed `:pop`, resolved
+   * it, checked it — and then edited a different row, because `setCohortSize` called
+   * `ensurePopulation` internally and that returns the population whose slug is `everyone`. You
+   * could create a second population through the API and never put anything in it: every write
+   * landed on the default, and a simulation on the new one failed with "nobody is in the
+   * population yet". A population is composition and composing one is the only thing it is for.
    */
-  it("writes the cadence and the visit cap from the population screen onto the simulation that runs it", async () => {
+  it("composes the population named in the URL, and leaves every other population alone", async () => {
     const h = await harness();
+    const everyone = await ensurePopulation(h.store, "default");
+    const before = [...everyone.cohortIds];
+    expect(before.length).toBeGreaterThan(0);
+
+    // A cohort that only the new population will hold. `inPopulation: false` because POST
+    // /cohorts otherwise puts it in the default one, which is the convenience the setup screens
+    // want and exactly the thing this test must not rely on.
+    const persona = (await h.store.listPersonas("default"))[0]!;
+    const extra = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { personaId: persona.id, name: "Weekenders", size: 2, inPopulation: false })));
+
+    const made = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Soak cast" })));
+    expect(made.members).toHaveLength(0);
+
+    const composed = PopulationViewSchema.parse(
+      await json(await put(h.app, routes.population_(P, made.id), { cohortIds: [extra.id] })),
+    );
+    expect(composed.members.map((m) => m.cohortId)).toEqual([extra.id]);
+
+    // The default population did NOT move. This is the whole assertion.
+    expect((await h.store.getPopulation(everyone.id))?.cohortIds).toEqual(before);
+
+    // ...and a simulation naming the new population expands exactly what the new one holds.
     const simulation = await ensureSimulation(h.store);
-    expect(simulation.visitsPerPerson).toBe(2);
-
-    const view = PopulationViewSchema.parse(await json(await put(h.app, await populationRoute(h), { maxWakes: 1, cadence: { every: "5m" } })));
-    expect(view.maxWakes).toBe(1);
-    expect((await h.store.getSimulation(simulation.id))?.visitsPerPerson).toBe(1);
-
-    // ...and it is the simulation the run reads its plan from.
+    await h.store.saveSimulation({ ...simulation, populationId: made.id, updatedAt: new Date().toISOString() });
     const resolved = await resolveSimulationConfig(h.store, processConfig, simulation.id);
-    expect(resolved.config.population.maxWakes).toBe(1);
-    expect(resolved.config.population.cadence.every).toBe(300_000);
-    // Read back, it is what a run will do rather than what a defaults row happens to hold.
-    expect(PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h)))).maxWakes).toBe(1);
+    expect(resolved.config.population.members.map((m) => m.cohort)).toEqual([extra.slug]);
+    await h.close();
+  });
+
+  /**
+   * A cohort is reusable by design — the same cohort in two populations is the same people — so
+   * "take them out of this cast" and "delete these people" are different acts. Going to zero used
+   * to do the second when asked for the first, and with a SHARED cohort it threw: the store
+   * refuses to delete a cohort a population still holds, and nothing caught it.
+   */
+  it("takes a shared cohort out of one population without deleting it from the other", async () => {
+    const h = await harness();
+    const persona = (await h.store.listPersonas("default"))[0]!;
+    const shared = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { personaId: persona.id, name: "Shared", size: 2, inPopulation: false })));
+
+    const a = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Cast A" })));
+    const b = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Cast B" })));
+    await put(h.app, routes.population_(P, a.id), { cohortIds: [shared.id] });
+    await put(h.app, routes.population_(P, b.id), { cohortIds: [shared.id] });
+
+    // Empty Cast A through the persona-keyed path, which is what the setup screens send.
+    const emptied = await put(h.app, routes.population_(P, a.id), { members: [] });
+    expect(emptied.status).toBe(200);
+
+    // Out of A, still in B, and the people are still there.
+    expect((await h.store.getPopulation(a.id))?.cohortIds).toEqual([]);
+    expect((await h.store.getPopulation(b.id))?.cohortIds).toEqual([shared.id]);
+    expect(await h.store.getCohort(shared.id)).toBeDefined();
+    expect(await h.store.listPeople({ cohortId: shared.id })).toHaveLength(2);
     await h.close();
   });
 
@@ -1485,7 +1529,10 @@ describe("the people in a cohort", () => {
   it("writes a cohort's people once, and neither a shrink nor a new seed re-casts them", async () => {
     const h = await harness();
     const persona = (await h.store.listPersonas("default"))[0]!;
-    await setCohortSize(h.store, "default", persona, 5);
+    // `setCohortSize` composes ONE named population now, rather than resolving "everyone"
+    // internally and editing it whatever the caller meant.
+    const everyone = await ensurePopulation(h.store, "default");
+    await setCohortSize(h.store, everyone, persona, 5);
     const cohort = (await cohortsOf(h.store))[0]!;
 
     const roster = await ensureRoster(h.store, cohort.id);
@@ -1499,13 +1546,13 @@ describe("the people in a cohort", () => {
     expect((await ensureRoster(h.store, cohort.id)).map((p) => p.name)).toEqual(roster.map((p) => p.name));
 
     // Shrinking puts people aside rather than deleting them...
-    await setCohortSize(h.store, "default", persona, 3);
+    await setCohortSize(h.store, (await ensurePopulation(h.store, "default")), persona, 3);
     expect((await ensureRoster(h.store, cohort.id)).map((p) => p.name)).toEqual(roster.slice(0, 3).map((p) => p.name));
     expect(await h.store.listPeople({ cohortId: cohort.id })).toHaveLength(3);
     expect(await h.store.listPeople({ cohortId: cohort.id, includeArchived: true })).toHaveLength(5);
 
     // ...so growing back meets the same five individuals, not five new ones wearing their ids.
-    await setCohortSize(h.store, "default", persona, 5);
+    await setCohortSize(h.store, (await ensurePopulation(h.store, "default")), persona, 5);
     expect((await ensureRoster(h.store, cohort.id)).map((p) => p.name)).toEqual(roster.map((p) => p.name));
 
     // The seed decides who the NEXT person is, not who these people are.

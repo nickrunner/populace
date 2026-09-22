@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type PopulationView, type Settings as SettingsView } from "../api.js";
+import { api, type Settings as SettingsView } from "../api.js";
 import { keys, q } from "../queries.js";
 import { useProject } from "../context.jsx";
 import {
@@ -9,7 +9,6 @@ import {
   Card,
   CardHeader,
   Code,
-  DurationField,
   Field,
   FieldError,
   FieldGrid,
@@ -55,10 +54,6 @@ const JUDGES: readonly { value: string; label: string }[] = [
 const savedShape = (settings: SettingsView): string =>
   JSON.stringify([settings.model, settings.guardrails, settings.verifier, settings.daemon]);
 
-/** The three fields `savePopulation` is given below; composition is edited elsewhere. */
-const populationShape = (population: PopulationView): string =>
-  JSON.stringify([population.cadence, population.maxWakes, population.seed]);
-
 /**
  * Settings: limits and spending, project-scoped. Every field here is a guardrail the runner
  * enforces, not a hint to the model (ADR-0009): the ceilings below are what actually stop an
@@ -68,38 +63,29 @@ export function Settings() {
   const { key } = useProject();
   const queries = useQueryClient();
   const settings = useQuery(q.settings(key));
-  const populations = useQuery(q.populations(key));
   const setup = useQuery(q.setup(key));
 
   const [draft, setDraft] = useState<SettingsView | null>(null);
-  const [pop, setPop] = useState<PopulationView | null>(null);
   const [confirmingStop, setConfirmingStop] = useState(false);
-  const population = populations.data?.items[0];
 
   useEffect(() => {
     if (draft === null && settings.data) setDraft(settings.data);
   }, [draft, settings.data]);
-  useEffect(() => {
-    if (pop === null && population) setPop(population);
-  }, [pop, population]);
 
   /**
    * What a save actually changes, named. `invalidateQueries()` with no key refetches every live
    * query in the app — every findings page, every trace, the live execution somebody is watching
    * in another tab — to write four numbers. These are the three that hold them: the settings
-   * themselves, the population whose cadence was written beside them, and the project overview,
-   * which prints the daily ceiling on its own screen.
+   * themselves and the project overview, which prints the daily ceiling on its own screen.
    */
   const save = useMutation({
     mutationFn: async () => {
-      if (!draft || !pop) return;
+      if (!draft) return;
       await api.saveSettings(key, { model: draft.model, guardrails: draft.guardrails, verifier: draft.verifier, daemon: draft.daemon });
-      await api.savePopulation(key, pop.id, { cadence: pop.cadence, maxWakes: pop.maxWakes, seed: pop.seed });
     },
     onSuccess: async () => {
       await Promise.all([
         queries.invalidateQueries({ queryKey: keys.settings(key) }),
-        queries.invalidateQueries({ queryKey: keys.populations(key) }),
         queries.invalidateQueries({ queryKey: keys.project(key) }),
       ]);
     },
@@ -125,15 +111,9 @@ export function Settings() {
   });
 
   const state: StateKind | undefined =
-    settings.isError || populations.isError
-      ? "failed"
-      : settings.isPending || populations.isPending || draft === null || pop === null
-        ? "loading"
-        : undefined;
+    settings.isError ? "failed" : settings.isPending || draft === null ? "loading" : undefined;
 
-  const dirty =
-    (draft !== null && settings.data !== undefined && savedShape(draft) !== savedShape(settings.data)) ||
-    (pop !== null && population !== undefined && populationShape(pop) !== populationShape(population));
+  const dirty = draft !== null && settings.data !== undefined && savedShape(draft) !== savedShape(settings.data);
 
   const guard = draft === null ? null : draft.guardrails;
   const setGuard = (patch: Partial<SettingsView["guardrails"]>): void => {
@@ -148,7 +128,7 @@ export function Settings() {
   const stopped = setup.data?.killSwitch.engaged === true;
 
   const body =
-    draft === null || pop === null || guard === null ? null : (
+    draft === null || guard === null ? null : (
       <Stack gap={8}>
         {save.isError ? (
           <Stack gap={2}>
@@ -267,48 +247,6 @@ export function Settings() {
                   </Stack>
                 ) : null}
               </Stack>
-            </Card>
-          </Stack>
-        </Section>
-
-        <Section title="How often they come back">
-          <Stack gap={4}>
-            <Text size="read-sm" tone="soft" as="p">
-              The default a new simulation starts from, and applied to the simulations already
-              composed from this population.
-            </Text>
-
-            <Card>
-              <FieldGrid cols={3}>
-                <DurationField
-                  label="A visit every"
-                  unit="s"
-                  valueMs={pop.cadence.every}
-                  min={5000}
-                  onChange={(ms) => setPop({ ...pop, cadence: { ...pop.cadence, every: ms } })}
-                />
-                <DurationField
-                  label="Give or take"
-                  hint="Random extra delay, so they do not all arrive at once."
-                  unit="s"
-                  valueMs={pop.cadence.jitter}
-                  onChange={(ms) => setPop({ ...pop, cadence: { ...pop.cadence, jitter: ms } })}
-                />
-                <Field
-                  label="Stop each person after"
-                  hint="Visits. Zero means they keep coming back until you stop the execution."
-                >
-                  {({ id, describedBy, invalid }) => (
-                    <NumberInput
-                      id={id}
-                      describedBy={describedBy}
-                      invalid={invalid}
-                      value={pop.maxWakes ?? 0}
-                      onChange={(v) => setPop({ ...pop, maxWakes: v > 0 ? v : null })}
-                    />
-                  )}
-                </Field>
-              </FieldGrid>
             </Card>
           </Stack>
         </Section>
@@ -435,7 +373,7 @@ export function Settings() {
           <StateBlock
             kind="failed"
             what="your limits"
-            error={settings.isError ? settings.error : populations.error}
+            error={settings.error}
           />
         }
         dirty={dirty}

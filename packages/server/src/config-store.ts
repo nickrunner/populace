@@ -187,40 +187,99 @@ export async function cohortsOf(store: Store, projectId = DEFAULT_PROJECT_ID): P
 }
 
 /**
- * Sets the headcount of the cohort on `personaId`, creating it on the way up and removing it on
- * the way to zero. One cohort per persona is what the setup UI can express today; the data model
- * allows several, and stage 3's composition screen is what will let a user say so.
+ * Sets the headcount of `persona`'s cohort **inside one named population**, creating it on the way
+ * up and taking it out on the way to zero.
  *
- * `maxWakes` is the cohort's own visit cap, which overrides the population's for this group alone
- * (SPEC §2.4). Leaving it `undefined` leaves whatever is stored alone; `null` clears it.
+ * **The population is a parameter now, and that is the bug this fixes.** It used to take a
+ * `projectId` and call `ensurePopulation` internally — which resolves the row whose slug is
+ * `everyone`, whatever population the caller had in mind. `PUT /projects/:p/populations/:pop`
+ * therefore parsed `:pop`, resolved it, checked it, and then edited a different row. You could
+ * create a second population through the API and never put anything in it: every write went to the
+ * default, and a simulation on the new one failed with "nobody is in the population yet". A
+ * population is composition and nothing else (ADR-0029), so composing one is the only thing it is
+ * for, and it was the one thing that did not work.
+ *
+ * **The cohort is looked up inside the population, not across the project.** `cohorts.find(c =>
+ * c.personaId === persona.id)` found the first cohort in the whole project on that persona, which
+ * is wrong twice over: it edited a cohort belonging to another population, and it made one persona
+ * able to back only one cohort through this path even though the data model has always allowed
+ * several (two cohorts on one persona is why an agent id carries the COHORT slug, ADR-0029).
+ *
+ * **Going to zero removes from THIS population; it deletes the row only when nothing else holds
+ * it.** A cohort is reusable by design — the same cohort in two populations is the same people —
+ * so "take them out of this cast" and "delete these people" are different acts and the old code
+ * did the second when asked for the first. With a shared cohort it also threw: the store refuses
+ * to delete a cohort a population still holds, and nothing caught it, so removing a shared cohort
+ * from one population was a 500.
  */
-export async function setCohortSize(store: Store, projectId: string, persona: StoredPersona, count: number, maxWakes?: number | null): Promise<void> {
-  const population = await ensurePopulation(store, projectId);
+export async function setCohortSize(
+  store: Store,
+  population: StoredPopulation,
+  persona: StoredPersona,
+  count: number,
+  maxVisits?: number | null,
+): Promise<void> {
+  const projectId = population.projectId;
   const cohorts = await store.listCohorts(projectId);
-  const existing = cohorts.find((cohort) => cohort.personaId === persona.id);
+  const held = new Set(population.cohortIds);
+  const existing = cohorts.find((cohort) => held.has(cohort.id) && cohort.personaId === persona.id);
   const at = now();
+
   if (count <= 0) {
     if (!existing) return;
     // The population lets go first: the store refuses to delete a cohort a population still holds,
     // and naming the referrer is the point of that refusal (SPEC §2.14).
     await store.savePopulation({ ...population, cohortIds: population.cohortIds.filter((id) => id !== existing.id), updatedAt: at });
-    await store.deleteCohort(existing.id);
+    // Anybody else still holding it? Then this was "take them out of this cast", not "delete these
+    // people", and the row and its roster stay exactly as they are.
+    const others = (await store.listPopulations(projectId)).filter(
+      (other) => other.id !== population.id && other.cohortIds.includes(existing.id),
+    );
+    if (others.length === 0) await store.deleteCohort(existing.id);
     return;
   }
+
+  // A cohort's slug is the middle segment of every agent id, so two cohorts in one project cannot
+  // share one. The create path used to hardcode `persona.slug`, which collided the moment a second
+  // cohort was cut from the same persona — the same de-dup loop `POST /cohorts` already carries.
+  const taken = new Set(cohorts.map((cohort) => cohort.slug));
+  let slug = persona.slug;
+  for (let n = 2; taken.has(slug); n++) slug = `${persona.slug}-${String(n)}`;
+
   const base: Cohort = existing
     ? { ...existing, size: count, updatedAt: at }
-    : { id: newCohortId(), projectId, slug: persona.slug, name: persona.spec.name, personaId: persona.id, size: count, seed: "populace", notes: "", createdAt: at, updatedAt: at };
-  const cap = maxWakes === undefined ? base.maxWakes : (maxWakes ?? undefined);
+    : { id: newCohortId(), projectId, slug, name: persona.spec.name, personaId: persona.id, size: count, seed: "populace", notes: "", createdAt: at, updatedAt: at };
+  const cap = maxVisits === undefined ? base.maxWakes : (maxVisits ?? undefined);
   const cohort: Cohort = { ...base };
   if (cap === undefined) delete cohort.maxWakes;
   else cohort.maxWakes = cap;
   await store.saveCohort(cohort);
-  if (!population.cohortIds.includes(cohort.id)) await store.savePopulation({ ...population, cohortIds: [...population.cohortIds, cohort.id], updatedAt: at });
+  if (!held.has(cohort.id)) await store.savePopulation({ ...population, cohortIds: [...population.cohortIds, cohort.id], updatedAt: at });
   // The cast is written where the headcount is decided, not later, on a screen that happens to
   // read the cohort. `counts.people` is the number of PEOPLE ROWS, and it is what the zero state
   // gates the way forward on: a starter adopted here with no roster behind it left the project
   // reading "0 people configured" and the one path into a first run with no end (SPEC §7.5).
   await ensureRoster(store, cohort.id);
+}
+
+/**
+ * Take every cohort on `persona` out of every population that holds it, then delete those cohorts.
+ *
+ * Deleting a persona is the one act that genuinely means "and everything cut from it". Doing it
+ * through `setCohortSize(…, 0)` against one population left the cohort in every other population
+ * that held it and then `deletePersona` refused, because a cohort still named the persona — a
+ * half-applied destructive change followed by a 500.
+ */
+export async function removePersonaCohorts(store: Store, projectId: string, persona: StoredPersona): Promise<void> {
+  const doomed = (await store.listCohorts(projectId)).filter((cohort) => cohort.personaId === persona.id);
+  if (doomed.length === 0) return;
+  const ids = new Set(doomed.map((cohort) => cohort.id));
+  const at = now();
+  for (const population of await store.listPopulations(projectId)) {
+    if (!population.cohortIds.some((id) => ids.has(id))) continue;
+    await store.savePopulation({ ...population, cohortIds: population.cohortIds.filter((id) => !ids.has(id)), updatedAt: at });
+  }
+  for (const cohort of doomed) await store.deleteCohort(cohort.id);
 }
 
 /**

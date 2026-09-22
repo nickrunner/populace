@@ -219,7 +219,8 @@ export const CohortViewSchema = z.object({
   size: z.number().int().nonnegative(),
   generated: z.object({ model: z.number().int().nonnegative(), seeded: z.number().int().nonnegative(), authored: z.number().int().nonnegative() }),
   cadence: CadenceSchema.partial().nullable(),
-  maxWakes: z.number().int().positive().nullable(),
+  /** The cohort's own visit cap. The row spells it `maxWakes`; the wire does not (ADR-0032). */
+  maxVisits: z.number().int().positive().nullable(),
   notes: z.string(),
   usedByPopulations: z.array(z.object({ id: z.string(), name: z.string() })),
 });
@@ -234,7 +235,7 @@ export const CohortInputSchema = z.object({
   personaId: z.string().optional(),
   size: z.number().int().nonnegative().optional(),
   cadence: CadenceSchema.partial().nullable().optional(),
-  maxWakes: z.number().int().positive().nullable().optional(),
+  maxVisits: z.number().int().positive().nullable().optional(),
   seed: z.string().optional(),
   notes: z.string().optional(),
   /** Put this cohort into the project's population (or take it out again). */

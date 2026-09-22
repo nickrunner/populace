@@ -281,6 +281,12 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
                 label="Visits"
                 count={visitsIn(simulation.latest?.totals)}
               />
+              {/*
+                What this simulation IS, as opposed to what came back from it. Last in the run
+                because it is the one item here you visit to CHANGE something rather than to read
+                something, and because a simulation's own settings are not where a reader starts.
+              */}
+              <NavItem to={`${base}/settings`} label="This simulation" />
             </NavGroup>
           ) : null}
 

@@ -81,7 +81,7 @@ export function Cohort() {
     if (cohort === undefined || size !== null) return;
     setSize(cohort.size);
     setEvery(cohort.cadence?.every === undefined ? 0 : Math.round(cohort.cadence.every / 1000));
-    setCap(cohort.maxWakes ?? 0);
+    setCap(cohort.maxVisits ?? 0);
   }, [cohort, size]);
 
   const watched = useQuery({ ...q.job(job ?? ""), enabled: job !== null, refetchInterval: 1_000 });
@@ -104,7 +104,7 @@ export function Cohort() {
       api.saveCohort(key, cohort?.id ?? "", {
         size: size ?? cohort?.size ?? 0,
         cadence: every === null || every === 0 ? null : { every: every * 1000 },
-        maxWakes: cap === null || cap === 0 ? null : cap,
+        maxVisits: cap === null || cap === 0 ? null : cap,
       }),
     onSuccess: refresh,
   });

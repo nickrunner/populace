@@ -80,6 +80,7 @@ import {
   ensureSettings,
   ensureSimulation,
   resolveSimulationConfig,
+  removePersonaCohorts,
   setCohortSize,
   type ResolvedSimulation,
 } from "./config-store.js";
@@ -503,7 +504,9 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const existing = (await deps.store.listPersonas(s.project.id)).find((p) => p.slug === starter.slug);
     const persona: StoredPersona = existing ?? { id: newPersonaId(), projectId: s.project.id, slug: starter.slug, spec: starter.spec, origin: "starter", createdAt: at, updatedAt: at };
     if (!existing) await deps.store.savePersona(persona);
-    await setCohortSize(deps.store, s.project.id, persona, body.value.count);
+    // The default population, explicitly. Adopting a starter is the first-run path and there is
+    // one population then; a project with several composes them on the Populations screen.
+    await setCohortSize(deps.store, await ensurePopulation(deps.store, s.project.id), persona, body.value.count);
     return c.json(await personaView(persona), existing ? 200 : 201);
   });
 
@@ -525,7 +528,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const at = now();
     const persona: StoredPersona = { id: newPersonaId(), projectId: s.project.id, slug, spec: { ...body.value.spec, id: slug }, origin: "authored", createdAt: at, updatedAt: at };
     await deps.store.savePersona(persona);
-    await setCohortSize(deps.store, s.project.id, persona, 1);
+    await setCohortSize(deps.store, await ensurePopulation(deps.store, s.project.id), persona, 1);
     return c.json(await personaView(persona), 201);
   });
 
@@ -564,7 +567,10 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (referrers.length > 1) {
       return fail(c, "conflict", `${persona.spec.name} is the persona behind ${referrers.length} cohorts (${referrers.map((cohort) => cohort.slug).join(", ")}); take those apart first`);
     }
-    await setCohortSize(deps.store, s.project.id, persona, 0);
+    // Every population that holds a cohort on this persona lets go, then the cohorts go. Doing
+    // this against ONE population left the cohort in every other population that held it, and
+    // `deletePersona` then refused because a cohort still named it.
+    await removePersonaCohorts(deps.store, s.project.id, persona);
     try {
       await deps.store.deletePersona(persona.id);
     } catch (err) {
@@ -637,7 +643,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
         authored: live.filter((p) => p.generatedBy === "authored").length,
       },
       cadence: cohort.cadence ?? null,
-      maxWakes: cohort.maxWakes ?? null,
+      // The row spells it `maxWakes`; the wire does not (ADR-0032).
+      maxVisits: cohort.maxWakes ?? null,
       notes: cohort.notes,
       usedByPopulations: populations.filter((pop) => pop.cohortIds.includes(cohort.id)).map((pop) => ({ id: pop.id, name: pop.name })),
     };
@@ -713,7 +720,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       seed: body.value.seed ?? "populace",
       notes: body.value.notes ?? "",
       ...(body.value.cadence ? { cadence: body.value.cadence } : {}),
-      ...(body.value.maxWakes === undefined || body.value.maxWakes === null ? {} : { maxWakes: body.value.maxWakes }),
+      ...(body.value.maxVisits === undefined || body.value.maxVisits === null ? {} : { maxWakes: body.value.maxVisits }),
       createdAt: at,
       updatedAt: at,
     };
@@ -751,8 +758,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const updated: Cohort = { ...existing, name: body.value.name ?? existing.name, size: body.value.size ?? existing.size, seed: body.value.seed ?? existing.seed, notes: body.value.notes ?? existing.notes, updatedAt: now() };
     if (body.value.cadence === null) delete updated.cadence;
     else if (body.value.cadence !== undefined) updated.cadence = body.value.cadence;
-    if (body.value.maxWakes === null) delete updated.maxWakes;
-    else if (body.value.maxWakes !== undefined) updated.maxWakes = body.value.maxWakes;
+    if (body.value.maxVisits === null) delete updated.maxWakes;
+    else if (body.value.maxVisits !== undefined) updated.maxWakes = body.value.maxVisits;
     await deps.store.saveCohort(updated);
     // Shrinking puts people aside rather than deleting them, so growing back meets the same cast.
     await ensureRoster(deps.store, updated.id);
@@ -888,21 +895,18 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
    * reads it from there and writes it back there. Settings are only the defaults a NEW simulation
    * is created with.
    */
-  const simulationsOn = async (projectId: string, populationId: string): Promise<Simulation[]> => (await deps.store.listSimulations({ projectId, populationId })).filter((simulation) => !simulation.archived);
 
   const populationView = async (projectId: string, population: StoredPopulation): Promise<PopulationView> => {
-    const settings = await ensureSettings(deps.store, projectId);
     const cohorts = await cohortsOfPopulation(deps.store, population);
     const personas = new Map((await deps.store.listPersonas(projectId)).map((p) => [p.id, p]));
-    // What the next execution will actually do, not what a defaults row happens to say.
-    const plan = (await simulationsOn(projectId, population.id))[0];
+    // `seed`, `cadence` and `maxWakes` used to be reported here, read off the first simulation
+    // running this population and falling back to the project settings. They are not properties
+    // of a composition — see `PopulationInputSchema` — and reporting them made a population look
+    // like it owned a schedule and a visit cap that actually belong to a cohort and a simulation.
     return {
       id: population.id,
       slug: population.slug,
       name: population.name,
-      seed: plan?.seed ?? settings.seed,
-      cadence: plan?.cadence ?? settings.cadence,
-      maxWakes: plan === undefined ? settings.maxWakes : plan.visitsPerPerson,
       members: cohorts.map((cohort) => {
         const persona = personas.get(cohort.personaId);
         return {
@@ -913,7 +917,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
           slug: persona?.slug ?? cohort.slug,
           name: persona?.spec.name ?? cohort.name,
           count: cohort.size,
-          maxWakes: cohort.maxWakes ?? null,
+          maxVisits: cohort.maxWakes ?? null,
         };
       }),
     };
@@ -958,47 +962,53 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!population) return fail(c, "not_found", "no such population");
     const body = await parseBody(c, PopulationInputSchema);
     if (!body.ok) return body.response;
-    const settings = await ensureSettings(deps.store, s.project.id);
     const personas = new Map((await deps.store.listPersonas(s.project.id)).map((p) => [p.id, p]));
     const unknown = (body.value.members ?? []).filter((m) => !personas.has(m.personaId)).map((m) => m.personaId);
     if (unknown.length) return fail(c, "bad_request", `no such person: ${unknown.join(", ")}`);
-    await deps.store.saveSettings({
-      ...settings,
-      ...(body.value.seed === undefined ? {} : { seed: body.value.seed }),
-      ...(body.value.cadence === undefined ? {} : { cadence: { ...settings.cadence, ...body.value.cadence } }),
-      ...(body.value.maxWakes === undefined ? {} : { maxWakes: body.value.maxWakes }),
-      updatedAt: now(),
-    });
-    // ...and onto the simulations that run this population, which is what a run actually reads.
-    // Writing only to settings made lowering the visit cap from four to one answer 200, redisplay
-    // the new number, and change nothing about the next execution.
-    if (body.value.seed !== undefined || body.value.cadence !== undefined || body.value.maxWakes !== undefined) {
-      for (const simulation of await simulationsOn(s.project.id, population.id)) {
-        const visits = body.value.maxWakes === undefined ? simulation.visitsPerPerson : body.value.maxWakes;
-        await deps.store.saveSimulation({
-          ...simulation,
-          // The cap decides the mode, exactly as it does on the simulation editor: a capped
-          // simulation ends on its own and is ephemeral, an uncapped one is a soak.
-          mode: visits === null ? "longitudinal" : "ephemeral",
-          visitsPerPerson: visits,
-          cadence: { ...simulation.cadence, ...body.value.cadence },
-          seed: body.value.seed ?? simulation.seed,
-          updatedAt: now(),
-        });
-      }
+
+    /*
+      A population is composition and NOTHING else (ADR-0029), and this handler used to write
+      three things that are not composition: `seed`, `cadence` and `maxWakes` went to the project
+      settings row and were then fanned onto every simulation running this population.
+
+      The fan-out was not a bug in itself — writing only to settings made "lower the visit cap to
+      one" answer 200 and change nothing, and the fan-out is what fixed that. The bug is that
+      those fields are on a population at all. The visit cap decides the MODE (`visits === null ?
+      "longitudinal" : "ephemeral"`), so editing a population could flip a simulation between
+      ephemeral and longitudinal — an ADR-0030 property of the simulation, changed from a screen
+      that never says the word mode, for every simulation on that population at once.
+
+      Both halves go together. The fields are off `PopulationInput`, the fan-out is gone with
+      them, and the cap and the mode are set where they belong: on the simulation, by the
+      simulation editor.
+    */
+
+    // `cohortIds`, when sent, IS the composition — the whole ordered set, add and remove in one.
+    if (body.value.cohortIds) {
+      const known = new Set((await deps.store.listCohorts(s.project.id)).map((cohort) => cohort.id));
+      const strangers = body.value.cohortIds.filter((id) => !known.has(id));
+      if (strangers.length) return fail(c, "bad_request", `no such cohort: ${strangers.join(", ")}`);
+      await deps.store.savePopulation({ ...population, cohortIds: [...body.value.cohortIds], updatedAt: now() });
     }
+
     // The member list REPLACES what is there when it is sent at all. The browser drops a persona
     // from the array rather than sending `count: 0`, so a handler that only walked the array left
     // the cohort at its old size and the stepper snapped back.
     if (body.value.members) {
       const sent = new Set(body.value.members.map((m) => m.personaId));
-      for (const cohort of await cohortsOfPopulation(deps.store, population)) {
+      // Re-read: `cohortIds` above may have just changed what this population holds.
+      const current = (await deps.store.getPopulation(population.id)) ?? population;
+      for (const cohort of await cohortsOfPopulation(deps.store, current)) {
         const persona = personas.get(cohort.personaId);
-        if (persona && !sent.has(cohort.personaId)) await setCohortSize(deps.store, s.project.id, persona, 0);
+        if (persona && !sent.has(cohort.personaId)) {
+          await setCohortSize(deps.store, (await deps.store.getPopulation(population.id)) ?? current, persona, 0);
+        }
       }
       for (const member of body.value.members) {
         const persona = personas.get(member.personaId);
-        if (persona) await setCohortSize(deps.store, s.project.id, persona, member.count, member.maxWakes);
+        if (!persona) continue;
+        const fresh = (await deps.store.getPopulation(population.id)) ?? current;
+        await setCohortSize(deps.store, fresh, persona, member.count, member.maxVisits);
       }
     }
     const after = (await deps.store.getPopulation(population.id)) ?? population;
