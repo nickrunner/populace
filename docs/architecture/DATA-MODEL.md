@@ -200,6 +200,28 @@ and from the surrogate row id. Agent ids are built from slugs, so renaming a per
 must never change one — and the URL space is spelled in slugs, so a rename must not break a
 bookmark either.
 
+**The URL space, as ADR-0035 left it.** The library segments are bare plurals, and the singular
+paths they moved off redirect rather than 404, because those addresses have been in a URL bar:
+
+```
+/p/:proj                            the project dashboard
+/p/:proj/library/targets            the targets          (was library/target)
+/p/:proj/library/targets/new        connect one — its own flow, not a branch of the editor
+/p/:proj/library/targets/:t         one saved target
+/p/:proj/library/personas           /:x            unchanged
+/p/:proj/library/cohorts            /:cohortSlug   (was library/people)
+/p/:proj/library/populations        /:pop          new: the casts, and composing one
+/p/:proj/s/new                      pick a target and a population, and go
+/p/:proj/s/:sim                     its results, and eight screens under it
+/p/:proj/s/:sim/settings            what the simulation IS — name, pairing, mode
+/p/:proj/people/:personId           one person, across every simulation
+```
+
+`library/targets/new` sits before `library/targets/:t` in the route table so that `new` is a verb
+rather than a target id. A target is still addressed by row id here, not by slug — the slug column
+exists and `StoredTargetView` does not carry it, which is the one place this table is aspirational
+rather than descriptive.
+
 **A cohort owns the headcount and the seed; nothing else does.** `size` is the only number that
 decides how many people exist — there is no `scale` — and the seed decides which traits, patience
 and budget each ordinal is sampled with. Putting the seed on the population or the simulation would

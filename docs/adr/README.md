@@ -38,3 +38,4 @@ One record per fixed decision from the kickoff brief, plus the routine calls mad
 | [0032](0032-translate-at-the-contract-boundary.md) | Translate at the contract boundary; do not rename internal nouns |
 | [0033](0033-tool-policy-belongs-to-the-target.md) | A tool policy belongs to the target; a persona may only narrow it |
 | [0034](0034-first-contact-check.md) | First contact — one account, one read-only call, before a run |
+| [0035](0035-a-project-holds-several-targets-and-several-populations.md) | A project holds several targets and several populations; a simulation is the pairing |

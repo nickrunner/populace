@@ -46,3 +46,24 @@ The resolution is the one the original amendment named: make the stop run-scoped
 switch as the global control it is, with a separate and clearly-labelled way to reach it. Scheduled
 runs (M4) make it urgent rather than creating it — a schedule that silently skipped its run is
 worse than one that waited. `WEB-ARCHITECTURE.md` §9 carries this as an open item.
+
+## Amendment — several targets make the shared-target gap reachable
+
+*Added with ADR-0035, which promotes several targets per project into the IA.*
+
+The gap named above — two simulations pointed at ONE target, where either is ephemeral, reset that
+target under the other, and "stop everything now" on one stops both — was previously something a
+user had to construct deliberately. A project could always hold several targets; nothing in the
+product said so, so almost nobody had two simulations on one.
+
+ADR-0035 puts targets, populations and the pairings between them on the project's own dashboard and
+invites exactly this arrangement. The gap is therefore now reachable by an ordinary user doing an
+ordinary thing.
+
+**What was done:** the Targets band states it, on the row, when more than one simulation points at
+a target — *"they share it, so an ephemeral start resets it under the others"*. Nothing refuses it.
+
+**What is still open, and was not addressed:** preflight does not block an ephemeral start when
+another execution is live on the same target, and the kill switch remains machine-wide, so stopping
+one simulation still stops every other one sharing the process. Neither is guarded; both are worth
+a decision before anybody is encouraged to run three simulations at once.

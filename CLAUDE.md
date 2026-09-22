@@ -63,6 +63,15 @@ and a mode, and it is what a user presses go on. A *person* is a durable individ
 overwritten (ADR-0031). A **run is one execution of a simulation**, carrying `simulationId` and a
 `seq` counting from 1.
 
+**Containment is not authoring order** (ADR-0035). The chain says what contains what. It does not
+say what you make first — and Target is a *sibling* of the population spine hanging off Project,
+not a link in it. The authoring order is target → population → simulation, and it contradicts the
+chain in no way. **A project holds SEVERAL targets and SEVERAL populations**, and a simulation is
+the pairing of one of each: dev and qa are two targets in one project, never two projects, because
+nothing is shared across projects and finding signatures only roll up within one. Nouns do not
+inflect — Targets, Personas, Cohorts, Populations, at nought, one and N — and where a project holds
+more than one of something, the server refuses to guess which and names the choices.
+
 **Ephemeral vs longitudinal is about history and termination, not determinism** (ADR-0030).
 Ephemeral means a clean slate — no memory, accounts or visit counts carried — and a bounded end
 (`visitsPerPerson` required). Longitudinal accumulates, is pausable and is unbounded
