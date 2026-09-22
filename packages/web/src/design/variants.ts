@@ -36,6 +36,34 @@ export const stateTransition =
   "transition-colors [transition-duration:var(--dur-state)] [transition-timing-function:var(--ease)]";
 
 /**
+ * **The 4px a focus ring needs, given back to it by a box that clips.**
+ *
+ * `focus-ring` is a `box-shadow` — 2px of the ground, then 2px of focus — so it is drawn
+ * *outside* the control's border box and contributes nothing to layout. That is what makes it
+ * correct on every shape in the system with no per-shape work, and it is also its one hazard: a
+ * `box-shadow` is painted overflow, and **painted overflow is clipped by any ancestor that is
+ * not `overflow: visible`**. A control lying flush against the edge of a scroll container or a
+ * fold therefore focuses with two or three sides of its ring and no fourth, which reads as a
+ * rendering fault rather than as focus — and it is how the product shipped: the dialog's fields,
+ * every row in the rail, and everything inside a `Disclosure`.
+ *
+ * The remedy is 4px of padding on the clipping box, taken straight back with an equal negative
+ * margin. The margin box is unchanged, so **nothing on the page moves**; the clip boundary moves
+ * out by exactly the ring. `ringRoom` is all four sides, for a box that clips on both axes;
+ * `ringRoomX` is the inline pair, for a fold whose vertical clip is the whole point of it and
+ * must not be loosened.
+ *
+ * It is not the answer everywhere. Where a clipping box has real padding already — a popover's
+ * `p-4`, a menu panel's `p-1` — the room is there and this adds nothing. And where the controls
+ * inside are deliberately full-bleed, as the rail's rows are, the fix is to inset the rows by
+ * the ring instead, because widening the scroller would push it past the column that holds it.
+ */
+export const ringRoom = "-m-1 p-1";
+
+/** `ringRoom`, inline axis only. See above. */
+export const ringRoomX = "-mx-1 px-1";
+
+/**
  * The control shell: inputs, selects, textareas, the secondary button, the segmented control.
  *
  * `rule-strong` rather than `rule`, because the kit's hairline is 1.37–2.62:1 and WCAG 1.4.11

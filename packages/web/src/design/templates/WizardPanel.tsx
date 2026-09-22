@@ -2,7 +2,7 @@ import * as CollapsiblePrimitive from "@radix-ui/react-collapsible";
 import { forwardRef, useId, type ReactNode } from "react";
 
 import { cn } from "../cn.js";
-import { focusRing, pressTransition } from "../variants.js";
+import { focusRing, pressTransition, ringRoomX } from "../variants.js";
 import { Heading, Icon, Mono, Text, VisuallyHidden } from "../atoms/index.js";
 import { Ledger, LedgerRow } from "../organisms/index.js";
 
@@ -156,10 +156,14 @@ export const WizardPanel = forwardRef<HTMLElement, WizardPanelProps>(function Wi
                   {/*
                     Two wrappers: the outer is the grid item and must be able to shrink below its
                     content and clip it; the inner carries the gap, because padding on a `0fr`
-                    track keeps the fold from closing its last few pixels.
+                    track keeps the fold from closing its last few pixels. The outer clips both
+                    axes though only the vertical clip is wanted, so `ringRoomX` gives a focused
+                    control inside the step the sides of its ring back.
                   */}
-                  <div className="min-h-0 overflow-hidden">
-                    <div className="pt-3">{step.body}</div>
+                  <div className={cn("min-h-0 overflow-hidden", ringRoomX)}>
+                    {/* `pb-1` is the ring's room at the foot; see `Disclosure` for why it is
+                        real padding here rather than a cancelled pair. */}
+                    <div className="pt-3 pb-1">{step.body}</div>
                   </div>
                 </CollapsiblePrimitive.Content>
               </CollapsiblePrimitive.Root>

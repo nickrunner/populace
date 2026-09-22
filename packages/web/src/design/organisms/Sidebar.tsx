@@ -84,7 +84,9 @@ const rail = cva("flex min-h-0 flex-col overflow-y-auto bg-surface", {
  * scrolls its main pane rather than the window.
  */
 const jump = cn(
-  "flex items-baseline gap-2 rounded-sm px-3 py-1.5",
+  // `px-2` and not `px-3`, exactly as `NavItem` — the rail's `<nav>` carries the other 4px so
+  // that this row's focus ring is not clipped by the scroller. See the `<nav>` below.
+  "flex items-baseline gap-2 rounded-sm px-2 py-1.5",
   "t-ui text-ink-soft hover:bg-hover hover:text-ink",
   pressTransition,
   focusRing,
@@ -210,7 +212,23 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
         `flex-1` so the target block is pinned to the foot of the rail on a tall window and
         carried along by the scroll on a short one — exactly as it behaves today.
       */}
-      <nav aria-label="This project" className="flex-1 px-0 pb-6">
+      {/*
+        `px-1` — 4px — and every row inside is `px-2` rather than `px-3` to pay for it, so the
+        labels still land 12px from the rail's edge and nothing in the rail appears to have
+        moved. It is here because THIS ELEMENT'S PARENT SCROLLS. `focus-ring` is a `box-shadow`,
+        which is painted overflow, and painted overflow is clipped by any ancestor that is not
+        `overflow: visible`; `overflow-y-auto` on the `<aside>` makes `overflow-x` compute to
+        `auto` too, so a row spanning the rail's full width focused with its top and bottom ring
+        strokes drawn and its left and right ones cut off flush. Ninety-odd rows across every
+        screen in the product.
+
+        The 4px is taken here rather than by widening the `<aside>` with `ringRoom`'s cancelled
+        pair, because the aside is not free to grow: it fills the shell's `--w-rail` column, and
+        4px of `surface` past that column's `border-r` is a rail bleeding over its own edge. So
+        the rows inset instead of the scroller widening, and the only visible change is that the
+        lit row's wash stops 4px short of the rail's edges.
+      */}
+      <nav aria-label="This project" className="flex-1 px-1 pb-6">
         <Stack gap={6}>
           <NavGroup>
             <NavItem to={href()} label="Simulations" count={project.counts.simulations} end />
@@ -281,7 +299,9 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
             <NavItem to={href("settings")} label="Settings" />
           </NavGroup>
 
-          <div className="px-3">
+          {/* `px-2` against the `<nav>`'s `px-1`, so the meter keeps the 12px gutter the rows
+              above it have. */}
+          <div className="px-2">
             <SpendMeter spent={spent} ceiling={ceiling} />
           </div>
         </Stack>

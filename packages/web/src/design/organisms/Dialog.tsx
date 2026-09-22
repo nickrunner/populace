@@ -2,7 +2,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { forwardRef, type ComponentRef, type ReactNode } from "react";
 
 import { cn } from "../cn.js";
-import { focusRing, surfaceBase } from "../variants.js";
+import { focusRing, ringRoom, surfaceBase } from "../variants.js";
 import { Heading, IconButton, Inline, Spacer, Stack, Text } from "../atoms/index.js";
 
 /**
@@ -172,8 +172,15 @@ export const Dialog = forwardRef<ComponentRef<typeof DialogPrimitive.Content>, D
                 Only the body scrolls. A panel that scrolls as a whole takes its own footer out
                 of reach, which is the failure mode of every long form in a modal. `min-h-0` is
                 what lets a flex child actually shrink instead of overflowing its parent.
+
+                `ringRoom` because this box clips. `overflow-y: auto` makes `overflow-x` compute
+                to `auto` as well — the CSS rule is that `visible` beside a non-`visible` becomes
+                `auto` — so a field at the body's full width had the left and right sides of its
+                focus ring cut off flush, the ring being a `box-shadow` and therefore painted
+                overflow. The padding and the negative margin cancel, so the fields sit exactly
+                where they did.
               */}
-              <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+              <div className={cn("min-h-0 flex-1 overflow-y-auto", ringRoom)}>{children}</div>
 
               {footer === undefined ? null : (
                 <Inline gap={2} align="center">

@@ -28,7 +28,12 @@ import { Chip, Text } from "../atoms/index.js";
 const navItem = cva(
   [
     "flex items-baseline gap-2",
-    "rounded-sm px-3 py-1.5",
+    // `px-2`, not `px-3`, and the missing 4px is on the rail's `<nav>` instead. The rail is a
+    // scroll container, so it clips painted overflow, and a row spanning its full width focused
+    // with the left and right sides of its ring cut off. The row is inset by exactly the ring
+    // and the gutter is made up outside it, so the label still sits 12px from the rail's edge
+    // and only the hover ground and the ring moved. See `Sidebar`'s `<nav>`.
+    "rounded-sm px-2 py-1.5",
     "t-ui",
     pressTransition,
     focusRing,

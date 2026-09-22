@@ -36,8 +36,11 @@ export const NavGroup = forwardRef<HTMLDivElement, NavGroupProps>(function NavGr
       role={labelled ? "group" : undefined}
       aria-labelledby={labelled ? labelId : undefined}
     >
+      {/* `px-2` for the same reason `NavItem` is `px-2`: the rail's `<nav>` carries the other
+          4px, so the ring of a focused row below this label is not clipped by the scroller. The
+          label still lands 12px from the rail's edge. */}
       {labelled ? (
-        <Text size="label" tone="muted" as="div" id={labelId} className="px-3 pb-2">
+        <Text size="label" tone="muted" as="div" id={labelId} className="px-2 pb-2">
           {label}
         </Text>
       ) : null}

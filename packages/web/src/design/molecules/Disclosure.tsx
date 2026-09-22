@@ -2,6 +2,7 @@ import { forwardRef, type ReactNode } from "react";
 import * as CollapsiblePrimitive from "@radix-ui/react-collapsible";
 
 import { cn } from "../cn.js";
+import { ringRoomX } from "../variants.js";
 import { Button, Icon, Text } from "../atoms/index.js";
 
 /**
@@ -96,9 +97,18 @@ export const Disclosure = forwardRef<HTMLDivElement, DisclosureProps>(function D
          * able to shrink below its content (`min-h-0`) and clip what overflows; the inner one
          * carries the gap to the trigger, because padding on a grid item whose track is `0fr`
          * would keep the fold from closing the last few pixels.
+         *
+         * The outer one clips on BOTH axes, though only the vertical clip is wanted — there is
+         * no way to spell `overflow-x: visible` beside a clipped y — so a control inside a fold
+         * lost the sides of its focus ring. `ringRoomX` gives them back without moving anything.
          */}
-        <div className="min-h-0 overflow-hidden">
-          <div className="pt-2">{children}</div>
+        <div className={cn("min-h-0 overflow-hidden", ringRoomX)}>
+          {/*
+           * `pb-1` is the ring's room at the foot of the fold, and it is real padding rather
+           * than `ringRoom`'s cancelled pair: the vertical clip is what closes this thing, so it
+           * cannot be loosened. 4px of space under the last row is the whole cost.
+           */}
+          <div className="pt-2 pb-1">{children}</div>
         </div>
       </CollapsiblePrimitive.Content>
     </CollapsiblePrimitive.Root>
