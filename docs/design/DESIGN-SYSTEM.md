@@ -993,6 +993,27 @@ dark) and in dark it is the very lime this row asked for, so the mark reads and 
 to make it read. The row above now says `primary` and `organisms/LiveActivityFeed` implements it;
 the two agree, and neither is the place to reopen it.
 
+**AMENDMENT — a centred overlay animates `transform`; it never animates the centring.**
+`Dialog`, `AlertDialog` and `ConfirmButton` centre themselves with `left-1/2 top-1/2
+-translate-x-1/2 -translate-y-1/2`, and their keyframes used to restate it —
+`translate(-50%, calc(-50% + 4px))` → `translate(-50%, -50%)`. Under Tailwind v3 that was
+correct: the utility compiled into `transform`, so the keyframe replaced it. **v4 compiles it
+into the independent `translate` property**, which COMPOSES with `transform` rather than being
+overridden by it, so each panel was displaced -50% twice and opened one panel-width left and one
+panel-height above the middle of the window. The centring lives in the utilities, in one place;
+the keyframes carry the 4px of travel and the fade and nothing else:
+
+```css
+@keyframes populace-dialog-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+```
+
+A keyframe that spells `-50%` anywhere is a review stop. The overlays that are positioned by
+Radix rather than by a utility — popover, dropdown, select, tooltip, toast — were never affected
+and are unchanged.
+
 **What must never animate.** This list is a review rule.
 
 - **`Bar` / `Meter` widths.** Live screens poll every 2s; an animated width means every bar on

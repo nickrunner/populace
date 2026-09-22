@@ -82,6 +82,11 @@ const panel = cn(
  *
  * Under `prefers-reduced-motion` theme.css collapses the durations to 0.01ms, and
  * `animation-fill-mode: both` holds the panel at its final frame, so it simply appears.
+ *
+ * **The travel is `transform` and the centring is `translate`**, and the two must not both spell
+ * the centring: Tailwind v4 compiles `-translate-x-1/2` into the independent `translate` property,
+ * which COMPOSES with `transform` instead of being replaced by it. See `Dialog.tsx` for the whole
+ * account — it is the same bug, and it put this panel off-centre by its own width and height.
  */
 const ALERT_CSS = `
 .populace-alert[data-state="open"] {
@@ -98,8 +103,8 @@ const ALERT_CSS = `
 }
 
 @keyframes populace-alert-in {
-  from { opacity: 0; transform: translate(-50%, calc(-50% + 4px)); }
-  to   { opacity: 1; transform: translate(-50%, -50%); }
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 @keyframes populace-alert-out {
   from { opacity: 1; }

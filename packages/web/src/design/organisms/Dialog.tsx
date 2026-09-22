@@ -66,6 +66,16 @@ const panel = cn(
  * Under `prefers-reduced-motion` theme.css collapses the durations to 0.01ms, and
  * `animation-fill-mode: both` holds the panel at its final frame, so it simply appears. That is
  * why the travel is an animation rather than a transition: there is a final frame to hold.
+ *
+ * **The travel is `transform`, and the centring is `translate`, and that is load-bearing.** These
+ * keyframes used to carry the centring too — `translate(-50%, calc(-50% + 4px))` → `translate(-50%,
+ * -50%)` — which was correct under Tailwind v3, where `-translate-x-1/2` compiled into the same
+ * `transform` property and the keyframe simply replaced it. **Tailwind v4 compiles it into the
+ * independent `translate` property instead**, which composes with `transform` rather than being
+ * overridden by it, so the panel was shifted -50% by the utility and another -50% by the keyframe
+ * and opened one panel-width left and one panel-height above the middle of the window. The
+ * centring now lives in exactly one place — the utilities on `panel` — and these frames express
+ * the 4px of travel and nothing else.
  */
 const DIALOG_CSS = `
 .populace-dialog[data-state="open"] {
@@ -82,8 +92,8 @@ const DIALOG_CSS = `
 }
 
 @keyframes populace-dialog-in {
-  from { opacity: 0; transform: translate(-50%, calc(-50% + 4px)); }
-  to   { opacity: 1; transform: translate(-50%, -50%); }
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 @keyframes populace-dialog-out {
   from { opacity: 1; }

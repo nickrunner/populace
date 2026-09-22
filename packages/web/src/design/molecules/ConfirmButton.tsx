@@ -59,6 +59,11 @@ const scrim = cn(
  * Under `prefers-reduced-motion`, `theme.css` collapses the durations to 0.01ms and
  * `animation-fill-mode: both` leaves the panel at its final frame, so it simply appears. That is
  * why the travel is an animation and not a transition: there is a final frame to hold.
+ *
+ * **The travel is `transform` and the centring is `translate`**, and the two must not both spell
+ * the centring: Tailwind v4 compiles `-translate-x-1/2` into the independent `translate` property,
+ * which COMPOSES with `transform` instead of being replaced by it. See `Dialog.tsx` for the whole
+ * account — it is the same bug, and it put this panel off-centre by its own width and height.
  */
 const CONFIRM_CSS = `
 .populace-confirm[data-state="open"] {
@@ -75,8 +80,8 @@ const CONFIRM_CSS = `
 }
 
 @keyframes populace-confirm-in {
-  from { opacity: 0; transform: translate(-50%, calc(-50% + 4px)); }
-  to   { opacity: 1; transform: translate(-50%, -50%); }
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 @keyframes populace-confirm-out {
   from { opacity: 1; }
