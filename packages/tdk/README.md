@@ -29,17 +29,27 @@ import { populaceProvisioning } from "@populace/tdk";
 
 app.use("/populace", populaceProvisioning({
   secret: process.env.POPULACE_SECRET,
-  async createPerson({ email, displayName, tag, attributes }) {
-    const { uid } = await admin.auth().createUser({ email, displayName, password: … });
-    await ensureAppUser(uid, email);          // the bit only you can write
-    return { userId: uid, bearerToken: await idTokenFor(uid) };
+  async createPerson({ email, displayName, password }) {
+    // Create the user in your system here, however you already do it,
+    // then return their id and a token they can call your MCP server with.
+    return { userId, bearerToken };
   },
-  async removePerson({ userId }) { await admin.auth().deleteUser(userId); },
+  async refreshPerson({ userId }) {
+    // Mint a fresh token for a user you already made.
+    return { bearerToken };
+  },
+  async removePerson({ userId }) {
+    // Delete the user. A sweep may call this twice, so make it safe to repeat.
+  },
 }));
 ```
 
-Point populace at `https://your-dev-app/populace` with that same secret and the population has
-accounts.
+The three comments are your work — making a user, giving them a session, taking them away — however
+your product already does those. Point populace at `https://your-dev-app/populace` with that same
+secret and the population has accounts.
+
+Only `createPerson` is required. What the arguments mean, and what `attributes` carries, is under
+**The wire** below.
 
 ## The ladder
 

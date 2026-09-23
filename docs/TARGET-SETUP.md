@@ -84,23 +84,28 @@ import { populaceProvisioning } from "@populace/tdk";
 
 app.use("/populace", populaceProvisioning({
   secret: process.env.POPULACE_SECRET,
-  async createPerson({ email, displayName, password, tag, attributes }) {
-    // The only part populace cannot write for you: make a user of YOUR product.
-    const user = await db.users.create({ email, name: displayName, password });
-    return { userId: user.id, bearerToken: await sessionTokenFor(user.id) };
+  async createPerson({ email, displayName, password }) {
+    // Create the user in your system here, however you already do it,
+    // then return their id and a token they can call your MCP server with.
+    return { userId, bearerToken };
   },
-  async refreshPerson({ userId, refreshToken }) {
-    // Called when their token is about to go stale. See "How a person stays signed in".
-    return { bearerToken: await sessionTokenFor(userId), expiresAt: null, refreshToken };
+  async refreshPerson({ userId }) {
+    // Mint a fresh token for a user you already made.
+    return { bearerToken };
   },
   async removePerson({ userId }) {
-    await db.users.delete(userId);
+    // Delete the user. A sweep may call this twice, so make it safe to repeat.
   },
 }));
 ```
 
-Everything else is the package: the HTTP contract, the constant-time secret check, the run tags,
-expiry and renewal, idempotent teardown, listing by tag, the dev-only guard, the error shapes.
+The three comments are the whole of your work: making a user, giving them a session, and taking
+them away again, however your product already does those. Everything else is the package: the HTTP contract, the constant-time
+secret check, the run tags, expiry and renewal, idempotent teardown, listing by tag, the dev-only
+guard, the error shapes.
+
+Only `createPerson` is required. `refreshPerson` and `removePerson` are optional, and the handshake
+reports honestly which of them you wrote — see below for what each one being absent costs.
 
 ### Where those arguments come from
 

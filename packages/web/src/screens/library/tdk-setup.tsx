@@ -64,46 +64,31 @@ function newSecret(): string {
 }
 
 /**
- * The functions only the app can write, spelled the same way in every mount.
+ * The three functions only the app can write, spelled the same way in every mount.
  *
- * `refreshPerson` is here rather than left to the docs because the first question a reader asks
- * of this snippet is the one it used to leave out: *what happens when that token goes stale?* A
- * sample showing only `createPerson` teaches that a session is made once and lasts forever, which
- * is untrue of every token with an expiry on it — and a population runs for days.
+ * **No ORM, and one comment per hook saying what goes there.** This is a block somebody pastes
+ * into their own server, so a `db.users.create` is a guess about their stack that reads as an
+ * instruction, and an invented `createUser()` is a function they will look for and not find. A
+ * sentence naming the work is honest about the one thing the sample cannot know.
  *
- * The comments say where each argument comes from, because nothing else on the screen does and a
- * reader cannot tell an argument they must honour from one they may ignore.
+ * What the fields MEAN, where they come from and what `attributes` is for are prose on this screen
+ * and in TARGET-SETUP.md. They were comments here once; at the width this renders they wrapped
+ * into thirty-six lines and the well folded the code away behind "show all".
+ *
+ * `refreshPerson` earns its three lines: a sample showing only `createPerson` teaches that a
+ * session is made once and lasts forever, which is untrue of every token with an expiry on it.
  */
-const CREATE_PERSON = `  // populace makes up the person and sends you who they are. "handle" is their stable
-  // name for the whole run ("marta-2"), "displayName" is the name a screenshot will show,
-  // "email" carries the run so a sweep can find them, and "tag" identifies the run itself —
-  // store it if you can, it is how accounts are found again when populace's own rows are gone.
-  // "attributes" is what differs between two people: the persona's traits, sampled per
-  // person. Read the keys you recognise and ignore the rest — it is never a claim.
-  async createPerson({ email, displayName, password, handle, tag, attributes }) {
-    // The only part populace cannot write for you: make a user of YOUR product.
-    const user = await db.users.create({
-      email,
-      name: displayName,
-      password,
-      plan: attributes.plan === "paid" ? "paid" : "free",
-    });
-    return {
-      userId: user.id,                       // how populace names this person from now on
-      bearerToken: await sessionTokenFor(user.id),
-      expiresAt: null,                       // when it dies; null means it never does
-      refreshToken: null,                    // anything you need to mint the next one
-    };
+const HOOKS = `  async createPerson({ email, displayName, password }) {
+    // Create the user in your system here, however you already do it,
+    // then return their id and a token they can call your MCP server with.
+    return { userId, bearerToken };
   },
-
-  // Called before a visit when the bearer has expired or is within ten minutes of it —
-  // never mid-conversation. Leave it out and every session must outlive the whole run.
-  async refreshPerson({ userId, refreshToken }) {
-    return { bearerToken: await sessionTokenFor(userId), expiresAt: null, refreshToken };
+  async refreshPerson({ userId }) {
+    // Mint a fresh token for a user you already made.
+    return { bearerToken };
   },
-
   async removePerson({ userId }) {
-    await db.users.delete(userId);
+    // Delete the user. A sweep may call this twice, so make it safe to repeat.
   },`;
 
 function snippetFor(stack: Stack): string {
@@ -115,7 +100,7 @@ const kit = populaceProvisioning({
   secret: process.env.POPULACE_SECRET,
   // A fetch handler is never told where it was mounted, so the kit is.
   basePath: "/api/populace",
-${CREATE_PERSON}
+${HOOKS}
 });
 
 export const GET = kit.fetch;
@@ -127,7 +112,7 @@ export const POST = kit.fetch;`;
 const kit = populaceProvisioning({
   secret: process.env.POPULACE_SECRET,
   basePath: "/populace",
-${CREATE_PERSON}
+${HOOKS}
 });
 
 app.all("/populace", (c) => kit.fetch(c.req.raw));
@@ -137,7 +122,7 @@ app.all("/populace/*", (c) => kit.fetch(c.req.raw));`;
 
 app.use("/populace", populaceProvisioning({
   secret: process.env.POPULACE_SECRET,
-${CREATE_PERSON}
+${HOOKS}
 }));`;
 }
 
@@ -200,6 +185,22 @@ export function TdkSetup({ url, secret, secretSet, onSecret, targetId }: TdkSetu
           Install it with <Code inProse>npm i @populace/tdk</Code>, then:
         </Text>
         <PayloadBlock caption="Paste this into your app" value={snippetFor(stack)} />
+        {/*
+          What the sample deliberately does not say in comments. A paste block should be paste-able;
+          the meaning belongs out here, where it can wrap without folding the code away.
+        */}
+        <Text size="read-sm" tone="soft" as="p">
+          The three comments are your work — the rest is the package. populace invents the person
+          and sends you who they are: <Code inProse>displayName</Code> is the name a
+          screenshot will show, <Code inProse>email</Code> and <Code inProse>tag</Code> carry the
+          run so a sweep can find them again, and <Code inProse>attributes</Code> holds whatever
+          differs between one person and the next — a plan tier, a seat count — for a product that
+          needs it.
+        </Text>
+        <Text size="read-sm" tone="soft" as="p">
+          <Code inProse>refreshPerson</Code> is called when a token is about to go stale, never
+          mid-visit. Leave it out and every session has to outlive the whole run.
+        </Text>
         {secretSet && secret === "" ? (
           <Text size="read-sm" tone="soft" as="p">
             A secret is already stored for this target, so none has been made. Type a new one in
