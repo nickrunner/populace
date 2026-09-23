@@ -71,7 +71,9 @@ function probeAgent(at: Date): Agent {
     simulationId: "first-contact",
     populationId: "first-contact",
     cohortSlug: "probe",
-    personId: "probe#1",
+    personId: "probe.probe#1",
+    context: "",
+    cohortTools: { allow: [], deny: [], destructive: "confirm" },
     name: "First contact",
     details: "",
     // Unique per check, so a target that refuses a duplicate email does not report the SECOND

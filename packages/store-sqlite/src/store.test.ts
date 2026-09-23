@@ -29,10 +29,12 @@ function agent(id: string, nextWakeAt: string | null = null, runId = "run_a_aaaa
     simulationId: "sim_test",
     populationId: "pop",
     cohortSlug: "p",
-    personId: "p#1",
+    personId: "p.p#1",
+    context: "",
+    cohortTools: { allow: [], deny: [], destructive: "confirm" },
     name: "Ingrid Bergstrom",
     details: "",
-    handle: "ingrid-bergstrom-p-1",
+    handle: "ingrid-bergstrom-p.p-1",
     persona: { ...persona },
     ordinal: 0,
     status: "active",
@@ -52,29 +54,46 @@ function storedPersona(id: string, slug: string): StoredPersona {
 }
 
 function cohort(id: string, slug: string, personaId: string, name: string): Cohort {
-  return { id, projectId: "default", slug, name, personaId, size: 2, seed: "populace", notes: "", createdAt: at, updatedAt: at };
+  return {
+    id,
+    projectId: "default",
+    slug,
+    name,
+    context: "You share a condition.",
+    mix: [{ personaId, weight: 1 }],
+    traits: {},
+    tools: { allow: [], deny: [], destructive: "confirm" },
+    model: {},
+    seed: "populace",
+    notes: "",
+    createdAt: at,
+    updatedAt: at,
+  };
 }
 
 function population(id: string, slug: string, cohortIds: string[]): StoredPopulation {
-  return { id, projectId: "default", slug, name: "Everyone", cohortIds, createdAt: at, updatedAt: at };
+  return { id, projectId: "default", slug, name: "Everyone", members: cohortIds.map((cohortId) => ({ cohortId, size: 2 })), createdAt: at, updatedAt: at };
 }
 
 function person(cohortId: string, cohortSlug: string, ordinal: number, name: string): Person {
+  const laneSlug = `${cohortSlug}.first-timers`;
   return {
-    id: `${cohortSlug}#${ordinal + 1}`,
+    id: `${laneSlug}#${ordinal + 1}`,
     projectId: "default",
     cohortId,
     cohortSlug,
     personaId: "psn_1",
     personaSlug: "first-timers",
+    laneSlug,
     ordinal,
     name,
     details: "",
-    handle: `${cohortSlug}-${ordinal + 1}`,
+    handle: `${laneSlug}-${ordinal + 1}`,
     persona: { ...persona },
+    overrides: { traits: {} },
     generatedBy: "seeded",
     generatedByModel: "",
-    seed: `populace:${cohortSlug}:${ordinal}`,
+    seed: `populace:${laneSlug}:${ordinal}`,
     archivedAt: null,
     createdAt: at,
     updatedAt: at,

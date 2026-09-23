@@ -9,50 +9,62 @@ function randomSuffix(length: number): string {
   return out;
 }
 
+/**
+ * The base36 timestamp in the middle of every id — made STRICTLY increasing within a process, so
+ * two rows minted in the same millisecond still sort in the order they were made. Sorting by
+ * `createdAt` and then by id is how the default population is chosen (`ensurePopulation`), and
+ * a tie at millisecond resolution broken by a random suffix picked the default at random.
+ */
+let lastStamp = 0;
+function stamp(at: number = Date.now()): string {
+  lastStamp = at > lastStamp ? at : lastStamp + 1;
+  return lastStamp.toString(36);
+}
+
 /** Run ids look like `run_m1abc2de_x7k9q2`; the middle is a base36 timestamp so ids sort by time. */
 export function newRunId(now: Date = new Date()): string {
-  return `run_${now.getTime().toString(36)}_${randomSuffix(6)}`;
+  return `run_${stamp(now.getTime())}_${randomSuffix(6)}`;
 }
 
 export function newWakeId(): string {
-  return `wake_${Date.now().toString(36)}_${randomSuffix(6)}`;
+  return `wake_${stamp()}_${randomSuffix(6)}`;
 }
 
 export function newFindingId(): string {
-  return `fnd_${Date.now().toString(36)}_${randomSuffix(6)}`;
+  return `fnd_${stamp()}_${randomSuffix(6)}`;
 }
 
 export function newIdentityId(): string {
-  return `idn_${Date.now().toString(36)}_${randomSuffix(6)}`;
+  return `idn_${stamp()}_${randomSuffix(6)}`;
 }
 
 export function newJobId(): string {
-  return `job_${Date.now().toString(36)}_${randomSuffix(6)}`;
+  return `job_${stamp()}_${randomSuffix(6)}`;
 }
 
 /** Authored rows get surrogate ids so a slug can be renamed without the row moving. */
 export function newProjectId(): string {
-  return `prj_${Date.now().toString(36)}_${randomSuffix(6)}`;
+  return `prj_${stamp()}_${randomSuffix(6)}`;
 }
 
 export function newTargetId(): string {
-  return `tgt_${Date.now().toString(36)}_${randomSuffix(6)}`;
+  return `tgt_${stamp()}_${randomSuffix(6)}`;
 }
 
 export function newPersonaId(): string {
-  return `psn_${Date.now().toString(36)}_${randomSuffix(6)}`;
+  return `psn_${stamp()}_${randomSuffix(6)}`;
 }
 
 export function newPopulationId(): string {
-  return `pop_${Date.now().toString(36)}_${randomSuffix(6)}`;
+  return `pop_${stamp()}_${randomSuffix(6)}`;
 }
 
 export function newCohortId(): string {
-  return `coh_${Date.now().toString(36)}_${randomSuffix(6)}`;
+  return `coh_${stamp()}_${randomSuffix(6)}`;
 }
 
 export function newSimulationId(): string {
-  return `sim_${Date.now().toString(36)}_${randomSuffix(6)}`;
+  return `sim_${stamp()}_${randomSuffix(6)}`;
 }
 
 export const TAG_PREFIX = "populace:";

@@ -33,6 +33,7 @@ import type {
 } from "@populace/contract";
 import { clusterFindings, primaryTool, signatureHistories, type CohortCensus, type SignatureHistory } from "@populace/reports";
 import { ReadModel, participantOf } from "./read-model.js";
+import { headcountOf, lanesOf, RosterIncomplete, sizeIn, type Lane } from "./cohort-store.js";
 
 /**
  * The read models the project, simulation and participant screens are rendered from (SPEC §6.2).
@@ -133,7 +134,7 @@ export class ProjectReadModel {
    * in more than one of them — and NOT ONE PERSON'S NAME (SPEC §7.1).
    */
   async overview(project: Project): Promise<ProjectOverviewView> {
-    const [base, simulations, runs, triage, settings, killSwitch, targets, populations, cohorts] = await Promise.all([
+    const [base, simulations, runs, triage, settings, killSwitch, targets, populations] = await Promise.all([
       this.summary(project),
       this.store.listSimulations({ projectId: project.id }),
       this.store.listRuns({ projectId: project.id }),
@@ -142,7 +143,6 @@ export class ProjectReadModel {
       this.store.getKillSwitch(),
       this.store.listTargets(project.id),
       this.store.listPopulations(project.id),
-      this.store.listCohorts(project.id),
     ]);
     const findings = runs.length === 0 ? [] : await this.store.listFindings({ runIds: runs.map((r) => r.id) });
     // The same question the people writer's ceiling asks, asked the same way. Two numerators under
@@ -204,16 +204,13 @@ export class ProjectReadModel {
         contacted: target.firstContact?.outcome ?? null,
         simulations: simulations.filter((simulation) => simulation.targetId === target.id).length,
       })),
-      populations: populations.map((population) => {
-        const held = new Set(population.cohortIds);
-        return {
-          id: population.id,
-          name: population.name,
-          cohorts: population.cohortIds.length,
-          people: cohorts.filter((cohort) => held.has(cohort.id)).reduce((sum, cohort) => sum + cohort.size, 0),
-          simulations: simulations.filter((simulation) => simulation.populationId === population.id).length,
-        };
-      }),
+      populations: populations.map((population) => ({
+        id: population.id,
+        name: population.name,
+        cohorts: population.members.length,
+        people: headcountOf(population),
+        simulations: simulations.filter((simulation) => simulation.populationId === population.id).length,
+      })),
     };
   }
 
@@ -237,7 +234,7 @@ export class ProjectReadModel {
       this.store.listCohorts(simulation.projectId),
       this.store.getTarget(simulation.targetId),
     ]);
-    const held = population ? population.cohortIds.flatMap((id) => cohorts.filter((c) => c.id === id)) : [];
+    const held = population ? population.members.flatMap((member) => cohorts.filter((c) => c.id === member.cohortId)) : [];
     const [wakes, findings] = await Promise.all([
       runs.length === 0 ? Promise.resolve<Wake[]>([]) : this.store.listWakes({ runIds: runs.map((r) => r.id) }),
       runs.length === 0 ? Promise.resolve<Finding[]>([]) : this.store.listFindings({ runIds: runs.map((r) => r.id) }),
@@ -276,7 +273,7 @@ export class ProjectReadModel {
         id: population?.id ?? simulation.populationId,
         name: population?.name ?? "",
         cohorts: held.length,
-        people: sum(held.map((c) => c.size)),
+        people: population ? headcountOf(population) : 0,
       },
       target: {
         id: target?.id ?? simulation.targetId,
@@ -320,15 +317,22 @@ export class ProjectReadModel {
     },
   ): Promise<PreflightView> {
     const summary = await this.simulationSummary(simulation);
-    const [population, cohorts, personas, target] = await Promise.all([
+    const [population, cohorts, target] = await Promise.all([
       this.store.getPopulation(simulation.populationId),
       this.store.listCohorts(simulation.projectId),
-      this.store.listPersonas(simulation.projectId),
       this.store.getTarget(simulation.targetId),
     ]);
-    const held: Cohort[] = population ? population.cohortIds.flatMap((id) => cohorts.filter((c) => c.id === id)) : [];
+    const held: Cohort[] = population ? population.members.flatMap((member) => cohorts.filter((c) => c.id === member.cohortId)) : [];
     const people = held.length === 0 ? [] : await this.store.listPeople({ projectId: simulation.projectId });
-    const personaName = new Map(personas.map((p) => [p.id, p.spec.name]));
+    // Who each cohort is drawn from at THIS population's size: the same arithmetic resolution does.
+    const lanesByCohort = new Map<string, Lane[]>();
+    for (const cohort of held) {
+      try {
+        lanesByCohort.set(cohort.id, await lanesOf(this.store, cohort, population ? sizeIn(population, cohort.id) : 0));
+      } catch (err) {
+        if (!(err instanceof RosterIncomplete)) throw err;
+      }
+    }
     const warnings: string[] = [];
     const undescribed = input.tools.filter((t) => t.description.trim() === "").map((t) => t.name);
     if (undescribed.length) warnings.push(`${undescribed.length} tool(s) have no description; people decide what to try from descriptions alone.`);
@@ -356,14 +360,14 @@ export class ProjectReadModel {
       cohorts: held.map((cohort) => ({
         slug: cohort.slug,
         name: cohort.name,
-        personaName: personaName.get(cohort.personaId) ?? cohort.slug,
-        people: cohort.size,
+        personas: (lanesByCohort.get(cohort.id) ?? []).map((lane) => ({ name: lane.persona.spec.name, people: lane.count })),
+        people: population ? sizeIn(population, cohort.id) : 0,
         sampleNames: people
-          .filter((p) => p.cohortId === cohort.id && p.ordinal < cohort.size)
+          .filter((p) => p.cohortId === cohort.id && p.archivedAt === null)
           .slice(0, 3)
           .map((p) => p.name),
       })),
-      totalPeople: sum(held.map((c) => c.size)),
+      totalPeople: population ? headcountOf(population) : 0,
       plannedVisits: input.estimate.visits,
       estimate: input.estimate,
       promptPreview: input.promptPreview,
@@ -846,7 +850,7 @@ function cohortRollUp(agents: Agent[], wakes: Wake[], findings: Finding[], membe
     return {
       cohortSlug: slug,
       name: named.get(slug) ?? slug,
-      personaName: own[0]?.persona.name ?? "",
+      personas: [...new Set(own.map((a) => a.persona.name))],
       people: own.length,
       stillActive: own.filter((a) => a.status === "active").length,
       gaveUp,

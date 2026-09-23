@@ -69,3 +69,14 @@ of their own: the moment a person carries authored content, the persona stops be
 the cohort stops meaning anything. Editing one person is an escape hatch — `PATCH
 …/people/:ordinal`, name and blurb only — and it sets `generatedBy: "authored"` so regeneration
 leaves it alone.
+
+## Amendment — the sampled dimensions may be set by hand (ADR-0039)
+
+*Added 2026-09-23.* "Nothing else" is narrowed. A person also carries `overrides` — `patience`,
+`budgetUsd`, `traits` — the dimensions the persona already SAMPLES per person, applied last at
+expansion over the sample and the cohort's overlay. Setting what was going to be drawn anyway does
+not make the persona stop being a template; goals, constraints, backstory and tool policy still
+cannot be set on a person, for the reason above. `PATCH …/people/:personId` takes them, null hands
+a dimension back to the draw, and any edit stamps `authored`. People are numbered per lane
+(`cohortSlug.personaSlug#ordinal`), and the roster is sized by the populations that send the
+cohort rather than by a `size` on the cohort, which no longer exists.

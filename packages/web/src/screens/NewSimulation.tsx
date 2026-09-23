@@ -13,6 +13,7 @@ import {
   Field,
   FieldError,
   FieldGrid,
+  Inline,
   Input,
   Link,
   MetaSentence,
@@ -25,10 +26,12 @@ import {
   RadioGroup,
   Section,
   Skeleton,
+  Spacer,
   Stack,
   Stat,
   StatGroup,
   StateBlock,
+  Stepper,
   Text,
   type LatticeDot,
   type StateKind,
@@ -67,9 +70,9 @@ import {
  * execution will find (§7.3).
  */
 
-/** A population's headcount is the sum of its cohorts; there is no second multiplier (ADR-0029). */
+/** A population's headcount is the sum of its member sizes; there is no second multiplier (ADR-0039). */
 function headcountOf(population: PopulationView): number {
-  return population.members.reduce((sum, member) => sum + member.count, 0);
+  return population.people;
 }
 
 /**
@@ -78,7 +81,7 @@ function headcountOf(population: PopulationView): number {
  * Nobody here has a name yet, so a dot stands for somebody in this cohort rather than a number.
  */
 function castOf(member: PopulationView["members"][number]): readonly LatticeDot[] {
-  return Array.from({ length: member.count }, (_, index) => ({
+  return Array.from({ length: member.size }, (_, index) => ({
     id: `${member.cohortId}#${String(index)}`,
     state: "provisional" as const,
     label: `somebody in ${member.cohortName}`,
@@ -164,6 +167,21 @@ export function NewSimulation() {
 
   const population = pops.find((option) => option.id === chosenPopulation);
   const headcount = population === undefined ? 0 : headcountOf(population);
+
+  /*
+    The numbers are editable HERE, on the population that is chosen: "set up your population
+    right there" is the whole reason the steppers are on this screen. They write the population,
+    not the simulation — a simulation is a pairing and carries no headcount of its own — so a
+    change here is a change to every simulation that sends this cast, and the sentence under the
+    rows says so.
+  */
+  const resize = useMutation({
+    mutationFn: ({ cohortId, size }: { cohortId: string; size: number }) =>
+      api.savePopulation(key, population?.id ?? "", {
+        members: (population?.members ?? []).map((member) => ({ cohortId: member.cohortId, size: member.cohortId === cohortId ? size : member.size })),
+      }),
+    onSuccess: () => queries.invalidateQueries(),
+  });
   const plannedVisits = bounded ? headcount * visits : headcount;
   const perVisit = estimate.data?.perWakeUsd;
   const billed = bounded ? plannedVisits : headcount;
@@ -362,17 +380,34 @@ export function NewSimulation() {
                 <Stack gap={4}>
                   <Text size="read-sm" tone="soft" as="p">
                     By cohort — nobody has been anywhere yet, so every person in it is drawn as
-                    somebody who has not arrived.
+                    somebody who has not arrived. The numbers are {population.name}&rsquo;s, so a
+                    change here changes it for every simulation that sends it.
                   </Text>
 
                   {population.members.map((member) => (
-                    <CohortCapsule
-                      key={member.cohortId}
-                      name={member.cohortName}
-                      dots={castOf(member)}
-                      total={member.count}
-                    />
+                    <Stack key={member.cohortId} gap={1}>
+                      <Inline gap={3} align="center" wrap>
+                        <CohortCapsule name={member.cohortName} dots={castOf(member)} total={member.size} />
+                        <Spacer />
+                        <Stepper
+                          label={`How many of ${member.cohortName} go`}
+                          value={member.size}
+                          onChange={(size) => {
+                            resize.mutate({ cohortId: member.cohortId, size });
+                          }}
+                          min={1}
+                          max={999}
+                        />
+                      </Inline>
+                      {member.personas.length > 1 ? (
+                        <Text size="meta" tone="muted" as="p">
+                          {member.personas.map((persona) => `${String(persona.count)} ${persona.name}`).join(", ")}
+                        </Text>
+                      ) : null}
+                    </Stack>
                   ))}
+
+                  {resize.isError ? <PayloadBlock caption="The number was not changed" value={resize.error.message} error /> : null}
                 </Stack>
               )}
             </Stack>

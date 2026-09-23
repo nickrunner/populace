@@ -13,6 +13,8 @@ const agent: Agent = {
   populationId: "pop",
   cohortSlug: "casual",
   personId: "casual#1",
+  context: "",
+  cohortTools: { allow: [], deny: [], destructive: "confirm" },
   name: "Ingrid Bergstrom",
   details: "",
   handle: "ingrid-bergstrom-casual-1",

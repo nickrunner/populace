@@ -39,3 +39,17 @@ export const PersonaSpecSchema = PersonaSchema.omit({ traits: true, patience: tr
   traits: z.record(z.string(), TraitSpecSchema).default({}),
 });
 export type PersonaSpec = z.infer<typeof PersonaSpecSchema>;
+
+/**
+ * The dimensions of a persona that are SAMPLED per person — and that a person may therefore be
+ * given by hand without the persona stopping being a template (ADR-0031 amendment). Goals,
+ * constraints, backstory and tool policy are not here on purpose: those are what a persona IS.
+ *
+ * Applied last, over the sample and over the cohort's overlay, so a hand-set value always wins.
+ */
+export const PersonOverridesSchema = z.object({
+  patience: z.number().int().min(1).max(5).optional(),
+  budgetUsd: z.number().nonnegative().optional(),
+  traits: z.record(z.string(), TraitValueSchema).default({}),
+});
+export type PersonOverrides = z.infer<typeof PersonOverridesSchema>;

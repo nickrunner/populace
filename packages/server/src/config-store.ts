@@ -15,8 +15,11 @@ import {
   type Cohort,
   type ConfigSnapshot,
   type JsonValue,
+  type ModelOverride,
   type PersonaSpec,
   type PersonProfile,
+  type ToolPolicy,
+  type TraitValue,
   type PopulaceConfig,
   type Project,
   type Simulation,
@@ -26,7 +29,7 @@ import {
   type StoredSettings,
   type StoredTarget,
 } from "@populace/core";
-import { ensureRoster, rosterProfiles } from "./cohort-store.js";
+import { ensureRoster, lanesOf, rosterProfiles, RosterIncomplete, sizeIn } from "./cohort-store.js";
 
 /**
  * Assembly between the authored rows and the resolved `PopulaceConfig` the runner consumes
@@ -178,7 +181,7 @@ export async function ensurePopulation(store: Store, projectId = DEFAULT_PROJECT
     projectId,
     slug: DEFAULT_POPULATION_SLUG,
     name: "Everyone",
-    cohortIds: [],
+    members: [],
     createdAt: at,
     updatedAt: at,
   };
@@ -189,116 +192,89 @@ export async function ensurePopulation(store: Store, projectId = DEFAULT_PROJECT
 /**
  * The population's cohorts, in the population's own order.
  *
- * `population.cohortIds` is authoritative in both directions. A cohort id that no longer resolves
+ * `population.members` is authoritative in both directions. A cohort id that no longer resolves
  * is dropped rather than throwing — the population row is composition and a dangling reference is
  * a display problem, not a reason to refuse to run. A cohort the population does NOT hold is not
  * added back: this is the list that decides who is expanded into agents and spends money, and a
- * project can hold cohorts outside its population (a YAML import rewrites `cohortIds` and leaves
+ * project can hold cohorts outside its population (a YAML import rewrites the members and leaves
  * whatever was authored in the browser behind). Those belong to a library listing, not here.
  */
 export async function cohortsOf(store: Store, projectId = DEFAULT_PROJECT_ID): Promise<Cohort[]> {
-  const population = await ensurePopulation(store, projectId);
-  const byId = new Map((await store.listCohorts(projectId)).map((cohort) => [cohort.id, cohort]));
-  return population.cohortIds.flatMap((id) => {
-    const cohort = byId.get(id);
-    return cohort ? [cohort] : [];
-  });
+  return cohortsOfPopulation(store, await ensurePopulation(store, projectId));
 }
 
 /**
- * Sets the headcount of `persona`'s cohort **inside one named population**, creating it on the way
- * up and taking it out on the way to zero.
- *
- * **The population is a parameter now, and that is the bug this fixes.** It used to take a
- * `projectId` and call `ensurePopulation` internally — which resolves the row whose slug is
- * `everyone`, whatever population the caller had in mind. `PUT /projects/:p/populations/:pop`
- * therefore parsed `:pop`, resolved it, checked it, and then edited a different row. You could
- * create a second population through the API and never put anything in it: every write went to the
- * default, and a simulation on the new one failed with "nobody is in the population yet". A
- * population is composition and nothing else (ADR-0029), so composing one is the only thing it is
- * for, and it was the one thing that did not work.
- *
- * **The cohort is looked up inside the population, not across the project.** `cohorts.find(c =>
- * c.personaId === persona.id)` found the first cohort in the whole project on that persona, which
- * is wrong twice over: it edited a cohort belonging to another population, and it made one persona
- * able to back only one cohort through this path even though the data model has always allowed
- * several (two cohorts on one persona is why an agent id carries the COHORT slug, ADR-0029).
- *
- * **Going to zero removes from THIS population; it deletes the row only when nothing else holds
- * it.** A cohort is reusable by design — the same cohort in two populations is the same people —
- * so "take them out of this cast" and "delete these people" are different acts and the old code
- * did the second when asked for the first. With a shared cohort it also threw: the store refuses
- * to delete a cohort a population still holds, and nothing caught it, so removing a shared cohort
- * from one population was a 500.
+ * What everybody in a cohort made from one persona alone has in common, when nobody has said.
+ * A starter carries its own line; an authored persona adopted straight into a cohort gets this
+ * one, and the cohort screen is where it is rewritten.
  */
-export async function setCohortSize(
-  store: Store,
-  population: StoredPopulation,
-  persona: StoredPersona,
-  count: number,
-  maxVisits?: number | null,
-): Promise<void> {
+export const DEFAULT_COHORT_CONTEXT = "You came across this product on your own and are trying it for your own reasons.";
+
+/**
+ * Sets how many of `cohortId`'s people this population sends, and writes the people that number
+ * calls for (ADR-0039). Nought takes the cohort out of THIS population and nothing else: a cohort
+ * is a library object, the same people in every cast that holds it, so "send none of them here"
+ * and "delete these people" are different acts and only the second touches the row.
+ *
+ * The roster is written where the headcount is decided, not later on a screen that happens to
+ * read the cohort: `counts.people` is the number of PEOPLE ROWS and is what the zero state gates
+ * the way forward on. `ensureRoster` sizes the cohort at the largest size any population gives
+ * it, so a shrink here archives people only if no other population still sends them.
+ */
+export async function setPopulationMember(store: Store, population: StoredPopulation, cohortId: string, size: number): Promise<StoredPopulation> {
+  const at = now();
+  const held = population.members.some((member) => member.cohortId === cohortId);
+  const members =
+    size <= 0
+      ? population.members.filter((member) => member.cohortId !== cohortId)
+      : held
+        ? population.members.map((member) => (member.cohortId === cohortId ? { cohortId, size } : member))
+        : [...population.members, { cohortId, size }];
+  const updated: StoredPopulation = { ...population, members, updatedAt: at };
+  await store.savePopulation(updated);
+  await ensureRoster(store, cohortId, new Date(at));
+  return updated;
+}
+
+/**
+ * The cohort that IS this persona and nothing else — a mix of one — sent at `count` people in
+ * `population`. This is the first-run path: adopting a starter has to make a persona, a cohort,
+ * a population member and a roster in one request without the reader learning the word cohort
+ * (ADR-0029). It finds an existing one-persona cohort on this persona before making one, and
+ * prefers the one the population already holds.
+ */
+export async function ensurePersonaCohort(store: Store, population: StoredPopulation, persona: StoredPersona, count: number, context = DEFAULT_COHORT_CONTEXT): Promise<Cohort> {
   const projectId = population.projectId;
   const cohorts = await store.listCohorts(projectId);
-  const held = new Set(population.cohortIds);
-  const existing = cohorts.find((cohort) => held.has(cohort.id) && cohort.personaId === persona.id);
+  const soleOn = cohorts.filter((cohort) => cohort.mix.length === 1 && cohort.mix[0]?.personaId === persona.id);
+  const existing = soleOn.find((cohort) => sizeIn(population, cohort.id) > 0) ?? soleOn[0];
   const at = now();
-
-  if (count <= 0) {
-    if (!existing) return;
-    // The population lets go first: the store refuses to delete a cohort a population still holds,
-    // and naming the referrer is the point of that refusal (SPEC §2.14).
-    await store.savePopulation({ ...population, cohortIds: population.cohortIds.filter((id) => id !== existing.id), updatedAt: at });
-    // Anybody else still holding it? Then this was "take them out of this cast", not "delete these
-    // people", and the row and its roster stay exactly as they are.
-    const others = (await store.listPopulations(projectId)).filter(
-      (other) => other.id !== population.id && other.cohortIds.includes(existing.id),
-    );
-    if (others.length === 0) await store.deleteCohort(existing.id);
-    return;
+  let cohort = existing;
+  if (!cohort) {
+    // A cohort's slug is the first half of every lane slug, so two cohorts in one project cannot
+    // share one — the same de-dup loop `POST /cohorts` carries.
+    const taken = new Set(cohorts.map((c) => c.slug));
+    let slug = persona.slug;
+    for (let n = 2; taken.has(slug); n++) slug = `${persona.slug}-${String(n)}`;
+    cohort = {
+      id: newCohortId(),
+      projectId,
+      slug,
+      name: persona.spec.name,
+      context,
+      mix: [{ personaId: persona.id, weight: 1 }],
+      traits: {},
+      tools: { allow: [], deny: [], destructive: "confirm" },
+      model: {},
+      seed: "populace",
+      notes: "",
+      createdAt: at,
+      updatedAt: at,
+    };
+    await store.saveCohort(cohort);
   }
-
-  // A cohort's slug is the middle segment of every agent id, so two cohorts in one project cannot
-  // share one. The create path used to hardcode `persona.slug`, which collided the moment a second
-  // cohort was cut from the same persona — the same de-dup loop `POST /cohorts` already carries.
-  const taken = new Set(cohorts.map((cohort) => cohort.slug));
-  let slug = persona.slug;
-  for (let n = 2; taken.has(slug); n++) slug = `${persona.slug}-${String(n)}`;
-
-  const base: Cohort = existing
-    ? { ...existing, size: count, updatedAt: at }
-    : { id: newCohortId(), projectId, slug, name: persona.spec.name, personaId: persona.id, size: count, seed: "populace", notes: "", createdAt: at, updatedAt: at };
-  const cap = maxVisits === undefined ? base.maxWakes : (maxVisits ?? undefined);
-  const cohort: Cohort = { ...base };
-  if (cap === undefined) delete cohort.maxWakes;
-  else cohort.maxWakes = cap;
-  await store.saveCohort(cohort);
-  if (!held.has(cohort.id)) await store.savePopulation({ ...population, cohortIds: [...population.cohortIds, cohort.id], updatedAt: at });
-  // The cast is written where the headcount is decided, not later, on a screen that happens to
-  // read the cohort. `counts.people` is the number of PEOPLE ROWS, and it is what the zero state
-  // gates the way forward on: a starter adopted here with no roster behind it left the project
-  // reading "0 people configured" and the one path into a first run with no end (SPEC §7.5).
-  await ensureRoster(store, cohort.id);
-}
-
-/**
- * Take every cohort on `persona` out of every population that holds it, then delete those cohorts.
- *
- * Deleting a persona is the one act that genuinely means "and everything cut from it". Doing it
- * through `setCohortSize(…, 0)` against one population left the cohort in every other population
- * that held it and then `deletePersona` refused, because a cohort still named the persona — a
- * half-applied destructive change followed by a 500.
- */
-export async function removePersonaCohorts(store: Store, projectId: string, persona: StoredPersona): Promise<void> {
-  const doomed = (await store.listCohorts(projectId)).filter((cohort) => cohort.personaId === persona.id);
-  if (doomed.length === 0) return;
-  const ids = new Set(doomed.map((cohort) => cohort.id));
-  const at = now();
-  for (const population of await store.listPopulations(projectId)) {
-    if (!population.cohortIds.some((id) => ids.has(id))) continue;
-    await store.savePopulation({ ...population, cohortIds: population.cohortIds.filter((id) => !ids.has(id)), updatedAt: at });
-  }
-  for (const cohort of doomed) await store.deleteCohort(cohort.id);
+  await setPopulationMember(store, population, cohort.id, count);
+  return cohort;
 }
 
 /**
@@ -308,6 +284,10 @@ export async function removePersonaCohorts(store: Store, projectId: string, pers
  */
 interface ResolvedMember {
   cohort: string;
+  context: string;
+  traits: Record<string, TraitValue>;
+  tools: ToolPolicy;
+  model: ModelOverride;
   cohortName: string;
   persona: PersonaSpec;
   count: number;
@@ -342,8 +322,8 @@ export class ConfigIncomplete extends Error {
 /** The cohorts a population holds, in the population's own order. */
 export async function cohortsOfPopulation(store: Store, population: StoredPopulation): Promise<Cohort[]> {
   const byId = new Map((await store.listCohorts(population.projectId)).map((cohort) => [cohort.id, cohort]));
-  return population.cohortIds.flatMap((id) => {
-    const cohort = byId.get(id);
+  return population.members.flatMap((member) => {
+    const cohort = byId.get(member.cohortId);
     return cohort ? [cohort] : [];
   });
 }
@@ -440,33 +420,46 @@ export async function resolveSimulationConfig(store: Store, process: ProcessConf
   const settings = await ensureSettings(store, simulation.projectId);
   const personas = await store.listPersonas(simulation.projectId);
   const cohorts = population ? await cohortsOfPopulation(store, population) : [];
-  const byId = new Map(personas.map((p) => [p.id, p]));
 
   const members: ResolvedMember[] = [];
   for (const cohort of cohorts) {
-    const persona = byId.get(cohort.personaId);
-    if (!persona) {
-      missing.push(`the ${cohort.name} cohort points at a persona that no longer exists (${cohort.personaId})`);
+    const size = population ? sizeIn(population, cohort.id) : 0;
+    let lanes;
+    let roster;
+    try {
+      // The lanes at THIS population's size. The roster is written at the largest size any
+      // population gives the cohort, so it is a superset, and each lane takes its first `count`.
+      lanes = await lanesOf(store, cohort, size);
+      // Reading a cohort fills its empty slots, so a cohort sized a moment ago has a cast by the
+      // time anything asks who is going. It never overwrites a person who already exists.
+      roster = await ensureRoster(store, cohort.id);
+    } catch (err) {
+      if (!(err instanceof RosterIncomplete)) throw err;
+      missing.push(err.message);
       continue;
     }
-    // Reading a cohort fills its empty slots, so a cohort authored a moment ago has a cast by the
-    // time anything asks who is going. It never overwrites a person who already exists.
-    const roster = await ensureRoster(store, cohort.id);
-    members.push({
-      // The cohort slug is what agent ids are built from, and the persona is inlined with its
-      // immutable slug as the id: a continuation matches on both, so neither may follow a
-      // display-name rename (`DATA-MODEL.md` §5).
-      cohort: cohort.slug,
-      cohortName: cohort.name,
-      persona: { ...persona.spec, id: persona.slug },
-      count: cohort.size,
-      seed: cohort.seed,
-      // The cast is frozen into the snapshot, so a three-month-old execution still renders the
-      // right names even if the cohort has been re-cast since.
-      people: rosterProfiles(roster),
-      ...(cohort.cadence ? { cadence: cohort.cadence } : {}),
-      ...(cohort.maxWakes === undefined ? {} : { maxWakes: cohort.maxWakes }),
-    });
+    for (const lane of lanes) {
+      if (lane.count === 0) continue;
+      members.push({
+        // The cohort slug and the persona's immutable slug are what lane slugs, and therefore
+        // agent ids, are built from: a continuation matches on both, so neither may follow a
+        // display-name rename (`DATA-MODEL.md` §5).
+        cohort: cohort.slug,
+        cohortName: cohort.name,
+        context: cohort.context,
+        traits: cohort.traits,
+        tools: cohort.tools,
+        model: cohort.model,
+        persona: { ...lane.persona.spec, id: lane.persona.slug },
+        count: lane.count,
+        seed: cohort.seed,
+        // The cast is frozen into the snapshot, so a three-month-old execution still renders the
+        // right names even if the cohort has been re-cast since.
+        people: rosterProfiles(roster.filter((person) => person.laneSlug === lane.laneSlug && person.ordinal < lane.count)),
+        ...(cohort.cadence ? { cadence: cohort.cadence } : {}),
+        ...(cohort.maxWakes === undefined ? {} : { maxWakes: cohort.maxWakes }),
+      });
+    }
   }
   if (members.length === 0) missing.push("nobody is in the population yet");
   if (missing.length || !target || !population) throw new ConfigIncomplete(missing);
@@ -638,38 +631,53 @@ export async function seedProjectFromConfig(
 
   const existingPersonas = new Map((await store.listPersonas(projectId)).map((p) => [p.slug, p]));
   const existingCohorts = new Map((await store.listCohorts(projectId)).map((cohort) => [cohort.slug, cohort]));
-  const cohortIds: string[] = [];
-  for (const member of config.population.members) {
-    const slug = member.persona.id;
-    let persona = existingPersonas.get(slug);
-    if (!persona) {
-      persona = { id: newPersonaId(), projectId, slug, spec: member.persona, origin: "imported", createdAt: at, updatedAt: at };
-      await store.savePersona(persona);
-      existingPersonas.set(slug, persona);
+  // A file's members are LANES: one cohort mixing three personas is three members sharing a
+  // cohort slug. They are folded back into one cohort whose weights are the counts, so the
+  // apportionment gives back exactly the numbers the file wrote.
+  const byCohort = new Map<string, PopulaceConfig["population"]["members"]>();
+  for (const member of config.population.members) byCohort.set(member.cohort, [...(byCohort.get(member.cohort) ?? []), member]);
+  const members: StoredPopulation["members"] = [];
+  for (const [slug, lanes] of byCohort) {
+    const mix: Cohort["mix"] = [];
+    for (const member of lanes) {
+      const personaSlug = member.persona.id;
+      let persona = existingPersonas.get(personaSlug);
+      if (!persona) {
+        persona = { id: newPersonaId(), projectId, slug: personaSlug, spec: member.persona, origin: "imported", createdAt: at, updatedAt: at };
+        await store.savePersona(persona);
+        existingPersonas.set(personaSlug, persona);
+      }
+      if (!mix.some((entry) => entry.personaId === persona.id)) mix.push({ personaId: persona.id, weight: member.count });
     }
-    const existing = existingCohorts.get(member.cohort);
+    const first = lanes[0];
+    if (!first) continue;
+    const existing = existingCohorts.get(slug);
     const cohort: Cohort = {
       id: existing?.id ?? newCohortId(),
       projectId,
-      slug: member.cohort,
-      name: member.cohortName,
-      personaId: persona.id,
-      size: member.count,
-      seed: member.seed,
+      slug,
+      name: first.cohortName,
+      context: first.context || DEFAULT_COHORT_CONTEXT,
+      mix,
+      traits: first.traits,
+      tools: first.tools,
+      model: first.model,
+      seed: first.seed,
       notes: "",
-      ...(member.cadence ? { cadence: member.cadence } : {}),
-      ...(member.maxWakes === undefined ? {} : { maxWakes: member.maxWakes }),
+      ...(first.cadence ? { cadence: first.cadence } : {}),
+      ...(first.maxWakes === undefined ? {} : { maxWakes: first.maxWakes }),
       createdAt: existing?.createdAt ?? at,
       updatedAt: at,
     };
     await store.saveCohort(cohort);
     existingCohorts.set(cohort.slug, cohort);
-    cohortIds.push(cohort.id);
+    members.push({ cohortId: cohort.id, size: lanes.reduce((sum, member) => sum + member.count, 0) });
   }
 
   const population = await ensurePopulation(store, projectId);
-  const stored: StoredPopulation = { ...population, slug: config.population.id, name: config.population.name, cohortIds, updatedAt: at };
+  const stored: StoredPopulation = { ...population, slug: config.population.id, name: config.population.name, members, updatedAt: at };
   await store.savePopulation(stored);
+  for (const member of members) await ensureRoster(store, member.cohortId);
 
   await store.saveSettings({
     projectId,
@@ -710,7 +718,7 @@ export async function seedProjectFromConfig(
       }),
     );
   }
-  return { seeded: true, reason: `imported ${cohortIds.length} cohort(s), ${created.length} simulation(s) and the ${config.target.name} target` };
+  return { seeded: true, reason: `imported ${members.length} cohort(s), ${created.length} simulation(s) and the ${config.target.name} target` };
 }
 
 /** What a redacted secret is replaced by, so a reader can see that one was used. */

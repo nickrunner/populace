@@ -6,11 +6,15 @@ import {
   FindingSchema,
   FirstContactOutcomeSchema,
   MemorySchema,
+  ModelOverrideSchema,
   PersonaSchema,
+  PersonOverridesSchema,
   RetiredReasonSchema,
   SeveritySchema,
   SimulationModeSchema,
   ToolCallRecordSchema,
+  ToolPolicySchema,
+  TraitValueSchema,
   TriageStateSchema,
   VerdictSchema,
   VerificationSchema,
@@ -233,59 +237,104 @@ export type ProjectOverviewView = z.infer<typeof ProjectOverviewViewSchema>;
 // ---- cohorts and people ----------------------------------------------------
 
 export const PersonViewSchema = z.object({
+  /** `cohortSlug.personaSlug#n` */
   id: z.string(),
+  /** Which lane of the cohort — `cohortSlug.personaSlug` — this person is numbered in. */
+  laneSlug: z.string(),
+  personaSlug: z.string(),
+  personaName: z.string(),
+  /** 0-based within the lane. */
   ordinal: z.number().int().nonnegative(),
   name: z.string(),
   details: z.string(),
   handle: z.string(),
   generatedBy: z.enum(["model", "seeded", "authored"]),
+  /** EFFECTIVE values: the sample, then the cohort's overlay, then what was set by hand. */
   patience: z.number().int(),
   budgetUsd: z.number().nonnegative(),
   traits: PersonaSchema.shape.traits,
+  /** What was set on this person by hand, so a screen can say which of the above were. */
+  overrides: PersonOverridesSchema,
   archived: z.boolean(),
 });
 export type PersonView = z.infer<typeof PersonViewSchema>;
 
+/**
+ * A cohort as the wire says it (ADR-0039): what its people share, which personas they are drawn
+ * from and in what ratio, and — read off the populations that send it — how many there are.
+ */
 export const CohortViewSchema = z.object({
   id: z.string(),
   slug: z.string(),
   name: z.string(),
-  personaId: z.string(),
-  personaName: z.string(),
+  /** What everybody in it has in common, addressed to them. Never empty. */
+  context: z.string(),
+  mix: z.array(
+    z.object({
+      personaId: z.string(),
+      personaSlug: z.string(),
+      personaName: z.string(),
+      weight: z.number().positive(),
+      /** How many of the cohort's people this persona gets at the cohort's current size. */
+      people: z.number().int().nonnegative(),
+    }),
+  ),
+  traits: PersonaSchema.shape.traits,
+  tools: ToolPolicySchema,
+  model: ModelOverrideSchema,
+  /** The largest size any population sends it at: how many people it holds. Nought when in none. */
   size: z.number().int().nonnegative(),
   generated: z.object({ model: z.number().int().nonnegative(), seeded: z.number().int().nonnegative(), authored: z.number().int().nonnegative() }),
   cadence: CadenceSchema.partial().nullable(),
   /** The cohort's own visit cap. The row spells it `maxWakes`; the wire does not (ADR-0032). */
   maxVisits: z.number().int().positive().nullable(),
+  seed: z.string(),
   notes: z.string(),
-  usedByPopulations: z.array(z.object({ id: z.string(), name: z.string() })),
+  usedByPopulations: z.array(z.object({ id: z.string(), name: z.string(), size: z.number().int().positive() })),
 });
 export type CohortView = z.infer<typeof CohortViewSchema>;
 
+export const CohortMixInputSchema = z.object({ personaId: z.string().min(1), weight: z.number().positive().default(1) });
+
+/**
+ * Creating asks for a name, a context and at least one persona; editing sends what changed. There
+ * is no size here: how many go is a property of the population that sends them (ADR-0039).
+ */
 export const CohortInputSchema = z.object({
   slug: z
     .string()
     .regex(/^[a-z0-9][a-z0-9-]*$/)
     .optional(),
   name: z.string().min(1).optional(),
-  personaId: z.string().optional(),
-  size: z.number().int().nonnegative().optional(),
+  context: z.string().optional(),
+  mix: z.array(CohortMixInputSchema).min(1).optional(),
+  traits: PersonaSchema.shape.traits.optional(),
+  tools: ToolPolicySchema.optional(),
+  model: ModelOverrideSchema.optional(),
   cadence: CadenceSchema.partial().nullable().optional(),
   maxVisits: z.number().int().positive().nullable().optional(),
   seed: z.string().optional(),
   notes: z.string().optional(),
-  /** Put this cohort into the project's population (or take it out again). */
-  inPopulation: z.boolean().optional(),
 });
 export type CohortInput = z.infer<typeof CohortInputSchema>;
 
-/** The escape hatch: one person, renamed or re-blurbed by hand. */
-export const PersonPatchSchema = z.object({ name: z.string().min(1).optional(), details: z.string().optional() });
+/**
+ * One person, by hand: name, blurb, and the sampled dimensions — patience, budget, traits. Null
+ * clears an override and the sample shows through again. As much or as little individuality as
+ * wanted (ADR-0031 amendment).
+ */
+export const PersonPatchSchema = z.object({
+  name: z.string().min(1).optional(),
+  details: z.string().optional(),
+  patience: z.number().int().min(1).max(5).nullable().optional(),
+  budgetUsd: z.number().nonnegative().nullable().optional(),
+  traits: z.record(z.string(), TraitValueSchema).nullable().optional(),
+});
 export type PersonPatch = z.infer<typeof PersonPatchSchema>;
 
 export const GeneratePeopleBodySchema = z.object({
-  /** Which ordinals to rewrite. Absent means every one of them. */
-  ordinals: z.array(z.number().int().nonnegative()).optional(),
+  /** Which people to rewrite, by id. Absent means every one of them. */
+  personIds: z.array(z.string().min(1)).optional(),
   /** Regeneration replaces people who already exist, so it is refused without this. */
   confirm: z.boolean().default(false),
 });
@@ -323,7 +372,8 @@ export const PreflightViewSchema = z.object({
     z.object({
       slug: z.string(),
       name: z.string(),
-      personaName: z.string(),
+      /** Who they are drawn from, and how many of each, at this simulation's size. */
+      personas: z.array(z.object({ name: z.string(), people: z.number().int().nonnegative() })),
       people: z.number().int().nonnegative(),
       sampleNames: z.array(z.string()),
     }),
@@ -345,7 +395,7 @@ export type PreflightView = z.infer<typeof PreflightViewSchema>;
 export const ParticipantSummaryViewSchema = z.object({
   id: z.string(),
   runId: z.string(),
-  /** The durable person (`cohortSlug#n`) this participant is an instance of. */
+  /** The durable person (`cohortSlug.personaSlug#n`) this participant is an instance of. */
   personId: z.string(),
   name: z.string(),
   cohortSlug: z.string(),
@@ -435,7 +485,8 @@ export type ParticipantDetailView = z.infer<typeof ParticipantDetailViewSchema>;
 export const RunCohortViewSchema = z.object({
   cohortSlug: z.string(),
   name: z.string(),
-  personaName: z.string(),
+  /** The personas who went, by name. A cohort mixes them. */
+  personas: z.array(z.string()),
   people: z.number().int().nonnegative(),
   stillActive: z.number().int().nonnegative(),
   gaveUp: z.number().int().nonnegative(),

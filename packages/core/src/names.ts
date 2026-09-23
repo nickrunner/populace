@@ -89,12 +89,12 @@ export function nameFrom(seed: string, used: ReadonlySet<string> = new Set()): s
   }
 }
 
-/** Names for a whole cohort, in ordinal order, none of them repeated. */
-export function namesForCohort(seed: string, cohortSlug: string, count: number): string[] {
+/** Names for a whole lane, in ordinal order, none of them repeated. */
+export function namesForLane(seed: string, laneSlug: string, count: number): string[] {
   const used = new Set<string>();
   const out: string[] = [];
   for (let ordinal = 0; ordinal < count; ordinal++) {
-    const name = nameFrom(`${seed}:${cohortSlug}:${ordinal}`, used);
+    const name = nameFrom(`${seed}:${laneSlug}:${ordinal}`, used);
     used.add(name);
     out.push(name);
   }
@@ -102,20 +102,21 @@ export function namesForCohort(seed: string, cohortSlug: string, count: number):
 }
 
 /**
- * The email local part for one person. Cohort-scoped, which is the fix for
+ * The email local part for one person. Lane-scoped, which is the fix for
  * `slugify(persona.id)-${ordinal + 1}`: that collided the moment two cohorts shared a persona, and
- * a colliding signup email means the second cohort cannot make an account at all.
+ * a colliding signup email means the second cohort cannot make an account at all. The lane's dot
+ * is kept: a dot inside a local part is legal everywhere, and the handle reads like the id.
  *
  * MINTED HERE, ONCE, by the roster writer. Everything downstream — expansion, the config snapshot,
  * the signup provider — carries the value rather than calling this again, so a handle that did not
  * come from here still reaches the account (SPEC §5.3.5).
  */
-export function handleFor(name: string, cohortSlug: string, ordinal: number): string {
+export function handleFor(name: string, laneSlug: string, ordinal: number): string {
   const slug = name
     .toLowerCase()
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return `${slug || "person"}-${cohortSlug}-${ordinal + 1}`;
+  return `${slug || "person"}-${laneSlug}-${ordinal + 1}`;
 }

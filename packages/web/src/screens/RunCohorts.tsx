@@ -309,7 +309,7 @@ function factsFor(
   titles: ReadonlyMap<string, string>,
 ): readonly MetaFact[] {
   return [
-    { key: "persona", node: cohort.personaName },
+    { key: "persona", node: cohort.personas.join(", ") },
     { key: "visits", node: plural(cohort.visits, "visit") },
     { key: "filed", node: `${cohort.findings} filed, ${cohort.confirmed} confirmed` },
     {

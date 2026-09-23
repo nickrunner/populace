@@ -3,7 +3,7 @@ import { JobViewSchema, routes } from "@populace/contract";
 import { PopulaceConfigSchema, newRunId, tagForRun, type Finding, type Identity, type PopulaceConfig, type Run, type Store } from "@populace/core";
 import { SqliteStore } from "@populace/store-sqlite";
 import { describe, expect, it } from "vitest";
-import { ensurePopulation, ensureSimulation, resolveSimulationConfig, setCohortSize, snapshotConfig, type ProcessConfig } from "./config-store.js";
+import { ensurePersonaCohort, ensurePopulation, ensureSimulation, resolveSimulationConfig, snapshotConfig, type ProcessConfig } from "./config-store.js";
 import { startServer, type RunningServer } from "./serve.js";
 
 const processConfig: ProcessConfig = { store: { kind: "sqlite", path: ":memory:" }, digestDir: "digests" };
@@ -215,7 +215,7 @@ describe("connecting to the target from a run's frozen config", () => {
       // is still in the snapshot; its credentials are in rows that no longer resolve.
       const persona = (await server.store.listPersonas("default"))[0];
       expect(persona).toBeDefined();
-      await setCohortSize(server.store, await ensurePopulation(server.store, "default"), persona!, 0);
+      await ensurePersonaCohort(server.store, await ensurePopulation(server.store, "default"), persona!, 0);
       target.seen.length = 0;
 
       const res = await fetch(`${server.url}${routes.runSweep(runId)}`, {

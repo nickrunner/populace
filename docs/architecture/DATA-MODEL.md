@@ -21,8 +21,8 @@ import, not the entry point (ADR-0025).
 | `projects` | `id` | — |
 | `targets` | `id` | `project_id`, `slug` (unique per project), `name`, `updated_at` |
 | `personas` | `id` | `project_id`, `slug` (unique per project), `origin`, `updated_at` |
-| `cohorts` | `id` | `project_id`, `slug` (unique per project), `persona_id`, `size`, `updated_at` |
-| `people` | `(project_id, id)` | `cohort_id`, `cohort_slug`, `persona_id`, `ordinal`, `archived_at` |
+| `cohorts` | `id` | `project_id`, `slug` (unique per project), `updated_at` — the mix is in `cohort_personas(cohort_id, persona_id)` |
+| `people` | `(project_id, id)` | `cohort_id`, `cohort_slug`, `persona_id`, `lane_slug`, `ordinal`, `archived_at` |
 | `populations` | `id` | `project_id`, `slug` (unique per project), `updated_at` |
 | `simulations` | `id` | `project_id`, `slug` (unique per project), `population_id`, `target_id`, `mode`, `archived` |
 | `settings` | `project_id` | — |
@@ -178,12 +178,13 @@ Target     { id, projectId, slug, name, mcp: McpEndpoint[], webBaseUrl?, descrip
              identity: IdentityConfig, reset: TargetReset, createdAt, updatedAt }
 Persona    { id, projectId, slug, spec: PersonaSpec,
              origin: "starter" | "authored" | "imported", createdAt, updatedAt }
-Cohort     { id, projectId, slug, name, personaId, size, seed,
-             cadence?, maxWakes?, notes, createdAt, updatedAt }
-Person     { projectId, id: `${cohortSlug}#${ordinal}`, cohortId, cohortSlug, personaId, ordinal,
-             name, details, handle, generatedBy: "seeded" | "model" | "authored",
-             archivedAt?, updatedAt }
-Population { id, projectId, slug, name, cohortIds: string[], createdAt, updatedAt }
+Cohort     { id, projectId, slug, name, context, mix: { personaId, weight }[], traits, tools,
+             model, seed, cadence?, maxWakes?, notes, createdAt, updatedAt }
+Person     { projectId, id: `${cohortSlug}.${personaSlug}#${ordinal}`, cohortId, cohortSlug,
+             personaId, personaSlug, laneSlug, ordinal, name, details, handle,
+             overrides: { patience?, budgetUsd?, traits },
+             generatedBy: "seeded" | "model" | "authored", archivedAt?, updatedAt }
+Population { id, projectId, slug, name, members: { cohortId, size }[], createdAt, updatedAt }
 Simulation { id, projectId, slug, name, description, populationId, targetId,
              mode: "ephemeral" | "longitudinal", visitsPerPerson: number | null,
              cadence, seed, autoSweep, requireFreshTarget, archived, createdAt, updatedAt }
@@ -222,15 +223,18 @@ rather than a target id. A target is still addressed by row id here, not by slug
 exists and `StoredTargetView` does not carry it, which is the one place this table is aspirational
 rather than descriptive.
 
-**A cohort owns the headcount and the seed; nothing else does.** `size` is the only number that
-decides how many people exist — there is no `scale` — and the seed decides which traits, patience
-and budget each ordinal is sampled with. Putting the seed on the population or the simulation would
-re-cast the same people every time they were run, which destroys comparison across executions
-(ADR-0029).
+**The population owns the headcount; the cohort owns the seed and the people** (ADR-0039). A
+population member's `size` is the only number that decides how many people go — there is no
+`scale` and a cohort has no size — and it is apportioned across the cohort's mix by highest
+averages, one lane per persona. The seed decides which traits, patience and budget each ordinal in
+a lane is sampled with. Putting the seed on the population or the simulation would re-cast the
+same people every time they were run, which destroys comparison across executions (ADR-0029).
 
 **A person is a row, not a derivation.** Names are stable because they are stored, not because the
 generator is deterministic: `ensureRoster` fills empty slots only and never overwrites, a shrink
-archives rather than deletes, and changing the seed renames nobody (ADR-0031).
+archives rather than deletes, and changing the seed renames nobody (ADR-0031). The roster is sized
+at the largest size any population gives the cohort, so a cohort in two casts is one roster and
+the smaller cast meets a prefix of each lane.
 
 **Deletes refuse, except at the project boundary.** A row another authored row points at cannot be
 deleted: `deleteTarget`, `deletePersona`, `deleteCohort` and `deletePopulation` throw
@@ -247,11 +251,12 @@ resolve — invisible in every screen and counted by every `COUNT(*)`.
 A simulation is the one thing ARCHIVED rather than deleted by default, because its executions are
 history worth keeping under a name; deleting it with them is an explicit ask.
 
-**Cohorts and populations reference; snapshots inline.** `Population.cohortIds` and
-`Cohort.personaId` are references, so one cohort can be in two populations and one persona behind
-two cohorts. The snapshot inlines the full `PersonaSpec` *and the roster* — `member.people[]` with
-each person's id, name, details and handle — because the frozen layer must not depend on a row that
-can later change. That is what lets a three-month-old execution still render the right names after
+**Cohorts and populations reference; snapshots inline.** `Population.members[].cohortId` and
+`Cohort.mix[].personaId` are references, so one cohort can be in two populations and one persona
+in two cohorts' mixes. The snapshot inlines one member per LANE — the full `PersonaSpec`, the
+cohort's `context`, overlay and policy, *and the roster*: `member.people[]` with each person's id,
+name, details, handle and hand-set overrides — because the frozen layer must not depend on a row
+that can later change. That is what lets a three-month-old execution still render the right names after
 its cohort has been re-cast.
 
 **The shapes are the existing schemas.** `PersonaSpec`, `Cadence`, `McpEndpoint`, `IdentityConfig`,

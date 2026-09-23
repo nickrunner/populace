@@ -100,7 +100,7 @@ export function FirstRun() {
       label: "Pick who visits it",
       done: done.people,
       summary: done.people
-        ? `${peopleWord(project.counts.people)} across ${plural(project.counts.cohorts, "kind of person", "kinds of person")}`
+        ? `${peopleWord(project.counts.people)} across ${plural(project.counts.personas, "kind of person", "kinds of person")}`
         : undefined,
       body: <PickStep />,
     },

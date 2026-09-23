@@ -357,13 +357,14 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
     return finish("error", `could not connect to target: ${message}`, null, message);
   }
 
-  // The TARGET's policy merged with the PERSONA's, in the one place that decides what reaches the
-  // model at all. Deny wins and allow intersects, so a persona can narrow this and never widen it:
+  // The TARGET's policy merged with the PERSONA's and the COHORT's, in the one place that decides
+  // what reaches the model at all. Deny wins and allow intersects, so either can narrow this and
+  // never widen it:
   // a tool the target forbids is unreachable whoever is wearing the costume, and a persona added
   // later inherits the target's floor rather than the whole surface. Merging anywhere further out
   // — in the config assembler, in a UI — would leave a wake built by hand (the CLI, a test, a
   // future cloud job) running on the persona's policy alone.
-  const policy = effectiveToolPolicy(config.target.tools, agent.persona.tools);
+  const policy = effectiveToolPolicy(config.target.tools, agent.persona.tools, agent.cohortTools);
   const multi = sessions.size > 1;
   const targetTools: { key: string; tool: TargetTool; session: McpSession }[] = [];
   for (const session of sessions.values()) {

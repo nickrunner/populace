@@ -198,7 +198,7 @@ describe("the read-only M1 API over a real run", () => {
     expect(searcher?.account?.email).toContain("@"); // she signed up through the target's own tools
     // The person, not the persona: a cohort is a group and the participant is somebody in it.
     expect(searcher?.name).not.toBe("");
-    expect(searcher?.personId).toBe(`${searcher?.cohortSlug}#1`);
+    expect(searcher?.personId).toBe(`${searcher?.cohortSlug}.${searcher?.personaSlug}#1`);
 
     const wakes = pageOf(WakeSummarySchema).parse(await json(await api.request(routes.runWakes(runId))));
     expect(wakes.items).toHaveLength(2);

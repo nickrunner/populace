@@ -1262,9 +1262,9 @@ that cluster into **problems**. Use exactly these words, in this shape:
 | **project** | one product under test; scopes targets, personas, cohorts, populations, simulations, settings, triage | workspace, org |
 | **target** | the app's MCP endpoint and its policy | server, system under test |
 | **persona** | a kind of person | archetype, profile |
-| **person** | a durable named individual, `cohortSlug#ordinal` | agent, user ID, instance |
-| **cohort** | N people of one persona; the **only** place a headcount lives (`size`) | group, batch, scale |
-| **population** | the ordered set of cohorts; composition and nothing else | fleet, swarm, squad |
+| **person** | a durable named individual, `cohortSlug.personaSlug#ordinal` | agent, user ID, instance |
+| **cohort** | people who share a condition, drawn from a mix of personas in a ratio; no headcount of its own | group, batch, scale, lane (internal: one persona's share of a cohort) |
+| **population** | which cohorts go and how many of each; the **only** place a headcount lives (`size`) | fleet, swarm, squad |
 | **simulation** | a population + a target + a mode; the thing you press go on | job, campaign, test |
 | **execution** | one time you pressed go | run (in copy — "run" survives only in `runId` and the CLI) |
 | **visit** | one session one person had | wake, session, episode |

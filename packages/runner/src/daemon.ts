@@ -106,12 +106,12 @@ export class LocalDaemon {
       if (!current && continuing) continue;
       wanted.add(agent.id);
       if (current) {
-        // Keep runtime state; refresh persona and limits from config.
+        // Keep runtime state; refresh persona, cohort context and limits from config.
         // Raising maxWakes brings back an agent the limit retired, but never one that walked away.
         const allowance = agent.maxWakes === null ? null : current.wakeCount + agent.maxWakes;
         const maxWakes = current.continuedFrom && current.continuedFrom.atWake === current.wakeCount ? allowance : agent.maxWakes;
         const revivable = current.status === "retired" && current.retiredReason !== "gave-up" && maxWakes !== null && current.wakeCount < maxWakes;
-        const merged: Agent = { ...current, persona: agent.persona, maxWakes, ...(revivable ? { status: "active" as const, retiredReason: null } : {}) };
+        const merged: Agent = { ...current, persona: agent.persona, context: agent.context, cohortTools: agent.cohortTools, maxWakes, ...(revivable ? { status: "active" as const, retiredReason: null } : {}) };
         if (merged.status === "active" && merged.nextWakeAt === null) merged.nextWakeAt = this.scheduler.firstWakeAt(merged, cadence, now).toISOString();
         await this.store.upsertAgent(merged);
         agents.push(merged);

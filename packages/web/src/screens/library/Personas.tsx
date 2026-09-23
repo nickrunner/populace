@@ -37,36 +37,20 @@ import {
  * `AlertDialog` whose body says what actually happens, with the number (DESIGN-SYSTEM §7.4).
  */
 
-/** A headcount with its noun, so a bare figure never stands alone in a row (§7.4). */
-function headcount(count: number): string {
-  return count === 1 ? "1 person" : `${count} people`;
-}
-
 /**
- * What the dialog promises, and nothing more — read off the cohorts that actually draw from this
- * persona rather than off `PersonaView.count`.
+ * What the dialog promises, and nothing more — read off the cohorts that actually draw on this
+ * persona.
  *
- * `count` is one cohort's `size`, and it cannot tell a persona behind one cohort from a persona
- * behind two. The server can: `DELETE /personas/:x` checks the referring cohorts first and
- * **refuses outright** when more than one draws from the persona (`control.ts` — *"is the persona
- * behind N cohorts (…); take those apart first"*), because `setCohortSize(…, 0)` finds only the
- * first and a half-applied destructive change is the one thing this act cannot do. So the copy
- * that always said *"The cohort drawn from X goes too, and N people leave"* promised a cascade and
- * a headcount that the press would then fail to deliver. It now says which of the three cases the
- * reader is in, and the third case names the cohorts to take apart first (§7.4).
+ * A cohort mixes personas (ADR-0039), so "remove this persona" cannot cascade into "remove its
+ * cohort": the cohort may draw on two others as well. The server therefore **refuses outright**
+ * while any cohort still names the persona, and the mix on the cohort's page is where it is
+ * taken out. The copy says which of the two cases the reader is in, and names the cohorts.
  */
-function consequence(name: string, drawn: readonly { slug: string; size: number }[]): string {
-  const kept =
-    "Those people are kept on record, and executions that have already run keep their visits and their findings.";
+function consequence(name: string, drawn: readonly { slug: string; name: string }[]): string {
   if (drawn.length === 0) {
     return `Nobody is drawn from ${name} today, so nothing else in this project moves. Executions that have already run keep their people, their visits and their findings.`;
   }
-  if (drawn.length === 1) {
-    const only = drawn[0];
-    const size = only === undefined ? 0 : only.size;
-    return `The cohort drawn from ${name} goes too, and ${headcount(size)} leave the population. ${kept}`;
-  }
-  return `This cannot be done yet. ${name} is the persona behind ${String(drawn.length)} cohorts — ${drawn.map((cohort) => cohort.slug).join(", ")} — and removing a persona while more than one draws from it is refused, so that half of them are never taken apart and left that way. Take those cohorts apart first, then remove ${name}.`;
+  return `This cannot be done yet. ${String(drawn.length)} ${drawn.length === 1 ? "cohort draws" : "cohorts draw"} on ${name} — ${drawn.map((cohort) => cohort.name).join(", ")} — and removing a persona a cohort still names is refused, so that nobody is unmade behind the cohort's back. Take ${name} out of ${drawn.length === 1 ? "that cohort's mix" : "those cohorts' mixes"} first, then remove it.`;
 }
 
 export function Personas() {
@@ -74,8 +58,7 @@ export function Personas() {
   const queries = useQueryClient();
   const personas = useQuery(q.personas(key));
   const starters = useQuery(q.starters(key));
-  // Which cohorts draw from each persona, which is the fact the remove dialog needs and the one
-  // `PersonaView.count` cannot carry: it is one cohort's size, not a count of the cohorts.
+  // Which cohorts draw on each persona, by name: the fact the remove dialog needs.
   const cohorts = useQuery(q.cohorts(key));
 
   const refresh = async (): Promise<void> => {
@@ -96,10 +79,10 @@ export function Personas() {
   const mine = personas.data?.items ?? [];
   const available = starters.data?.items ?? [];
   const taken = new Set(mine.map((persona) => persona.slug));
-  const drawnFrom = (personaId: string): { slug: string; size: number }[] =>
+  const drawnFrom = (personaId: string): { slug: string; name: string }[] =>
     (cohorts.data?.items ?? [])
-      .filter((cohort) => cohort.personaId === personaId)
-      .map((cohort) => ({ slug: cohort.slug, size: cohort.size }));
+      .filter((cohort) => cohort.mix.some((entry) => entry.personaId === personaId))
+      .map((cohort) => ({ slug: cohort.slug, name: cohort.name }));
 
   return (
     <DocumentPage
@@ -147,10 +130,10 @@ export function Personas() {
             <Ledger>
               {mine.map((persona) => {
                 const drawn = drawnFrom(persona.id);
-                // The server refuses a persona behind more than one cohort outright, so the
-                // control is at a bound: inert, not gone (§6). It keeps its tab stop, its name
-                // and a tooltip carrying the same sentence the dialog would have carried.
-                const refused = drawn.length > 1;
+                // The server refuses a persona any cohort still draws on, so the control is at
+                // a bound: inert, not gone (§6). It keeps its tab stop, its name and a tooltip
+                // carrying the same sentence the dialog would have carried.
+                const refused = drawn.length > 0;
                 const blamed = remove.isError && remove.variables === persona.id;
 
                 return (
@@ -178,7 +161,7 @@ export function Personas() {
 
                     <Inline gap={3} align="center" className="shrink-0">
                       <Text size="meta" tone="muted">
-                        {headcount(persona.count)}
+                        {persona.cohorts === 0 ? "in no cohort" : `in ${String(persona.cohorts)} ${persona.cohorts === 1 ? "cohort" : "cohorts"}`}
                       </Text>
                       {refused ? (
                         <Tooltip content={consequence(persona.spec.name, drawn)}>

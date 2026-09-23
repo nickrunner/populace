@@ -3,20 +3,27 @@ import {
   FindingSchema,
   PopulaceConfigSchema,
   PopulationSchema,
+  agentIdFor,
+  apportion,
   applyMemoryOperation,
   blockedBecause,
+  cohortSlugOfAgentId,
   costOf,
   effectiveToolPolicy,
   emptyMemory,
   expandPopulation,
   getPath,
   handleFor,
+  individuate,
   isRunId,
   isToolAllowed,
   isToolPermitted,
+  laneSlugFor,
   nameFrom,
   newRunId,
   parseDuration,
+  personIdOfAgentId,
+  personaSlugOfAgentId,
   priceFor,
   runIdFromTag,
   signatureOf,
@@ -124,8 +131,8 @@ describe("population expansion", () => {
     expect(a).toHaveLength(3);
     expect(a.map((e) => e.agent.persona)).toEqual(b.map((e) => e.agent.persona));
     expect(a.map((e) => e.agent.name)).toEqual(b.map((e) => e.agent.name));
-    expect(a[0]!.agent.id).toBe("pop/casual#1");
-    expect(a[0]!.agent.personId).toBe("casual#1");
+    expect(a[0]!.agent.id).toBe("pop/casual.casual#1");
+    expect(a[0]!.agent.personId).toBe("casual.casual#1");
     expect(a[0]!.agent.cohortSlug).toBe("casual");
     expect(a[0]!.agent.simulationId).toBe("sim_1");
     expect(a[0]!.cadence.every).toBe(30_000);
@@ -142,7 +149,7 @@ describe("population expansion", () => {
   it("uses the frozen roster where there is one and never re-draws it", () => {
     const withRoster = PopulationSchema.parse({
       id: "pop",
-      members: [{ persona, count: 2, people: [{ ordinal: 0, id: "casual#1", name: "Dana Whitfield", details: "On a cracked phone.", handle: "dana-whitfield-casual-1" }] }],
+      members: [{ persona, count: 2, people: [{ ordinal: 0, id: "casual.casual#1", name: "Dana Whitfield", details: "On a cracked phone.", handle: "dana-whitfield-casual.casual-1" }] }],
     });
     const agents = expandPopulation(withRoster, "run_x_aaaaaa", "sim_1").map((e) => e.agent);
     expect(agents[0]!.name).toBe("Dana Whitfield");
@@ -166,13 +173,99 @@ describe("population expansion", () => {
       ],
     });
     const expanded = expandPopulation(shared, "run_x_aaaaaa", "sim_1");
-    expect(expanded.map((e) => e.agent.id)).toEqual(["everyone/weekenders#1", "everyone/sceptics#1"]);
-    expect(expanded.map((e) => e.agent.personId)).toEqual(["weekenders#1", "sceptics#1"]);
+    expect(expanded.map((e) => e.agent.id)).toEqual(["everyone/weekenders.casual#1", "everyone/sceptics.casual#1"]);
+    expect(expanded.map((e) => e.agent.personId)).toEqual(["weekenders.casual#1", "sceptics.casual#1"]);
     expect(expanded.map((e) => e.cadence.every)).toEqual([30_000, 7_200_000]);
     // Different cohorts draw from different seeds, so the same persona spec yields different people.
     const [weekender, sceptic] = expanded;
     expect(weekender!.agent.name).not.toBe(sceptic!.agent.name);
     expect([weekender!.agent.persona.traits.device, weekender!.agent.persona.patience]).not.toEqual([sceptic!.agent.persona.traits.device, sceptic!.agent.persona.patience]);
+  });
+
+  /**
+   * A cohort that MIXES personas (ADR-0039) resolves into one member per lane. The lanes share
+   * the cohort's context and overlay and differ in persona and count, and each is numbered on
+   * its own, so growing the cohort re-deals nobody.
+   */
+  it("expands a mixed cohort as one lane per persona, sharing the cohort's context and overlay", () => {
+    const power = { ...persona, id: "power", name: "Power user" };
+    const mixed = PopulationSchema.parse({
+      id: "everyone",
+      members: [
+        { cohort: "mobile", cohortName: "Mobile signups", persona, count: 2, context: "You only ever use this on your phone.", traits: { device: "phone" } },
+        { cohort: "mobile", cohortName: "Mobile signups", persona: power, count: 1, context: "You only ever use this on your phone.", traits: { device: "phone" }, model: { effort: "low" } },
+      ],
+    });
+    const agents = expandPopulation(mixed, "run_x_aaaaaa", "sim_1").map((e) => e.agent);
+    expect(agents.map((a) => a.id)).toEqual(["everyone/mobile.casual#1", "everyone/mobile.casual#2", "everyone/mobile.power#1"]);
+    expect(agents.map((a) => a.cohortSlug)).toEqual(["mobile", "mobile", "mobile"]);
+    expect(agents.map((a) => personaSlugOfAgentId(a.id))).toEqual(["casual", "casual", "power"]);
+    for (const agent of agents) {
+      expect(agent.context).toBe("You only ever use this on your phone.");
+      // The cohort's fixed trait wins over whatever the persona's distribution would have drawn.
+      expect(agent.persona.traits.device).toBe("phone");
+    }
+    expect(agents[2]!.persona.model.effort).toBe("low");
+    expect(agents[0]!.persona.model.effort).toBeUndefined();
+  });
+
+  it("applies what was set on a person by hand, last", () => {
+    const withHand = PopulationSchema.parse({
+      id: "pop",
+      members: [
+        {
+          persona,
+          count: 1,
+          traits: { device: "phone" },
+          people: [{ ordinal: 0, id: "casual.casual#1", name: "Dana Whitfield", handle: "dana-whitfield-casual.casual-1", overrides: { patience: 1, budgetUsd: 12, traits: { device: "tablet" } } }],
+        },
+      ],
+    });
+    const [agent] = expandPopulation(withHand, "run_x_aaaaaa", "sim_1").map((e) => e.agent);
+    expect(agent!.persona.patience).toBe(1);
+    expect(agent!.persona.budgetUsd).toBe(12);
+    expect(agent!.persona.traits.device).toBe("tablet");
+    // Without the hand-set value, the cohort's overlay is what the person carries.
+    const plain = individuate(PopulationSchema.parse({ id: "p", members: [{ persona }] }).members[0]!.persona, "s", { traits: { device: "phone" }, model: {} }, { traits: {} });
+    expect(plain.traits.device).toBe("phone");
+  });
+
+  it("reads the cohort, the persona and the person back out of an id", () => {
+    const id = agentIdFor("everyone", laneSlugFor("mobile-signups", "first-timer"), 2);
+    expect(id).toBe("everyone/mobile-signups.first-timer#3");
+    expect(cohortSlugOfAgentId(id)).toBe("mobile-signups");
+    expect(personaSlugOfAgentId(id)).toBe("first-timer");
+    expect(personIdOfAgentId(id)).toBe("mobile-signups.first-timer#3");
+    // A pre-lane id still names its cohort.
+    expect(cohortSlugOfAgentId("everyone/casual#1")).toBe("casual");
+    expect(personaSlugOfAgentId("everyone/casual#1")).toBe("");
+  });
+});
+
+describe("apportionment", () => {
+  it("splits a size across a mix by ratio", () => {
+    expect(apportion(10, [3, 2])).toEqual([6, 4]);
+    expect(apportion(7, [3, 2])).toEqual([4, 3]);
+    expect(apportion(4, [1, 1, 1])).toEqual([2, 1, 1]);
+    expect(apportion(1, [1, 1])).toEqual([1, 0]);
+    expect(apportion(0, [1, 1])).toEqual([0, 0]);
+    expect(apportion(5, [])).toEqual([]);
+  });
+
+  /**
+   * The property that keeps ADR-0031 true under scaling: raising a population's size adds people
+   * and never takes one away from a lane. Largest-remainder rounding fails this (the Alabama
+   * paradox); highest averages does not, and this checks it rather than trusting the citation.
+   */
+  it("never shrinks a lane when the cohort grows", () => {
+    const weights = [3, 2, 1, 1];
+    let previous = apportion(0, weights);
+    for (let size = 1; size <= 200; size++) {
+      const next = apportion(size, weights);
+      expect(next.reduce((a, b) => a + b, 0)).toBe(size);
+      next.forEach((n, i) => expect(n).toBeGreaterThanOrEqual(previous[i] ?? 0));
+      previous = next;
+    }
   });
 });
 
@@ -187,8 +280,8 @@ describe("names", () => {
     for (const name of used) expect(name).toMatch(/^\S+ \S+/);
   });
 
-  it("builds a cohort-scoped email local part", () => {
-    expect(handleFor("Dana Whitfield", "weekenders", 2)).toBe("dana-whitfield-weekenders-3");
+  it("builds a lane-scoped email local part", () => {
+    expect(handleFor("Dana Whitfield", "weekenders.casual", 2)).toBe("dana-whitfield-weekenders.casual-3");
     expect(handleFor("Tomás Ruiz", "sceptics", 0)).toBe("tomas-ruiz-sceptics-1");
   });
 });

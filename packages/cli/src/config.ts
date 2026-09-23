@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { CadenceSchema, PersonaSpecSchema, PopulaceConfigSchema, type PersonaSpec, type PopulaceConfig } from "@populace/core";
+import { CadenceSchema, PersonaSpecSchema, PopulaceConfigSchema, apportion, type PersonaSpec, type PopulaceConfig } from "@populace/core";
 import type { SimulationPlan } from "@populace/server";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -34,18 +34,28 @@ const RawPersonaSchema = z.union([z.string(), z.record(z.string(), z.json())]);
 const RawMemberSchema = z.looseObject({ persona: RawPersonaSchema });
 
 /**
- * A cohort as the file writes it: "N people on this persona". This is the shape that replaced
- * `population.members`, and both are accepted — a member list IS a list of cohorts, and always was.
+ * A cohort as the file writes it (ADR-0039): what its people share, which personas they are drawn
+ * from and in what ratio, and how many of them the file's population sends. `persona:` alone is
+ * the mix of one. `population.members` is still accepted — a member is a lane, and always was.
  */
+const RawMixEntrySchema = z.object({ persona: RawPersonaSchema, weight: z.number().positive().optional() });
+
 const RawCohortSchema = z.object({
   slug: z.string().optional(),
   name: z.string().optional(),
-  /** How many people. There is no `scale`; this is the only number that decides headcount. */
+  /** What everybody in the cohort has in common, addressed to them. */
+  context: z.string().optional(),
+  /** Which personas, in what ratio. Either this or `persona`. */
+  mix: z.array(RawMixEntrySchema).min(1).optional(),
+  persona: RawPersonaSchema.optional(),
+  /** How many people this file's population sends from the cohort. There is no `scale`. */
   size: z.number().int().positive().optional(),
+  traits: z.record(z.string(), z.json()).optional(),
+  tools: z.record(z.string(), z.json()).optional(),
+  model: z.record(z.string(), z.json()).optional(),
   seed: z.string().optional(),
   cadence: z.record(z.string(), z.json()).optional(),
   maxWakes: z.number().int().positive().optional(),
-  persona: RawPersonaSchema,
 });
 
 /** A simulation as the file writes it: the population against the target, in one of two modes. */
@@ -87,16 +97,28 @@ export function loadConfig(path = "populace.yaml"): LoadedConfig {
 
   const members = [
     ...(raw.population?.members ?? []).map((member) => ({ ...member, persona: personaOf(member.persona) })),
-    // A cohort and a member are the same thing said two ways, so they land in one list.
-    ...(raw.cohorts ?? []).map((cohort) => ({
-      ...(cohort.slug === undefined ? {} : { cohort: cohort.slug }),
-      ...(cohort.name === undefined ? {} : { cohortName: cohort.name }),
-      persona: personaOf(cohort.persona),
-      ...(cohort.size === undefined ? {} : { count: cohort.size }),
-      ...(cohort.seed === undefined ? {} : { seed: cohort.seed }),
-      ...(cohort.cadence === undefined ? {} : { cadence: cohort.cadence }),
-      ...(cohort.maxWakes === undefined ? {} : { maxWakes: cohort.maxWakes }),
-    })),
+    // A cohort resolves into one member per LANE — one per persona in its mix, each with the
+    // share of `size` the ratio gives it — so a member list and a cohort list are one list.
+    ...(raw.cohorts ?? []).flatMap((cohort) => {
+      const entries = cohort.mix ?? (cohort.persona === undefined ? [] : [{ persona: cohort.persona, weight: 1 }]);
+      if (entries.length === 0) throw new Error(`cohort ${cohort.slug ?? cohort.name ?? "?"}: name a persona, or a mix of them`);
+      const counts = apportion(cohort.size ?? 1, entries.map((entry) => entry.weight ?? 1));
+      const shared = {
+        ...(cohort.slug === undefined ? {} : { cohort: cohort.slug }),
+        ...(cohort.name === undefined ? {} : { cohortName: cohort.name }),
+        ...(cohort.context === undefined ? {} : { context: cohort.context }),
+        ...(cohort.traits === undefined ? {} : { traits: cohort.traits }),
+        ...(cohort.tools === undefined ? {} : { tools: cohort.tools }),
+        ...(cohort.model === undefined ? {} : { model: cohort.model }),
+        ...(cohort.seed === undefined ? {} : { seed: cohort.seed }),
+        ...(cohort.cadence === undefined ? {} : { cadence: cohort.cadence }),
+        ...(cohort.maxWakes === undefined ? {} : { maxWakes: cohort.maxWakes }),
+      };
+      return entries.flatMap((entry, index) => {
+        const count = counts[index] ?? 0;
+        return count === 0 ? [] : [{ ...shared, persona: personaOf(entry.persona), count }];
+      });
+    }),
   ];
 
   const simulations = (raw.simulations ?? []).map(planOf);

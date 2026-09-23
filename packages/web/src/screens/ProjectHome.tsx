@@ -469,7 +469,7 @@ function usedByFacts(used: readonly SimulationSummary[]): readonly MetaFact[] {
 /**
  * The Who-can-go band — the casts this project keeps, and what each adds up to.
  *
- * A population is composition and nothing else: an ordered set of cohorts (ADR-0029). While there
+ * A population is which cohorts go and how many of each (ADR-0039). While there
  * is one it is still worth showing, because the headcount and what it is made of are the second
  * thing a reader wants after "what is it pointed at" — and both of them lived only in the rail,
  * as an 11px number beside a nav row.
@@ -489,8 +489,9 @@ function WhoCanGoBand() {
     >
       {items.length === 0 || project.counts.people === 0 ? (
         <StateBlock kind="empty" what="this project's people">
-          Nobody has been picked yet. A persona is a kind of person; a cohort is N people cut from
-          one persona; a population is a set of cohorts saved under a name.{" "}
+          Nobody has been picked yet. A persona is a kind of person; a cohort is people who share
+          something, drawn from one or more personas; a population says which cohorts go and how
+          many of each.{" "}
           <Link to={href("library/personas")} size="ui">
             Pick who visits
           </Link>
@@ -498,7 +499,7 @@ function WhoCanGoBand() {
       ) : (
         <Ledger>
           {items.map((population) => {
-            const headcount = population.members.reduce((n, m) => n + m.count, 0);
+            const headcount = population.people;
             const used = project.simulations.filter((s) => s.population.name === population.name);
             const need = needFor(needs, "population", population.id);
             return (

@@ -153,20 +153,28 @@ CREATE TABLE IF NOT EXISTS personas (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS personas_slug ON personas(project_id, slug);
 
+/*
+ * A cohort has no persona column and no size (ADR-0039): it MIXES personas, in \`json.mix\`, and
+ * the headcount lives on the population that sends it. \`cohort_personas\` is the mix lifted out
+ * of the blob for one query — "which cohorts still name this persona?" — which is the guard
+ * that refuses to delete a persona somebody is drawn from.
+ */
 CREATE TABLE IF NOT EXISTS cohorts (
-  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL, persona_id TEXT NOT NULL,
-  size INTEGER NOT NULL, updated_at TEXT NOT NULL, json TEXT NOT NULL
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL, updated_at TEXT NOT NULL, json TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS cohorts_slug ON cohorts(project_id, slug);
-CREATE INDEX IF NOT EXISTS cohorts_persona ON cohorts(persona_id);
+CREATE TABLE IF NOT EXISTS cohort_personas (
+  cohort_id TEXT NOT NULL, persona_id TEXT NOT NULL, PRIMARY KEY (cohort_id, persona_id)
+);
+CREATE INDEX IF NOT EXISTS cohort_personas_persona ON cohort_personas(persona_id);
 
-/* A person id is \`cohortSlug#ordinal\` and is unique within a project, not globally. */
+/* A person id is \`cohortSlug.personaSlug#ordinal\` and is unique within a project, not globally. */
 CREATE TABLE IF NOT EXISTS people (
   project_id TEXT NOT NULL, id TEXT NOT NULL, cohort_id TEXT NOT NULL, cohort_slug TEXT NOT NULL,
-  persona_id TEXT NOT NULL, ordinal INTEGER NOT NULL, archived_at TEXT, updated_at TEXT NOT NULL,
-  json TEXT NOT NULL, PRIMARY KEY (project_id, id)
+  persona_id TEXT NOT NULL, lane_slug TEXT NOT NULL, ordinal INTEGER NOT NULL, archived_at TEXT,
+  updated_at TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (project_id, id)
 );
-CREATE INDEX IF NOT EXISTS people_cohort_ordinal ON people(cohort_id, ordinal);
+CREATE INDEX IF NOT EXISTS people_cohort_lane_ordinal ON people(cohort_id, lane_slug, ordinal);
 
 CREATE TABLE IF NOT EXISTS populations (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL, updated_at TEXT NOT NULL, json TEXT NOT NULL
@@ -227,7 +235,7 @@ CREATE INDEX IF NOT EXISTS jobs_project_created ON jobs(project_id, created_at);
  * Bump this whenever any table above changes shape. It is compared against what the database was
  * written with; a mismatch rebuilds the file from scratch.
  */
-const SCHEMA_SHAPE = "m3.projects-simulations-cohorts-people.3";
+const SCHEMA_SHAPE = "m4.cohorts-mix-lanes.1";
 const SHAPE_KEY = "schema_shape";
 const REBUILT_WARNING = "populace store: the schema changed; this database was rebuilt from scratch and its runs are gone.";
 
@@ -709,7 +717,9 @@ export class SqliteStore implements Store {
   }
 
   private cohortsNamingPersona(personaId: string): string[] {
-    const result = this.db.prepare("SELECT json FROM cohorts WHERE persona_id = ? ORDER BY slug").all(personaId);
+    const result = this.db
+      .prepare("SELECT c.json FROM cohorts c JOIN cohort_personas cp ON cp.cohort_id = c.id WHERE cp.persona_id = ? ORDER BY c.slug")
+      .all(personaId);
     return rows(result).map((r) => `cohort "${parseRow(CohortSchema, r).name}"`);
   }
 
@@ -717,7 +727,7 @@ export class SqliteStore implements Store {
     const result = this.db.prepare("SELECT json FROM populations ORDER BY slug").all();
     return rows(result)
       .map((r) => parseRow(StoredPopulationSchema, r))
-      .filter((population) => population.cohortIds.includes(cohortId))
+      .filter((population) => population.members.some((member) => member.cohortId === cohortId))
       .map((population) => `population "${population.name}"`);
   }
 
@@ -768,6 +778,7 @@ export class SqliteStore implements Store {
       this.db.prepare("DELETE FROM people WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM simulations WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM populations WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM cohort_personas WHERE cohort_id IN (SELECT id FROM cohorts WHERE project_id = ?)").run(id);
       this.db.prepare("DELETE FROM cohorts WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM personas WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM targets WHERE project_id = ?").run(id);
@@ -871,15 +882,25 @@ export class SqliteStore implements Store {
     return Promise.resolve();
   }
 
+  /** The row and its mix, together: the join table is the mix and must never disagree with the blob. */
   saveCohort(cohort: Cohort): Promise<void> {
     const parsed = CohortSchema.parse(cohort);
-    this.db
-      .prepare(
-        `INSERT INTO cohorts (id, project_id, slug, persona_id, size, updated_at, json) VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET slug = excluded.slug, persona_id = excluded.persona_id, size = excluded.size,
-           updated_at = excluded.updated_at, json = excluded.json`,
-      )
-      .run(parsed.id, parsed.projectId, parsed.slug, parsed.personaId, parsed.size, parsed.updatedAt, JSON.stringify(parsed));
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO cohorts (id, project_id, slug, updated_at, json) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET slug = excluded.slug, updated_at = excluded.updated_at, json = excluded.json`,
+        )
+        .run(parsed.id, parsed.projectId, parsed.slug, parsed.updatedAt, JSON.stringify(parsed));
+      this.db.prepare("DELETE FROM cohort_personas WHERE cohort_id = ?").run(parsed.id);
+      const insert = this.db.prepare("INSERT INTO cohort_personas (cohort_id, persona_id) VALUES (?, ?)");
+      for (const entry of parsed.mix) insert.run(parsed.id, entry.personaId);
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
     return Promise.resolve();
   }
 
@@ -902,6 +923,7 @@ export class SqliteStore implements Store {
     const referrers = this.populationsHolding(id);
     if (referrers.length) throw new ReferencedError("cohort", id, referrers);
     await this.archivePeople(id, new Date());
+    this.db.prepare("DELETE FROM cohort_personas WHERE cohort_id = ?").run(id);
     this.db.prepare("DELETE FROM cohorts WHERE id = ?").run(id);
   }
 
@@ -911,13 +933,13 @@ export class SqliteStore implements Store {
     const parsed = PersonSchema.parse(person);
     this.db
       .prepare(
-        `INSERT INTO people (project_id, id, cohort_id, cohort_slug, persona_id, ordinal, archived_at, updated_at, json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO people (project_id, id, cohort_id, cohort_slug, persona_id, lane_slug, ordinal, archived_at, updated_at, json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(project_id, id) DO UPDATE SET cohort_id = excluded.cohort_id, cohort_slug = excluded.cohort_slug,
-           persona_id = excluded.persona_id, ordinal = excluded.ordinal, archived_at = excluded.archived_at,
-           updated_at = excluded.updated_at, json = excluded.json`,
+           persona_id = excluded.persona_id, lane_slug = excluded.lane_slug, ordinal = excluded.ordinal,
+           archived_at = excluded.archived_at, updated_at = excluded.updated_at, json = excluded.json`,
       )
-      .run(parsed.projectId, parsed.id, parsed.cohortId, parsed.cohortSlug, parsed.personaId, parsed.ordinal, parsed.archivedAt, parsed.updatedAt, JSON.stringify(parsed));
+      .run(parsed.projectId, parsed.id, parsed.cohortId, parsed.cohortSlug, parsed.personaId, parsed.laneSlug, parsed.ordinal, parsed.archivedAt, parsed.updatedAt, JSON.stringify(parsed));
     return Promise.resolve();
   }
 
@@ -938,7 +960,7 @@ export class SqliteStore implements Store {
       params.push(query.cohortId);
     }
     if (!query.includeArchived) where.push("archived_at IS NULL");
-    const sql = `SELECT json FROM people ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY cohort_slug, ordinal`;
+    const sql = `SELECT json FROM people ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY cohort_slug, lane_slug, ordinal`;
     return Promise.resolve(rows(this.db.prepare(sql).all(...params)).map((r) => parseRow(PersonSchema, r)));
   }
 

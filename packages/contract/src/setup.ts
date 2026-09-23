@@ -287,8 +287,8 @@ export const PersonaViewSchema = z.object({
   spec: PersonaSpecSchema,
   origin: z.enum(["starter", "authored", "imported"]),
   updatedAt: z.iso.datetime(),
-  /** How many agents this person contributes to the next run, via the population's member row. */
-  count: z.number().int().nonnegative(),
+  /** How many cohorts draw on this persona. Headcount is the population's, not the persona's. */
+  cohorts: z.number().int().nonnegative(),
 });
 export type PersonaView = z.infer<typeof PersonaViewSchema>;
 
@@ -313,9 +313,9 @@ export const AddStarterBodySchema = z.object({ slug: z.string().min(1), count: z
 // ---- population and settings ---------------------------------------------
 
 /**
- * A population is composition now: an ordered set of cohorts, where a cohort is "N people on one
- * persona". `scale` is gone — two numbers deciding how many people exist (count × scale) is
- * exactly the ambiguity the restructure removes.
+ * Which cohorts go and how many of each (ADR-0039). Each member is one cohort at a size, and the
+ * size is apportioned across the cohort's mix — `personas[].count` is that arithmetic, done here
+ * so a screen never repeats it.
  */
 export const PopulationViewSchema = z.object({
   id: z.string(),
@@ -326,36 +326,30 @@ export const PopulationViewSchema = z.object({
       cohortId: z.string(),
       cohort: z.string(),
       cohortName: z.string(),
-      personaId: z.string(),
-      slug: z.string(),
-      name: z.string(),
-      count: z.number().int().nonnegative(),
+      context: z.string(),
+      /** How many of this cohort's people this population sends. */
+      size: z.number().int().positive(),
+      personas: z.array(z.object({ personaId: z.string(), slug: z.string(), name: z.string(), count: z.number().int().nonnegative() })),
       /** The cohort's own visit cap. `maxWakes` on the row; the wire says visits (ADR-0032). */
       maxVisits: z.number().int().positive().nullable(),
     }),
   ),
+  /** The sum of the member sizes: the only headcount there is. */
+  people: z.number().int().nonnegative(),
 });
 export type PopulationView = z.infer<typeof PopulationViewSchema>;
 
 /**
- * **A population is composition and nothing else** (ADR-0029), and this schema finally says so.
+ * `members`, when sent, IS the composition: the whole ordered set with a size each, so one PUT is
+ * add, resize and remove at once and there is no separate route for any of them. A member at
+ * nought is taken out. Setting a size is what writes the people (ADR-0039).
  *
- * `seed`, `cadence` and `maxWakes` are gone. They were written to the project's settings row and
- * then fanned onto every simulation running this population — and because the visit cap decides
- * the mode (`visits === null ? "longitudinal" : "ephemeral"`), editing a population could flip a
- * simulation between the two. That is an ADR-0030 property of the SIMULATION, changed from a
- * screen that never says the word mode, for every simulation on the population at once. The cap,
- * the cadence and the seed belong to the cohort and the simulation, and are set there.
- *
- * `cohortIds`, when sent, IS the composition: the whole ordered set, so one PUT is both the add
- * and the remove and there is no separate route for either. `members` stays for the persona-keyed
- * path the setup screens use, and it now applies to the population in the URL rather than to
- * whichever row happened to be called "everyone".
+ * `seed`, `cadence` and `maxWakes` are not here: the cap decides a simulation's mode (ADR-0030)
+ * and belongs to the simulation; the cadence and the seed belong to the cohort.
  */
 export const PopulationInputSchema = z.object({
-  /** The ordered set of cohorts. Authoritative when present: what is not in it is taken out. */
-  cohortIds: z.array(z.string()).optional(),
-  members: z.array(z.object({ personaId: z.string(), count: z.number().int().nonnegative(), maxVisits: z.number().int().positive().nullable().optional() })).optional(),
+  name: z.string().min(1).optional(),
+  members: z.array(z.object({ cohortId: z.string().min(1), size: z.number().int().nonnegative() })).optional(),
 });
 export type PopulationInput = z.infer<typeof PopulationInputSchema>;
 
@@ -450,8 +444,8 @@ export const RunEstimateSchema = z.object({
   lowUsd: z.number().nonnegative(),
   expectedUsd: z.number().nonnegative(),
   highUsd: z.number().nonnegative(),
-  /** One row per COHORT. Two cohorts may share a persona, so `cohort` is what tells the rows apart. */
-  perCohort: z.array(z.object({ cohort: z.string(), personaId: z.string(), agents: z.number().int(), visits: z.number().int(), capped: z.boolean(), expectedUsd: z.number().nonnegative() })),
+  /** One row per LANE — a cohort and one of the personas it mixes — so `lane` is what tells the rows apart. */
+  perCohort: z.array(z.object({ lane: z.string(), cohort: z.string(), personaId: z.string(), agents: z.number().int(), visits: z.number().int(), capped: z.boolean(), expectedUsd: z.number().nonnegative() })),
   model: z.string(),
   effort: z.string(),
   /** The guardrails that will actually stop it, whatever the arithmetic above says (ADR-0009). */

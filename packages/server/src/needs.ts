@@ -1,6 +1,7 @@
 import type { Store } from "@populace/core";
 
-import { cohortsOf } from "./config-store.js";
+import { headcountOf } from "./cohort-store.js";
+import { ensurePopulation } from "./config-store.js";
 
 /**
  * What is left to do in a project, as sentences that know what they are about.
@@ -79,8 +80,7 @@ export async function needsOf(store: Store, input: NeedsInput): Promise<Need[]> 
   const targets = await store.listTargets(projectId);
   const populations = await store.listPopulations(projectId);
   const simulations = (await store.listSimulations({ projectId })).filter((s) => !s.archived);
-  const cohorts = await cohortsOf(store, projectId);
-  const peopleCount = cohorts.reduce((sum, cohort) => sum + cohort.size, 0);
+  const peopleCount = headcountOf(await ensurePopulation(store, projectId));
 
   // ---- the project as a whole ---------------------------------------------
 
@@ -97,7 +97,7 @@ export async function needsOf(store: Store, input: NeedsInput): Promise<Need[]> 
     needs.push({
       id: "no-people",
       blocking: true,
-      sentence: "Pick who visits it. A persona is a kind of person; a cohort is people cut from one.",
+      sentence: "Pick who visits it. A persona is a kind of person; a cohort is people who share something, drawn from one or more; the population says how many go.",
       scope: { kind: "project", id: projectId },
     });
   }
@@ -150,7 +150,7 @@ export async function needsOf(store: Store, input: NeedsInput): Promise<Need[]> 
   }
 
   for (const population of populations) {
-    if (population.cohortIds.length === 0) {
+    if (population.members.length === 0) {
       needs.push({
         blocking: false,
         id: `population-empty:${population.id}`,

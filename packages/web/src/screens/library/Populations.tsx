@@ -145,7 +145,7 @@ export function Populations() {
         >
           <Ledger>
             {items.map((population) => {
-              const headcount = population.members.reduce((n, m) => n + m.count, 0);
+              const headcount = population.people;
               const used = runBy(population);
               return (
                 <LedgerRow

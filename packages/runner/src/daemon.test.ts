@@ -63,7 +63,8 @@ describe("LocalDaemon cadence", () => {
     const runId = newRunId();
     const daemon = new LocalDaemon({ config: loaded, runId }, { store, provider: new ScriptedProvider(leaves), identityProvider: new SelfSignupProvider(loaded.identity as never) });
     const scheduled = await daemon.reconcile();
-    expect(scheduled.map((a) => a.id)).toEqual(["everyone/eager#1", "everyone/patient#1"]);
+    // Lane-scoped ids: `cohort.persona#n`, so a cohort mixing personas numbers each lane from 1.
+    expect(scheduled.map((a) => a.id)).toEqual(["everyone/eager.lister#1", "everyone/patient.lister#1"]);
 
     const at = new Date();
     await daemon.tick(at);
@@ -71,9 +72,55 @@ describe("LocalDaemon cadence", () => {
     expect(daemon.wakesRun).toBe(2);
 
     const byId = new Map((await store.listAgents({ runId })).map((a) => [a.id, a]));
-    const eager = Date.parse(byId.get("everyone/eager#1")!.nextWakeAt!);
-    const patient = Date.parse(byId.get("everyone/patient#1")!.nextWakeAt!);
+    const eager = Date.parse(byId.get("everyone/eager.lister#1")!.nextWakeAt!);
+    const patient = Date.parse(byId.get("everyone/patient.lister#1")!.nextWakeAt!);
     expect(patient - eager).toBeGreaterThan(5 * 3_600_000);
+    await store.close();
+  });
+});
+
+/**
+ * A cohort that MIXES personas is one lane per persona, each numbered from 1 (ADR-0039). Growing
+ * it — "apply changes to the running execution" on a longitudinal simulation — has to add people
+ * and re-deal nobody: the second first-timer on visit nine is still the second first-timer.
+ */
+describe("LocalDaemon growing a mixed cohort", () => {
+  const lister = { id: "lister", name: "List keeper", role: "a hobbyist", backstory: "Has too many lists.", goals: ["keep a list"] };
+  const power = { id: "power", name: "Power user", role: "an operations lead", backstory: "Runs a dozen workstreams.", goals: ["set up many projects"] };
+
+  function mixed(listers: number, powers: number): PopulaceConfig {
+    return PopulaceConfigSchema.parse({
+      target: { name: "Tasklet", mcp: [{ url: target.mcpUrl }] },
+      identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", teardownTool: "delete_account" },
+      daemon: { tick: "10ms", concurrency: 1 },
+      population: {
+        id: "everyone",
+        cadence: { every: "1h" },
+        members: [
+          { cohort: "mobile", cohortName: "Mobile signups", context: "You are on your phone.", persona: lister, count: listers },
+          { cohort: "mobile", cohortName: "Mobile signups", context: "You are on your phone.", persona: power, count: powers },
+        ],
+      },
+    });
+  }
+
+  it("adds people to each lane and keeps everybody who was already there", async () => {
+    const store = new SqliteStore(":memory:");
+    const runId = newRunId();
+    const first = mixed(2, 1);
+    const before = await new LocalDaemon({ config: first, runId }, { store, provider: new ScriptedProvider(leaves), identityProvider: new SelfSignupProvider(first.identity as never) }).reconcile();
+    expect(before.map((a) => a.id)).toEqual(["everyone/mobile.lister#1", "everyone/mobile.lister#2", "everyone/mobile.power#1"]);
+    expect(before.every((a) => a.cohortSlug === "mobile" && a.context === "You are on your phone.")).toBe(true);
+
+    const grown = mixed(3, 2);
+    const after = await new LocalDaemon({ config: grown, runId }, { store, provider: new ScriptedProvider(leaves), identityProvider: new SelfSignupProvider(grown.identity as never) }).reconcile();
+    expect(after.map((a) => a.id).sort()).toEqual(["everyone/mobile.lister#1", "everyone/mobile.lister#2", "everyone/mobile.lister#3", "everyone/mobile.power#1", "everyone/mobile.power#2"]);
+    // The three who were there are the same three: same name, same persona, same id.
+    for (const was of before) {
+      const is = after.find((a) => a.id === was.id);
+      expect(is?.name).toBe(was.name);
+      expect(is?.persona.id).toBe(was.persona.id);
+    }
     await store.close();
   });
 });
@@ -244,7 +291,7 @@ describe("LocalDaemon identity checks", () => {
     const provider = new StaticIdentityProvider(loaded.identity as never);
     const daemon = new LocalDaemon({ config: loaded, runId }, { store, provider: new ScriptedProvider(leaves), identityProvider: provider });
     const agents = await daemon.reconcile();
-    expect(agents.map((a) => a.id)).toEqual(["everyone/weekenders#1", "everyone/weekenders#2", "everyone/sceptics#1"]);
+    expect(agents.map((a) => a.id)).toEqual(["everyone/weekenders.lister#1", "everyone/weekenders.lister#2", "everyone/sceptics.lister#1"]);
     // And each of them is given a different account.
     const handed = await Promise.all(agents.map(async (agent) => {
       const result = await provider.provision({ agent, runId, tag: "populace:test" });

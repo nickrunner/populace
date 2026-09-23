@@ -321,16 +321,15 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
             */}
             <NavItem to={href("library/cohorts")} label="Cohorts" count={project.counts.cohorts} />
             {/*
-              Populations appears at the SECOND COHORT, not the second population.
+              Populations appears at the FIRST cohort.
 
-              It used to gate on `populationCount > 1`, which was unreachable: nothing in the
-              browser could create a second population, so the row was dead code and the section
-              it jumped to was never seen. The threshold was on the wrong noun anyway. ADR-0029
-              keeps the concept implicit "until there are two", and the first moment a subset is a
-              real choice is when there are two cohorts to choose between — with one cohort, every
-              cast is the same cast. The ADR is amended to say so.
+              It used to wait for the second, on the reasoning that with one cohort every cast is
+              the same cast. That stopped being true when the headcount moved onto the population
+              (ADR-0039): a population is now "which cohorts go, and how many of each", and the
+              number is set there and nowhere else — so the moment there is one cohort there is a
+              number to set, and the row that leads to it has to be on screen.
             */}
-            {project.counts.cohorts > 1 || project.counts.populations > 1 ? (
+            {project.counts.cohorts > 0 || project.counts.populations > 1 ? (
               <NavItem
                 to={href("library/populations")}
                 label="Populations"

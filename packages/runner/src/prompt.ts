@@ -12,8 +12,8 @@ function traitsLine(persona: Persona): string {
  * The cached system prefix for one participant.
  *
  * It takes the agent rather than the persona because line 1 is now the PERSON: a persona is a kind
- * of person and has no name, and the individuating line under the backstory is this person's
- * alone. Per-agent variance in the cached prefix is already the norm (traits are sampled per
+ * of person and has no name, the line under the backstory is what their cohort shares, and the
+ * one under that is this person's alone. Per-agent variance in the cached prefix is already the norm (traits are sampled per
  * agent), so this costs no prompt-cache hit rate — `wake.test.ts` checks that rather than assuming
  * it, against the prefix the provider was actually handed: the system blocks and the last tool
  * carry a breakpoint, the rolling one sits on the last message every turn, and the prefix is
@@ -32,6 +32,8 @@ export function personaSystemPrompt(agent: Agent, target: Target): string {
   return [
     `You are ${agent.name}, ${persona.role}.`,
     persona.backstory,
+    // What the cohort shares, then what is this person's alone: the general before the particular.
+    ...(agent.context ? [agent.context] : []),
     ...(agent.details ? [agent.details] : []),
     `Your goals: ${persona.goals.map((g) => `- ${g}`).join("\n")}`,
     persona.constraints.length ? `Your constraints:\n${persona.constraints.map((c) => `- ${c}`).join("\n")}` : "",

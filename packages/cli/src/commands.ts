@@ -82,7 +82,7 @@ export async function validate(options: GlobalOptions & { connect?: boolean }): 
         const blockedForEveryone = tools.filter((t) => !isToolPermitted(t.name, effectiveToolPolicy(config.target.tools))).map((t) => t.name);
         if (blockedForEveryone.length) lines.push(`  the target's tool policy blocks: ${blockedForEveryone.join(", ")}`);
         for (const { agent } of agents) {
-          const policy = effectiveToolPolicy(config.target.tools, agent.persona.tools);
+          const policy = effectiveToolPolicy(config.target.tools, agent.persona.tools, agent.cohortTools);
           const denied = tools.filter((t) => !isToolPermitted(t.name, policy)).map((t) => t.name);
           if (denied.length) lines.push(`  ${agent.id} cannot use: ${denied.join(", ")}`);
         }
@@ -166,9 +166,10 @@ export async function run(options: GlobalOptions & { newRun?: boolean; maxWakes?
 // ---- scale -----------------------------------------------------------------
 
 /**
- * Multiplies every cohort's headcount and writes the numbers back. There is no `scale` field any
- * more: a cohort's `count` is the only number that decides how many people exist, so scaling is a
- * edit to those numbers rather than a second multiplier nobody can see in the file.
+ * Multiplies every cohort's headcount and writes the numbers back. There is no `scale` field: a
+ * cohort's `size` in the file — which is its size in the file's one population — is the only
+ * number that decides how many people exist, so scaling is an edit to those numbers rather than a
+ * second multiplier nobody can see in the file.
  */
 export async function scale(factor: string, options: GlobalOptions): Promise<Agent[]> {
   const value = Number(factor);
@@ -176,14 +177,17 @@ export async function scale(factor: string, options: GlobalOptions): Promise<Age
   const loaded = loadConfig(options.config ?? "populace.yaml");
   const { readFileSync } = await import("node:fs");
   const doc = parseDocument(readFileSync(loaded.path, "utf8"));
-  // Headcount lives on the cohort now. A file still written as `population.members` is scaled the
-  // same way, because a member IS a cohort; `loadConfig` concatenates the two in this order.
   const scaled = (count: number): number => Math.max(1, Math.ceil(count * value));
-  const written = doc.getIn(["population", "members"]);
-  const legacy = isCollection(written) ? written.items.length : 0;
-  const members = loaded.config.population.members;
-  members.slice(0, legacy).forEach((member, index) => doc.setIn(["population", "members", index, "count"], scaled(member.count)));
-  members.slice(legacy).forEach((member, index) => doc.setIn(["cohorts", index, "size"], scaled(member.count)));
+  // The file's own nodes are walked rather than the resolved members: a cohort that mixes three
+  // personas resolves into three members, and the number to scale is the one the file wrote.
+  const bump = (path: (string | number)[]): void => {
+    const current = doc.getIn(path);
+    doc.setIn(path, scaled(typeof current === "number" ? current : 1));
+  };
+  const cohorts = doc.getIn(["cohorts"]);
+  if (isCollection(cohorts)) cohorts.items.forEach((_item, index) => bump(["cohorts", index, "size"]));
+  const legacy = doc.getIn(["population", "members"]);
+  if (isCollection(legacy)) legacy.items.forEach((_item, index) => bump(["population", "members", index, "count"]));
   writeFileSync(loaded.path, doc.toString());
   const ctx = openContext(options);
   try {

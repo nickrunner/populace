@@ -7,9 +7,11 @@ export {
   ConfigIncomplete,
   DEFAULT_POPULATION_SLUG,
   DEFAULT_SIMULATION_SLUG,
+  DEFAULT_COHORT_CONTEXT,
   cohortsOf,
   cohortsOfPopulation,
   createSimulation,
+  ensurePersonaCohort,
   ensureProject,
   ensurePopulation,
   ensureSettings,
@@ -19,6 +21,7 @@ export {
   redactConfig,
   resolveSimulationConfig,
   seedProjectFromConfig,
+  setPopulationMember,
   simulationPlanOf,
   snapshotConfig,
   withLiveSecrets,
@@ -27,7 +30,7 @@ export {
   type SimulationDraft,
   type SimulationPlan,
 } from "./config-store.js";
-export { ensureRoster, rosterProfiles, RosterIncomplete } from "./cohort-store.js";
+export { ensureRoster, headcountOf, lanesOf, rosterProfiles, sizeIn, sizeOfCohort, RosterIncomplete, type Lane } from "./cohort-store.js";
 export { resetTarget, type TargetResetOutcome } from "./target-reset.js";
 export { EventHub, RecordingStore } from "./events.js";
 export { JobRunner } from "./jobs.js";

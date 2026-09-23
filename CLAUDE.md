@@ -53,15 +53,18 @@ verification, clustering, digest and sweep are all exercised offline.
 Dependency direction is strictly downward: `cli -> reports/runner/adapters/store-sqlite -> core`.
 `mock-target` depends on nothing in the workspace.
 
-**The chain is project → simulation → population → cohort → person** (ADR-0029). A *project* scopes
-authoring: targets, personas, cohorts, populations, simulations, settings and triage all belong to
-one and are never shared across two. A *cohort* is N people on one persona, and it owns the
-headcount (`size` — there is no `scale`), the seed, and cadence/visit-cap overrides. A *population*
-is composition and nothing else: an ordered set of cohorts. A *simulation* is a population, a target
-and a mode, and it is what a user presses go on. A *person* is a durable individual
-(`cohortSlug#ordinal`) with a stored name and detail line, written once and never silently
-overwritten (ADR-0031). A **run is one execution of a simulation**, carrying `simulationId` and a
-`seq` counting from 1.
+**The chain is project → simulation → population → cohort → person** (ADR-0029, ADR-0039). A
+*project* scopes authoring: targets, personas, cohorts, populations, simulations, settings and
+triage all belong to one and are never shared across two. A *cohort* is people who share a
+condition — `context`, required, told to every one of them — drawn from a `mix` of personas in a
+ratio; it owns the seed, a fixed-trait overlay, a narrowing tool policy, a model override and
+cadence/visit-cap overrides, and **no headcount**. A *population* is which cohorts go and how many
+of each (`members[{cohortId, size}]`); the size is the only headcount there is, apportioned across
+the mix by highest averages (`apportion`), and setting it is what writes the people. A *simulation*
+is a population, a target and a mode, and it is what a user presses go on. A *person* is a durable
+individual in a lane (`cohortSlug.personaSlug#ordinal`) with a stored name, detail line and any
+hand-set patience/budget/traits, written once and never silently overwritten (ADR-0031). A **run is
+one execution of a simulation**, carrying `simulationId` and a `seq` counting from 1.
 
 **Containment is not authoring order** (ADR-0035). The chain says what contains what. It does not
 say what you make first — and Target is a *sibling* of the population spine hanging off Project,
@@ -87,8 +90,9 @@ as `maxVisits`, and the word "agent" appears in no path, field or query paramete
 do not leak "agent" or "wake" onto the wire or into UI copy.
 
 **Agent ids are unique per run, not globally.** An id is
-`populationSlug/cohortSlug#ordinal` — deterministic, and therefore repeated in every execution of
-the simulation. `agents` is `PRIMARY KEY (run_id, id)`, `memories` is keyed `(runId, agentId)`, and
+`populationSlug/cohortSlug.personaSlug#ordinal` — the middle segment is a *lane*, one persona's
+share of a cohort, and ordinals count within it — deterministic, and therefore repeated in every
+execution of the simulation. `agents` is `PRIMARY KEY (run_id, id)`, `memories` is keyed `(runId, agentId)`, and
 `getAgent`/`listDueAgents` take a run id. **Anything keyed by agent id alone leaks across runs.**
 
 **The wake is the unit of everything.** `runWake()` is a pure-ish function of
@@ -115,8 +119,8 @@ confirmation driven by MCP `destructiveHint`.
 **Runs form a lineage** (ADR-0020). Memory is keyed by `(runId, agentId)`, so `--new-run` is a
 genuine clean slate. `populace run --continue-from <run id>` seeds a new run from a parent —
 memory, accounts, wake counts — and brings back agents that gave up *if* they said they would.
-Agent ids are deterministic (`populationId/personaId#ordinal`), so anything keyed by agent id
-alone leaks across runs; key by run as well.
+Agent ids are deterministic (`populationSlug/cohortSlug.personaSlug#ordinal`), so anything keyed
+by agent id alone leaks across runs; key by run as well.
 
 **Model config resolves per wake.** A persona's `model` override layers over the global `model`
 block via `resolveModel`, and the verifier's judge resolves its own from `verifier.model`. Cheap

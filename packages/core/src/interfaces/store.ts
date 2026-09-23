@@ -233,8 +233,9 @@ export interface Store {
   deletePersona(id: string): Promise<void>;
 
   /**
-   * Cohorts: "N people on one persona", and the only place headcount lives. A population is an
-   * ordered list of these, and the cohort owns the `people` rows drawn from its seed.
+   * Cohorts: a shared condition and a mix of personas (ADR-0039). A cohort has no headcount — the
+   * population that sends it says how many — but it owns the `people` rows drawn from its seed,
+   * one lane per persona in its mix.
    */
   saveCohort(cohort: Cohort): Promise<void>;
   getCohort(id: string): Promise<Cohort | undefined>;
@@ -246,8 +247,9 @@ export interface Store {
   deleteCohort(id: string): Promise<void>;
 
   /**
-   * People: one named individual per `(cohort, ordinal)`, written once and then frozen. The id is
-   * `${cohortSlug}#${ordinal + 1}` and is project-scoped, which is why reads take a project.
+   * People: one named individual per `(lane, ordinal)`, written once and then frozen. The id is
+   * `${cohortSlug}.${personaSlug}#${ordinal + 1}` and is project-scoped, which is why reads take
+   * a project.
    */
   savePerson(person: Person): Promise<void>;
   getPerson(projectId: string, id: string): Promise<Person | undefined>;

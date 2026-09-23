@@ -154,3 +154,11 @@ No stage of this work required a store schema change, so no database was dropped
 - **Drift** — "the target's endpoint has changed since execution 4" — is not built.
   `simulationSummary` does not read the frozen snapshot, so it would add one store read per
   simulation row on every dashboard load.
+
+## Amendment — a population carries the headcount (ADR-0039)
+
+*Added 2026-09-23.* "A population is composition and nothing else" is superseded: a population is
+which cohorts go and how many of each, `members[{cohortId, size}]`, and it is the only place a
+headcount lives. What that section was actually protecting — that the cap, the cadence and the seed
+are not the population's, because the cap decides a simulation's mode — still holds. Everything
+else here stands.

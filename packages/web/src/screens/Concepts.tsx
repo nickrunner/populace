@@ -83,14 +83,15 @@ const TERMS: readonly Term[] = [...CHAIN_LINKS.slice(0, 6), "execution", ...CHAI
 const DEFINITIONS: Record<Term, ReactNode> = {
   project: "Everything you author about one app. Nothing is shared between two projects.",
   simulation: "A population, a target and a mode. It is the thing you press go on.",
-  population: "Composition and nothing else: an ordered set of cohorts. It has no size of its own.",
+  population: "Which cohorts go, and how many of each. Setting the number is what makes the people.",
   cohort: (
     <>
-      People on one persona. It owns the headcount (<Code inProse>size</Code>), the seed, and how
-      often its people come back.
+      People who share a condition — what they have in common, in their own words — drawn from a
+      mix of personas in a ratio. It owns the seed and how often its people come back, and no
+      headcount (<Code inProse>size</Code> is the population&rsquo;s).
     </>
   ),
-  person: "A durable individual: a name and a line, written once and never silently rewritten.",
+  person: "A durable individual: a name, a line, and whatever you set on them by hand. Written once, never silently rewritten.",
   visit: "One session: someone arrives, tries to get an errand done, and leaves.",
   execution: "One run of a simulation, numbered from one. It holds that run’s visits.",
   finding: "One problem, carrying the calls it rests on, so a verifier can replay it.",

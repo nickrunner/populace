@@ -125,3 +125,13 @@ anything keyed by agent id alone leaks between executions.
 what you make first — and Target hangs off Project as a *sibling* of the population spine, so
 authoring a target before a population contradicts nothing here. That sentence is added because its
 absence is most of why the IA was read as contradictory.
+
+## Amendment — a cohort is a mix, and the population says how many (ADR-0039)
+
+*Added 2026-09-23.* Two sentences of the decision are superseded. **"Cohort is N people on one
+persona, and it owns the headcount"**: a cohort is a shared condition (`context`, required) and a
+mix of personas in a ratio, and it owns no headcount. **"Population is composition and nothing
+else; it has no size of its own"**: a population is which cohorts go and how many of each, and
+that size is the only headcount there is. The reason the seed stays on the cohort is unchanged and
+now does more work: people are numbered per lane (one persona's share of a cohort), so the same
+cohort in two populations is the same people up to the smaller size. The chain is untouched.

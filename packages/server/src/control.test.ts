@@ -28,11 +28,25 @@ import {
   TargetPromisesSchema,
   pageOf,
   routes,
+  type PersonView,
 } from "@populace/contract";
-import { CadenceSchema, PopulaceConfigSchema, expandPopulation, newCohortId, newRunId, newTargetId, signatureOf, tagForRun, type Cohort, type PopulaceConfig, type Simulation, type Store } from "@populace/core";
+import {
+  CadenceSchema,
+  PopulaceConfigSchema,
+  expandPopulation,
+  newCohortId,
+  newRunId,
+  newTargetId,
+  signatureOf,
+  tagForRun,
+  type Cohort,
+  type PopulaceConfig,
+  type Simulation,
+  type Store,
+} from "@populace/core";
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
 import { primaryTool } from "@populace/reports";
-import { runWake } from "@populace/runner";
+import { runWake, personaSystemPrompt } from "@populace/runner";
 import { ScriptedProvider, call, sequence, type ScriptContext, type ScriptPolicy } from "@populace/runner/testing";
 import { SqliteStore } from "@populace/store-sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -41,8 +55,9 @@ import { createApp } from "./app.js";
 import {
   cohortsOf,
   createSimulation,
-  setCohortSize,
+  ensurePersonaCohort,
   ensurePopulation,
+  setPopulationMember,
   ensureProject,
   ensureSettings,
   ensureSimulation,
@@ -199,6 +214,31 @@ const P = "default";
 /** The project's default population, as a path. Composition is project-scoped, not global. */
 const populationRoute = async (h: Harness): Promise<string> => routes.population_(P, (await ensurePopulation(h.store)).id);
 
+/** How many of a cohort the default population sends. A cohort has no size of its own (ADR-0039). */
+const resize = async (h: Harness, cohortId: string, size: number): Promise<void> => {
+  await setPopulationMember(h.store, await ensurePopulation(h.store), cohortId, size);
+};
+
+/** A cohort row the way the store wants it: a mix of one, sharing one line. */
+const cohortRow = (fields: { id: string; slug: string; name: string; personaId: string }): Cohort => {
+  const at = new Date().toISOString();
+  return {
+    id: fields.id,
+    projectId: P,
+    slug: fields.slug,
+    name: fields.name,
+    context: "You share a condition.",
+    mix: [{ personaId: fields.personaId, weight: 1 }],
+    traits: {},
+    tools: { allow: [], deny: [], destructive: "confirm" },
+    model: {},
+    seed: "populace",
+    notes: "",
+    createdAt: at,
+    updatedAt: at,
+  };
+};
+
 /** A run belongs to a SIMULATION now: "start a run" is "run this simulation once more". */
 const runsRoute = async (h: Harness): Promise<string> => routes.simulationRuns(P, (await ensureSimulation(h.store)).id);
 const estimateRoute = async (h: Harness): Promise<string> => routes.simulationEstimate(P, (await ensureSimulation(h.store)).id);
@@ -268,7 +308,9 @@ const complainsWithoutTool: ScriptPolicy = sequence([
 ]);
 
 const post = async (app: Hono, path: string, body: object = {}): Promise<Response> => app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-const memberSlugs = async (h: Harness): Promise<string[]> => PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h)))).members.map((m) => m.slug);
+/** The persona slugs the default population sends, lane by lane. */
+const memberSlugs = async (h: Harness): Promise<string[]> =>
+  PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h)))).members.flatMap((m) => m.personas.filter((p) => p.count > 0).map((p) => p.slug));
 const put = async (app: Hono, path: string, body: object): Promise<Response> => app.request(path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 describe("authoring config into the database", () => {
@@ -281,7 +323,7 @@ describe("authoring config into the database", () => {
     const people = pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas(P))));
     expect(people.items.map((p) => p.slug)).toEqual(["casual-lister"]);
     expect(people.items[0]?.origin).toBe("imported");
-    expect(people.items[0]?.count).toBe(1);
+    expect(people.items[0]?.cohorts).toBe(1);
 
     // A second import must not overwrite work someone has since done in the browser.
     await put(h.app, routes.target_(P, targets.items[0]!.id), { name: "Renamed in the browser", mcp: [{ name: "default", url: target.mcpUrl }], identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", emailDomain: "populace.test" } });
@@ -373,13 +415,17 @@ describe("authoring config into the database", () => {
 
     const added = PersonaViewSchema.parse(await json(await post(h.app, routes.personaStarters(P), { slug: "first-timer", count: 2 })));
     expect(added.origin).toBe("starter");
-    expect(added.count).toBe(2);
+    // Adopting a starter makes ONE cohort of that persona alone, sent at the count asked for.
+    expect(added.cohorts).toBe(1);
     const population = PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h))));
     expect(population.members).toHaveLength(1);
-    expect(population.members[0]?.count).toBe(2);
+    expect(population.members[0]?.size).toBe(2);
+    expect(population.members[0]?.personas.map((p) => [p.slug, p.count])).toEqual([["first-timer", 2]]);
+    // The cohort arrives with the starter's own shared line, so nobody has to invent one first.
+    expect(population.members[0]?.context).toContain("found this product on your own");
 
-    // A count of zero leaves the person written down but out of the run.
-    await put(h.app, await populationRoute(h), { members: [{ personaId: added.id, count: 0 }] });
+    // Sending nobody from the cohort leaves the persona and the cohort written down but out of the run.
+    await put(h.app, await populationRoute(h), { members: [] });
     expect(PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h)))).members).toHaveLength(0);
     expect(pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas(P)))).items).toHaveLength(1);
     await h.close();
@@ -390,15 +436,18 @@ describe("authoring config into the database", () => {
    * its stepper reaches zero rather than sending `count: 0` (`screens/setup/People.tsx`), so a
    * handler that only walked the array left the cohort at its old size and the UI snapped back.
    */
-  it("removes a cohort whose persona the body omits, and stores the per-cohort visit cap", async () => {
+  it("removes a cohort the body omits, and stores the per-cohort visit cap", async () => {
     const h = await harness();
     const seeded = pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas(P)))).items[0]!;
     const power = PersonaViewSchema.parse(await json(await post(h.app, routes.personaStarters(P), { slug: "power-user", count: 3 })));
     expect(PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h)))).members).toHaveLength(2);
+    const powerCohort = (await h.store.listCohorts(P)).find((cohort) => cohort.mix.some((entry) => entry.personaId === power.id))!;
 
-    const view = PopulationViewSchema.parse(await json(await put(h.app, await populationRoute(h), { members: [{ personaId: power.id, count: 3, maxVisits: 6 }] })));
-    expect(view.members.map((m) => m.personaId)).toEqual([power.id]);
-    expect(view.members[0]?.count).toBe(3);
+    // The cap is the cohort's; the size is the population's.
+    await put(h.app, routes.cohort(P, powerCohort.id), { maxVisits: 6 });
+    const view = PopulationViewSchema.parse(await json(await put(h.app, await populationRoute(h), { members: [{ cohortId: powerCohort.id, size: 3 }] })));
+    expect(view.members.map((m) => m.cohortId)).toEqual([powerCohort.id]);
+    expect(view.members[0]?.size).toBe(3);
     expect(view.members[0]?.maxVisits).toBe(6);
     expect(await memberSlugs(h)).toEqual([power.slug]);
     // Out of the population, still written down: removing a member never deletes the persona.
@@ -411,15 +460,14 @@ describe("authoring config into the database", () => {
   });
 
   /**
-   * `population.cohortIds` decides who is expanded into agents and therefore who spends money, so
+   * `population.members` decides who is expanded into agents and therefore who spends money, so
    * a cohort the population does not hold stays out of the resolved config. A project can hold
-   * one: a YAML import rewrites `cohortIds` and leaves whatever was authored in the browser behind.
+   * one: a YAML import rewrites the members and leaves whatever was authored in the browser behind.
    */
   it("expands only the cohorts the population holds, not every cohort in the project", async () => {
     const h = await harness();
     const persona = (await h.store.listPersonas("default"))[0]!;
-    const at = new Date().toISOString();
-    await h.store.saveCohort({ id: "coh_orphan", projectId: "default", slug: "orphans", name: "Orphans", personaId: persona.id, size: 9, seed: "populace", notes: "", createdAt: at, updatedAt: at });
+    await h.store.saveCohort(cohortRow({ id: "coh_orphan", slug: "orphans", name: "Orphans", personaId: persona.id }));
 
     expect((await cohortsOf(h.store)).map((c) => c.slug)).not.toContain("orphans");
     const resolved = await resolveProject(h.store);
@@ -439,25 +487,25 @@ describe("authoring config into the database", () => {
   it("composes the population named in the URL, and leaves every other population alone", async () => {
     const h = await harness();
     const everyone = await ensurePopulation(h.store, "default");
-    const before = [...everyone.cohortIds];
+    const before = [...everyone.members];
     expect(before.length).toBeGreaterThan(0);
 
-    // A cohort that only the new population will hold. `inPopulation: false` because POST
-    // /cohorts otherwise puts it in the default one, which is the convenience the setup screens
-    // want and exactly the thing this test must not rely on.
+    // A cohort that only the new population will hold. POST /cohorts puts it in no population:
+    // a cohort has no size, and the population that sends it says how many.
     const persona = (await h.store.listPersonas("default"))[0]!;
-    const extra = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { personaId: persona.id, name: "Weekenders", size: 2, inPopulation: false })));
+    const extra = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { name: "Weekenders", context: "You plan on Fridays.", mix: [{ personaId: persona.id }] })));
+    expect(extra.usedByPopulations).toEqual([]);
 
     const made = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Soak cast" })));
     expect(made.members).toHaveLength(0);
 
     const composed = PopulationViewSchema.parse(
-      await json(await put(h.app, routes.population_(P, made.id), { cohortIds: [extra.id] })),
+      await json(await put(h.app, routes.population_(P, made.id), { members: [{ cohortId: extra.id, size: 2 }] })),
     );
-    expect(composed.members.map((m) => m.cohortId)).toEqual([extra.id]);
+    expect(composed.members.map((m) => [m.cohortId, m.size])).toEqual([[extra.id, 2]]);
 
     // The default population did NOT move. This is the whole assertion.
-    expect((await h.store.getPopulation(everyone.id))?.cohortIds).toEqual(before);
+    expect((await h.store.getPopulation(everyone.id))?.members).toEqual(before);
 
     // ...and a simulation naming the new population expands exactly what the new one holds.
     const simulation = await ensureSimulation(h.store);
@@ -476,20 +524,20 @@ describe("authoring config into the database", () => {
   it("takes a shared cohort out of one population without deleting it from the other", async () => {
     const h = await harness();
     const persona = (await h.store.listPersonas("default"))[0]!;
-    const shared = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { personaId: persona.id, name: "Shared", size: 2, inPopulation: false })));
+    const shared = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { name: "Shared", context: "You share a commute.", mix: [{ personaId: persona.id }] })));
 
     const a = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Cast A" })));
     const b = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Cast B" })));
-    await put(h.app, routes.population_(P, a.id), { cohortIds: [shared.id] });
-    await put(h.app, routes.population_(P, b.id), { cohortIds: [shared.id] });
+    await put(h.app, routes.population_(P, a.id), { members: [{ cohortId: shared.id, size: 2 }] });
+    await put(h.app, routes.population_(P, b.id), { members: [{ cohortId: shared.id, size: 2 }] });
 
-    // Empty Cast A through the persona-keyed path, which is what the setup screens send.
+    // Empty Cast A: the member list replaces what is there.
     const emptied = await put(h.app, routes.population_(P, a.id), { members: [] });
     expect(emptied.status).toBe(200);
 
     // Out of A, still in B, and the people are still there.
-    expect((await h.store.getPopulation(a.id))?.cohortIds).toEqual([]);
-    expect((await h.store.getPopulation(b.id))?.cohortIds).toEqual([shared.id]);
+    expect((await h.store.getPopulation(a.id))?.members).toEqual([]);
+    expect((await h.store.getPopulation(b.id))?.members).toEqual([{ cohortId: shared.id, size: 2 }]);
     expect(await h.store.getCohort(shared.id)).toBeDefined();
     expect(await h.store.listPeople({ cohortId: shared.id })).toHaveLength(2);
     await h.close();
@@ -503,30 +551,40 @@ describe("authoring config into the database", () => {
   it("refuses to delete a persona two cohorts are built on, and takes neither of them apart", async () => {
     const h = await harness();
     const persona = (await h.store.listPersonas("default"))[0]!;
-    const second = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { personaId: persona.id, name: "Weekend planners", size: 3 })));
-    expect((await h.store.listCohorts("default")).filter((cohort) => cohort.personaId === persona.id)).toHaveLength(2);
+    const second = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { name: "Weekend planners", context: "You plan on Fridays.", mix: [{ personaId: persona.id }] })));
+    await resize(h, second.id, 3);
+    const drawingOn = async (): Promise<Cohort[]> => (await h.store.listCohorts("default")).filter((cohort) => cohort.mix.some((entry) => entry.personaId === persona.id));
+    expect(await drawingOn()).toHaveLength(2);
 
     const refused = await h.app.request(routes.persona(P, persona.id), { method: "DELETE" });
     expect(refused.status).toBe(409);
-    expect(await refused.text()).toContain(second.slug);
+    expect(await refused.text()).toContain("Weekend planners");
     // Nothing was taken apart on the way to the refusal.
-    expect((await h.store.listCohorts("default")).filter((cohort) => cohort.personaId === persona.id)).toHaveLength(2);
+    expect(await drawingOn()).toHaveLength(2);
     expect(await h.store.getPersona(persona.id)).toBeDefined();
     expect(await h.store.listPeople({ cohortId: second.id })).toHaveLength(3);
     await h.close();
   });
 
-  /** SPEC §5.1: the roster is materialised on first read of a cohort, not only on a size change. */
-  it("materialises a cohort's people when it is made and when it is read", async () => {
+  /**
+   * ADR-0039: a cohort has no people until a population sends it, and setting that number is what
+   * writes them; from then on the roster is materialised on read, not only on a size change.
+   */
+  it("materialises a cohort's people when a population sizes it and when it is read", async () => {
     const h = await harness();
     const persona = (await h.store.listPersonas("default"))[0]!;
-    const created = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { personaId: persona.id, name: "Mobile only", size: 4 })));
-    expect(created.generated.seeded).toBe(4);
+    const created = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { name: "Mobile only", context: "You are on your phone.", mix: [{ personaId: persona.id }] })));
+    expect(created.size).toBe(0);
+    expect(created.generated.seeded).toBe(0);
+    await resize(h, created.id, 4);
+    expect(CohortViewSchema.parse(await json(await h.app.request(routes.cohort(P, created.id)))).generated.seeded).toBe(4);
 
-    // A cohort written straight into the store has no people at all until somebody looks.
-    const at = new Date().toISOString();
-    const bare: Cohort = { id: newCohortId(), projectId: "default", slug: "hand-made", name: "Hand made", personaId: persona.id, size: 3, seed: "populace", notes: "", createdAt: at, updatedAt: at };
+    // A cohort written straight into the store, and sized straight into the population, has no
+    // people at all until somebody looks.
+    const bare = cohortRow({ id: newCohortId(), slug: "hand-made", name: "Hand made", personaId: persona.id });
     await h.store.saveCohort(bare);
+    const everyone = await ensurePopulation(h.store);
+    await h.store.savePopulation({ ...everyone, members: [...everyone.members, { cohortId: bare.id, size: 3 }], updatedAt: new Date().toISOString() });
     expect(await h.store.listPeople({ cohortId: bare.id, includeArchived: true })).toHaveLength(0);
     const roster = pageOf(PersonViewSchema).parse(await json(await h.app.request(routes.cohortPeople(P, bare.id))));
     expect(roster.items).toHaveLength(3);
@@ -1269,7 +1327,7 @@ describe("executions of a simulation", () => {
 
     // A second cohort, added while the execution is up.
     const persona = PersonaViewSchema.parse(await json(await post(h.app, routes.personaStarters(P), { slug: "power-user", count: 2 })));
-    expect(persona.count).toBe(2);
+    expect(persona.cohorts).toBe(1);
     const updated = await h.runs.applyChanges(runId);
     expect(updated.configSnapshotId).not.toBe(before?.configSnapshotId);
 
@@ -1530,15 +1588,15 @@ describe("the people in a cohort", () => {
   it("writes a cohort's people once, and neither a shrink nor a new seed re-casts them", async () => {
     const h = await harness();
     const persona = (await h.store.listPersonas("default"))[0]!;
-    // `setCohortSize` composes ONE named population now, rather than resolving "everyone"
+    // `ensurePersonaCohort` composes ONE named population, rather than resolving "everyone"
     // internally and editing it whatever the caller meant.
     const everyone = await ensurePopulation(h.store, "default");
-    await setCohortSize(h.store, everyone, persona, 5);
+    await ensurePersonaCohort(h.store, everyone, persona, 5);
     const cohort = (await cohortsOf(h.store))[0]!;
 
     const roster = await ensureRoster(h.store, cohort.id);
     expect(roster.map((p) => p.ordinal)).toEqual([0, 1, 2, 3, 4]);
-    expect(roster.map((p) => p.id)).toEqual([1, 2, 3, 4, 5].map((n) => `${cohort.slug}#${n}`));
+    expect(roster.map((p) => p.id)).toEqual([1, 2, 3, 4, 5].map((n) => `${cohort.slug}.${persona.slug}#${n}`));
     // Nobody in a cohort shares a name with anybody else, and nobody shares a signup handle.
     expect(new Set(roster.map((p) => p.name)).size).toBe(5);
     expect(new Set(roster.map((p) => p.handle)).size).toBe(5);
@@ -1547,18 +1605,19 @@ describe("the people in a cohort", () => {
     expect((await ensureRoster(h.store, cohort.id)).map((p) => p.name)).toEqual(roster.map((p) => p.name));
 
     // Shrinking puts people aside rather than deleting them...
-    await setCohortSize(h.store, (await ensurePopulation(h.store, "default")), persona, 3);
+    await resize(h, cohort.id, 3);
     expect((await ensureRoster(h.store, cohort.id)).map((p) => p.name)).toEqual(roster.slice(0, 3).map((p) => p.name));
     expect(await h.store.listPeople({ cohortId: cohort.id })).toHaveLength(3);
     expect(await h.store.listPeople({ cohortId: cohort.id, includeArchived: true })).toHaveLength(5);
 
     // ...so growing back meets the same five individuals, not five new ones wearing their ids.
-    await setCohortSize(h.store, (await ensurePopulation(h.store, "default")), persona, 5);
+    await resize(h, cohort.id, 5);
     expect((await ensureRoster(h.store, cohort.id)).map((p) => p.name)).toEqual(roster.map((p) => p.name));
 
     // The seed decides who the NEXT person is, not who these people are.
     const stored = (await h.store.getCohort(cohort.id))!;
-    await h.store.saveCohort({ ...stored, seed: "somebody-else", size: 6, updatedAt: new Date().toISOString() });
+    await h.store.saveCohort({ ...stored, seed: "somebody-else", updatedAt: new Date().toISOString() });
+    await resize(h, cohort.id, 6);
     const grown = await ensureRoster(h.store, cohort.id);
     expect(grown).toHaveLength(6);
     expect(grown.slice(0, 5).map((p) => p.name)).toEqual(roster.map((p) => p.name));
@@ -1591,7 +1650,7 @@ describe("the people in a cohort", () => {
     };
     const h = await harness({ policy: writes, writesPeople: true });
     const cohort = (await cohortsOf(h.store))[0]!;
-    await put(h.app, routes.cohort(P, cohort.id), { size: 2 });
+    await resize(h, cohort.id, 2);
     await post(h.app, routes.cohortPeople(P, cohort.id));
     await h.jobs.idle();
 
@@ -1609,7 +1668,7 @@ describe("the people in a cohort", () => {
     const agents = await h.store.listAgents({ runId: started.runId });
     expect(agents.map((a) => a.name).sort()).toEqual(["Written Person 1", "Written Person 2"]);
     expect(agents.every((a) => a.details.includes("commute"))).toBe(true);
-    expect(agents.map((a) => a.personId).sort()).toEqual([`${cohort.slug}#1`, `${cohort.slug}#2`]);
+    expect(agents.map((a) => a.personId).sort()).toEqual([`${cohort.slug}.casual-lister#1`, `${cohort.slug}.casual-lister#2`]);
 
     // Every finding carries the key it was filed under, computed by the runner, not by the report.
     const findings = await h.store.listFindings({ runIds: [started.runId] });
@@ -1909,7 +1968,7 @@ describe("two projects in one store", () => {
 describe("a screen is a bounded number of queries", () => {
   const grow = async (h: Harness, size: number): Promise<void> => {
     const cohort = (await cohortsOf(h.store))[0]!;
-    await put(h.app, routes.cohort(P, cohort.id), { size });
+    await resize(h, cohort.id, size);
   };
 
   const runOnce = async (h: Harness): Promise<string> => {
@@ -1966,7 +2025,7 @@ describe("the project and simulation screens name nobody", () => {
     const h = await harness({ policy: complains });
     const simulationId = (await ensureSimulation(h.store)).id;
     const cohort = (await cohortsOf(h.store))[0]!;
-    await put(h.app, routes.cohort(P, cohort.id), { size: 3 });
+    await resize(h, cohort.id, 3);
     const started = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
     await h.jobs.idle();
     await h.runs.settled(started.runId);
@@ -2061,6 +2120,105 @@ describe("what a problem did between executions", () => {
   });
 });
 
+/**
+ * ADR-0039 end to end: a cohort is a shared condition and a mix, the population says how many,
+ * the size is apportioned per lane, growing re-deals nobody, and what is set on a person by hand
+ * reaches the prompt after what the cohort shares.
+ */
+describe("a cohort that mixes personas", () => {
+  const listPeople = async (h: Harness, cohortId: string): Promise<PersonView[]> =>
+    pageOf(PersonViewSchema).parse(await json(await h.app.request(routes.cohortPeople(P, cohortId)))).items;
+  const live = (roster: readonly PersonView[], personaSlug: string): PersonView[] => roster.filter((p) => !p.archived && p.personaSlug === personaSlug);
+
+  it("refuses a cohort with nothing shared, and one drawn from nobody", async () => {
+    const h = await harness();
+    const persona = (await h.store.listPersonas("default"))[0]!;
+    expect((await post(h.app, routes.cohorts(P), { name: "Mobile", mix: [{ personaId: persona.id }] })).status).toBe(400);
+    expect((await post(h.app, routes.cohorts(P), { name: "Mobile", context: "You are on your phone." })).status).toBe(400);
+    expect((await post(h.app, routes.cohorts(P), { name: "Mobile", context: "You are on your phone.", mix: [{ personaId: persona.id }, { personaId: persona.id }] })).status).toBe(400);
+    await h.close();
+  });
+
+  it("apportions the population's size across the mix, and growing re-deals nobody", async () => {
+    const h = await harness();
+    const casual = (await h.store.listPersonas("default"))[0]!;
+    const power = PersonaViewSchema.parse(await json(await post(h.app, routes.personaStarters(P), { slug: "power-user", count: 0 })));
+    const cohort = CohortViewSchema.parse(
+      await json(await post(h.app, routes.cohorts(P), { name: "Mobile signups", context: "You only ever use this on your phone.", mix: [{ personaId: casual.id, weight: 3 }, { personaId: power.id, weight: 2 }] })),
+    );
+    // No size of its own: nobody until a population sends it.
+    expect(cohort.size).toBe(0);
+    expect(await listPeople(h, cohort.id)).toEqual([]);
+
+    const everyone = await ensurePopulation(h.store);
+    const at10 = PopulationViewSchema.parse(await json(await put(h.app, await populationRoute(h), { members: [{ cohortId: cohort.id, size: 10 }] })));
+    expect(at10.people).toBe(10);
+    expect(at10.members[0]?.personas.map((p) => [p.slug, p.count])).toEqual([[casual.slug, 6], [power.slug, 4]]);
+    const ten = await listPeople(h, cohort.id);
+    expect(live(ten, casual.slug).map((p) => p.id)).toEqual([1, 2, 3, 4, 5, 6].map((n) => `${cohort.slug}.${casual.slug}#${n}`));
+    expect(live(ten, power.slug)).toHaveLength(4);
+    expect(new Set(ten.map((p) => p.name)).size).toBe(10);
+
+    // Raised to 15: 9 and 6, and the first 6 and 4 are the same people by name.
+    const at15 = PopulationViewSchema.parse(await json(await put(h.app, routes.population_(P, everyone.id), { members: [{ cohortId: cohort.id, size: 15 }] })));
+    expect(at15.members[0]?.personas.map((p) => p.count)).toEqual([9, 6]);
+    const fifteen = await listPeople(h, cohort.id);
+    expect(live(fifteen, casual.slug).slice(0, 6).map((p) => p.name)).toEqual(live(ten, casual.slug).map((p) => p.name));
+    expect(live(fifteen, power.slug).slice(0, 4).map((p) => p.name)).toEqual(live(ten, power.slug).map((p) => p.name));
+
+    // Back to 10 at 1 : 1 — 5 and 5. One casual is put aside, one power user is drawn, nobody is renamed.
+    await put(h.app, routes.population_(P, everyone.id), { members: [{ cohortId: cohort.id, size: 10 }] });
+    const rebalanced = CohortViewSchema.parse(await json(await put(h.app, routes.cohort(P, cohort.id), { mix: [{ personaId: casual.id, weight: 1 }, { personaId: power.id, weight: 1 }] })));
+    expect(rebalanced.mix.map((entry) => entry.people)).toEqual([5, 5]);
+    const even = await listPeople(h, cohort.id);
+    expect(live(even, casual.slug).map((p) => p.name)).toEqual(live(ten, casual.slug).slice(0, 5).map((p) => p.name));
+    expect(live(even, power.slug).slice(0, 4).map((p) => p.name)).toEqual(live(ten, power.slug).map((p) => p.name));
+    expect(even.filter((p) => p.archived).map((p) => p.name)).toContain(live(ten, casual.slug)[5]?.name);
+
+    // What the next execution sends is that arithmetic, lane by lane, and every lane shares the line.
+    const resolved = await resolveProject(h.store);
+    const lanes = resolved.config.population.members.filter((m) => m.cohort === cohort.slug);
+    expect(lanes.map((m) => [m.persona.id, m.count])).toEqual([[casual.slug, 5], [power.slug, 5]]);
+    expect(lanes.every((m) => m.context === "You only ever use this on your phone.")).toBe(true);
+    await h.close();
+  });
+
+  it("carries what was set on a person by hand into the prompt, after what the cohort shares", async () => {
+    const h = await harness();
+    const cohort = (await cohortsOf(h.store))[0]!;
+    await resize(h, cohort.id, 2);
+    await put(h.app, routes.cohort(P, cohort.id), { context: "You signed up during launch week.", traits: { device: "phone" } });
+    const [first] = await listPeople(h, cohort.id);
+    const tuned = PersonViewSchema.parse(
+      await json(await h.app.request(routes.cohortPerson(P, cohort.id, first!.id), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ details: "Cracked screen.", patience: 1, traits: { device: "tablet" } }) })),
+    );
+    expect(tuned.patience).toBe(1);
+    expect(tuned.overrides.patience).toBe(1);
+    expect(tuned.traits.device).toBe("tablet");
+    expect(tuned.generatedBy).toBe("authored");
+
+    const resolved = await resolveProject(h.store);
+    const agents = expandPopulation(resolved.config.population, "run_x_aaaaaa", "sim_1").map((e) => e.agent);
+    const mine = agents.find((a) => a.personId === first!.id)!;
+    const other = agents.find((a) => a.personId !== first!.id)!;
+    expect(mine.persona.patience).toBe(1);
+    expect(mine.persona.traits.device).toBe("tablet");
+    // The cohort's overlay reaches the person nobody touched; the hand-set value wins for the one somebody did.
+    expect(other.persona.traits.device).toBe("phone");
+    const prompt = personaSystemPrompt(mine, resolved.config.target);
+    expect(prompt.indexOf("You signed up during launch week.")).toBeGreaterThan(prompt.indexOf(mine.persona.backstory));
+    expect(prompt.indexOf("Cracked screen.")).toBeGreaterThan(prompt.indexOf("You signed up during launch week."));
+
+    // Null hands the dimension back to the draw.
+    const redrawn = PersonViewSchema.parse(
+      await json(await h.app.request(routes.cohortPerson(P, cohort.id, first!.id), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ patience: null, traits: null }) })),
+    );
+    expect(redrawn.overrides.patience).toBeUndefined();
+    expect(redrawn.traits.device).toBe("phone");
+    await h.close();
+  });
+});
+
 describe("the project library and the pre-flight", () => {
   it("edits a cohort, reads its roster and renames one person without moving their handle", async () => {
     const h = await harness();
@@ -2068,7 +2226,8 @@ describe("the project library and the pre-flight", () => {
     const cohort = cohorts.items[0]!;
     expect(cohort.usedByPopulations).toHaveLength(1);
 
-    const grown = CohortViewSchema.parse(await json(await put(h.app, routes.cohort(P, cohort.id), { size: 4, notes: "the ones who keep lists" })));
+    await resize(h, cohort.id, 4);
+    const grown = CohortViewSchema.parse(await json(await put(h.app, routes.cohort(P, cohort.id), { notes: "the ones who keep lists" })));
     expect(grown.size).toBe(4);
     expect(grown.slug).toBe(cohort.slug); // immutable: it is half of every agent id
     expect(grown.generated.seeded).toBe(4);
@@ -2078,7 +2237,7 @@ describe("the project library and the pre-flight", () => {
     expect(new Set(roster.items.map((p) => p.name)).size).toBe(4);
     const third = roster.items[2]!;
 
-    const renamed = PersonViewSchema.parse(await json(await h.app.request(routes.cohortPerson(P, cohort.id, third.ordinal), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Renamed By Hand" }) })));
+    const renamed = PersonViewSchema.parse(await json(await h.app.request(routes.cohortPerson(P, cohort.id, third.id), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Renamed By Hand" }) })));
     expect(renamed.name).toBe("Renamed By Hand");
     // The handle is what the account on the target was signed up with, so a rename must not move it.
     expect(renamed.handle).toBe(third.handle);
@@ -2272,7 +2431,7 @@ describe("the project library and the pre-flight", () => {
     const simulationId = (await ensureSimulation(h.store)).id;
     const ids: string[] = [];
     for (const size of [1, 1, 3]) {
-      await put(h.app, routes.cohort(P, (await cohortsOf(h.store))[0]!.id), { size });
+      await resize(h, (await cohortsOf(h.store))[0]!.id, size);
       const started = (await json(await post(h.app, routes.simulationRuns(P, simulationId)))) as { runId: string };
       await h.jobs.idle();
       await h.runs.settled(started.runId);

@@ -22,12 +22,14 @@ export const SelfSignupConfigSchema = z.object({
  * { "byCohort": { "weekend-planners": [ { "bearerToken": "...", "email": "..." } ], "sceptics": [ ... ] } }
  * ```
  *
- * because an account is handed to a person by their ordinal within their cohort — the only index
+ * because an account is handed to a person by their ordinal within their lane — the only index
  * that is the same in every process and after a restart — and an ordinal only identifies a person
- * once the list it indexes belongs to one cohort. The older shapes still work: a record keyed by
- * persona id (`{ "<personaId>": [ ... ] }`) and a flat array whose entries may carry `personaId`.
- * They are refused at run start when one of their pools would serve more than one cohort, because
- * two cohorts on one persona both have a person 1 and would be handed the same account.
+ * once the list it indexes belongs to one lane. A cohort that mixes personas has one lane per
+ * persona, keyed `"<cohortSlug>.<personaSlug>"`; a cohort of one persona may be keyed by its slug
+ * alone. The older shapes still work: a record keyed by persona id (`{ "<personaId>": [ ... ] }`)
+ * and a flat array whose entries may carry `personaId`. Any pool is refused at run start when it
+ * would serve more than one lane, because every lane has a person 1 and both would be handed the
+ * same account.
  *
  * Entries are `{ bearerToken, userId?, email?, displayName?, expiresAt?, redeemable?, tags? }`.
  * `bearerToken` is required here even though `CredentialSchema` makes it optional: a static pool

@@ -5,7 +5,7 @@ import { SqliteStore } from "@populace/store-sqlite";
 import { describe, expect, it } from "vitest";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
-import { ensureProject, ensureSettings } from "./config-store.js";
+import { ensurePopulation, ensureProject, ensureSettings, setPopulationMember } from "./config-store.js";
 import { EventHub, RecordingStore } from "./events.js";
 import { JobRunner } from "./jobs.js";
 import { RunController } from "./runs.js";
@@ -59,14 +59,19 @@ async function harness(options: { size?: number; policy?: ScriptPolicy; provider
     projectId: P,
     slug: "weekenders",
     name: "Weekenders",
-    personaId: persona.id,
-    size: options.size ?? 5,
+    context: "You plan your weekends on your phone, on the train home on Fridays.",
+    mix: [{ personaId: persona.id, weight: 1 }],
+    traits: {},
+    tools: { allow: [], deny: [], destructive: "confirm" },
+    model: {},
     seed: "populace",
     notes: "",
     createdAt: at,
     updatedAt: at,
   };
   await store.saveCohort(cohort);
+  // A cohort has no size of its own: the population that sends it says how many (ADR-0039).
+  await setPopulationMember(store, await ensurePopulation(store), cohort.id, options.size ?? 5);
 
   const provider = new ScriptedProvider(options.policy ?? roster((turn) => options.onCall?.(turn, store)));
   const jobs = new JobRunner(store);
@@ -118,7 +123,7 @@ function seededNames(count: number): string[] {
   const used = new Set<string>();
   const out: string[] = [];
   for (let ordinal = 0; ordinal < count; ordinal++) {
-    const name = nameFrom(`populace:weekenders:${ordinal}`, used);
+    const name = nameFrom(`populace:weekenders.weekend-planner:${ordinal}`, used);
     used.add(name);
     out.push(name);
   }
@@ -168,7 +173,7 @@ describe("writing a cohort's people", () => {
     const expected: string[] = [];
     const used = new Set<string>();
     for (let ordinal = 0; ordinal < 3; ordinal++) {
-      const name = nameFrom(`populace:weekenders:${ordinal}`, used);
+      const name = nameFrom(`populace:weekenders.weekend-planner:${ordinal}`, used);
       used.add(name);
       expected.push(name);
     }
@@ -202,11 +207,11 @@ describe("writing a cohort's people", () => {
     const original = (await rosterOf(h)).map((person) => person.name);
     expect(original).toHaveLength(5);
 
-    await h.store.saveCohort({ ...h.cohort, size: 3, updatedAt: new Date().toISOString() });
+    await setPopulationMember(h.store, await ensurePopulation(h.store), h.cohort.id, 3);
     const shrunk = await rosterOf(h);
     expect(shrunk.filter((person) => !person.archived)).toHaveLength(3);
 
-    await h.store.saveCohort({ ...h.cohort, size: 5, updatedAt: new Date().toISOString() });
+    await setPopulationMember(h.store, await ensurePopulation(h.store), h.cohort.id, 5);
     const grown = await rosterOf(h);
     expect(grown.map((person) => person.name)).toEqual(original);
     // Nobody was re-cast on the way back up: the two who came back are the two who left.
@@ -224,7 +229,7 @@ describe("writing a cohort's people", () => {
     const before = await rosterOf(h);
     const mine = before[1]!;
 
-    const renamed = PersonViewSchema.parse(await json(await patch(h.app, routes.cohortPerson(P, h.cohort.id, mine.ordinal), { name: "Hand Typed" })));
+    const renamed = PersonViewSchema.parse(await json(await patch(h.app, routes.cohortPerson(P, h.cohort.id, mine.id), { name: "Hand Typed" })));
     expect(renamed.name).toBe("Hand Typed");
     expect(renamed.generatedBy).toBe("authored");
     expect(renamed.handle).toBe(mine.handle);
@@ -245,13 +250,13 @@ describe("writing a cohort's people", () => {
     expect((await rosterOf(h)).map((person) => person.name)).toEqual(["Written Person 1"]);
 
     // Two more slots, still holding the seeded bank's names.
-    await h.store.saveCohort({ ...h.cohort, size: 3, updatedAt: new Date().toISOString() });
+    await setPopulationMember(h.store, await ensurePopulation(h.store), h.cohort.id, 3);
     const grown = await rosterOf(h);
     expect(grown.slice(1).map((person) => person.generatedBy)).toEqual(["seeded", "seeded"]);
 
     // "Re-cast this one person" is a price quoted for one person. Everything else is untouched —
     // including the placeholders, which a plain generate would have been the way to ask for.
-    await generate(h, routes.cohortPeopleRegenerate(P, h.cohort.id), { ordinals: [0], confirm: true });
+    await generate(h, routes.cohortPeopleRegenerate(P, h.cohort.id), { personIds: [grown[0]!.id], confirm: true });
     const after = await rosterOf(h);
     expect(after[0]?.generatedBy).toBe("model");
     expect(after.slice(1).map((person) => person.generatedBy)).toEqual(["seeded", "seeded"]);

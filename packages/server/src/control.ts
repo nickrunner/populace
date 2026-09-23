@@ -42,6 +42,7 @@ import {
   handleFor,
   isToolPermitted,
   instantiatePersona,
+  laneSlugFor,
   nameFrom,
   newCohortId,
   newPersonaId,
@@ -73,19 +74,17 @@ import { buildDigest, verifyPending } from "@populace/reports";
 import { finishSignIn, personaSystemPrompt, startSignIn } from "@populace/runner";
 import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { ensureRoster } from "./cohort-store.js";
+import { ensureRoster, headcountOf, lanesOf, RosterIncomplete, sizeIn, type Lane } from "./cohort-store.js";
 import { generatePeople, type GenerateOptions, type GeneratedRoster } from "./people-writer.js";
 import {
   ConfigIncomplete,
-  cohortsOf,
   cohortsOfPopulation,
   createSimulation,
   ensurePopulation,
   ensureSettings,
   ensureSimulation,
+  ensurePersonaCohort,
   resolveSimulationConfig,
-  removePersonaCohorts,
-  setCohortSize,
   type ResolvedSimulation,
 } from "./config-store.js";
 import { estimateRun } from "./estimate.js";
@@ -319,7 +318,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       }
     }
     const simulations = await deps.store.listSimulations({ projectId });
-    const peopleCount = (await cohortsOf(deps.store, projectId)).reduce((sum, cohort) => sum + cohort.size, 0);
+    const peopleCount = headcountOf(await ensurePopulation(deps.store, projectId));
     const killSwitch = await deps.store.getKillSwitch();
     /*
       One builder, in `needs.ts`. `blockers` is derived from it rather than assembled beside it,
@@ -630,8 +629,9 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
 
   // ---- personas -----------------------------------------------------------
 
-  const memberCountOf = async (projectId: string, personaId: string): Promise<number> =>
-    (await cohortsOf(deps.store, projectId)).find((cohort) => cohort.personaId === personaId)?.size ?? 0;
+  /** How many cohorts draw on a persona. Headcount is the population's business, not the persona's. */
+  const cohortsDrawingOn = async (projectId: string, personaId: string): Promise<number> =>
+    (await deps.store.listCohorts(projectId)).filter((cohort) => cohort.mix.some((entry) => entry.personaId === personaId)).length;
 
   const personaView = async (persona: StoredPersona): Promise<PersonaView> => ({
     id: persona.id,
@@ -640,7 +640,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     spec: persona.spec,
     origin: persona.origin,
     updatedAt: persona.updatedAt,
-    count: await memberCountOf(persona.projectId, persona.id),
+    cohorts: await cohortsDrawingOn(persona.projectId, persona.id),
   });
 
   // Declared before `/personas/:x` so the literal path is not eaten by the parameter.
@@ -659,8 +659,9 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const persona: StoredPersona = existing ?? { id: newPersonaId(), projectId: s.project.id, slug: starter.slug, spec: starter.spec, origin: "starter", createdAt: at, updatedAt: at };
     if (!existing) await deps.store.savePersona(persona);
     // The default population, explicitly. Adopting a starter is the first-run path and there is
-    // one population then; a project with several composes them on the Populations screen.
-    await setCohortSize(deps.store, await ensurePopulation(deps.store, s.project.id), persona, body.value.count);
+    // one population then; a project with several composes them on the Populations screen. The
+    // cohort it makes is the starter alone, and it arrives with the starter's own shared line.
+    await ensurePersonaCohort(deps.store, await ensurePopulation(deps.store, s.project.id), persona, body.value.count, starter.context);
     return c.json(await personaView(persona), existing ? 200 : 201);
   });
 
@@ -682,7 +683,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const at = now();
     const persona: StoredPersona = { id: newPersonaId(), projectId: s.project.id, slug, spec: { ...body.value.spec, id: slug }, origin: "authored", createdAt: at, updatedAt: at };
     await deps.store.savePersona(persona);
-    await setCohortSize(deps.store, await ensurePopulation(deps.store, s.project.id), persona, 1);
+    // A persona alone. Which cohorts draw on it, and how many go, are the cohort's and the
+    // population's decisions (ADR-0039); nothing is sent anywhere by writing a kind of person.
     return c.json(await personaView(persona), 201);
   });
 
@@ -713,18 +715,9 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const persona = owned(await deps.store.getPersona(param(c, "x")), s.project.id);
     if (!persona) return c.body(null, 204);
-    // Check first, mutate second (SPEC §2.14). `setCohortSize(..., 0)` finds ONE cohort, so a
-    // persona backing two of them used to have the first deleted — people archived and all — and
-    // then `deletePersona` refused because the second still named it: a half-applied destructive
-    // change and a 500. A refusal that names the referrers is what the rule asks for.
-    const referrers = (await deps.store.listCohorts(s.project.id)).filter((cohort) => cohort.personaId === persona.id);
-    if (referrers.length > 1) {
-      return fail(c, "conflict", `${persona.spec.name} is the persona behind ${referrers.length} cohorts (${referrers.map((cohort) => cohort.slug).join(", ")}); take those apart first`);
-    }
-    // Every population that holds a cohort on this persona lets go, then the cohorts go. Doing
-    // this against ONE population left the cohort in every other population that held it, and
-    // `deletePersona` then refused because a cohort still named it.
-    await removePersonaCohorts(deps.store, s.project.id, persona);
+    // A persona a cohort still draws on is refused, and the refusal names the cohorts (SPEC §2.14):
+    // the mix is where a persona is taken out, and deleting cohorts on the reader's behalf would
+    // unmake people that executions already name.
     try {
       await deps.store.deletePersona(persona.id);
     } catch (err) {
@@ -758,14 +751,17 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     }
     const target = asked === undefined ? targets[0] : targets.find((t) => t.id === asked || t.slug === asked);
     if (asked !== undefined && !target) return fail(c, "not_found", `no target called ${asked} in this project`);
-    const seed = `preview:${persona.slug}:0`;
+    const lane = laneSlugFor("preview", persona.slug);
+    const seed = `preview:${lane}:0`;
     const agent: Agent = {
-      id: `preview/${persona.slug}#1`,
+      id: `preview/${lane}#1`,
       runId: "preview",
       simulationId: "preview",
       populationId: "preview",
-      cohortSlug: persona.slug,
-      personId: `${persona.slug}#1`,
+      cohortSlug: "preview",
+      personId: `${lane}#1`,
+      context: "",
+      cohortTools: { allow: [], deny: [], destructive: "confirm" },
       name: "Sample Person",
       details: "",
       handle: `${persona.slug}-1`,
@@ -794,16 +790,43 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
 
   // ---- cohorts and people -------------------------------------------------
 
+  /** The cohort's lanes at a size, or none when a persona in its mix is gone. */
+  const lanesIfWhole = async (cohort: Cohort, size: number): Promise<Lane[]> => {
+    try {
+      return await lanesOf(deps.store, cohort, size);
+    } catch (err) {
+      if (err instanceof RosterIncomplete) return [];
+      throw err;
+    }
+  };
+
   const cohortView = async (projectId: string, cohort: Cohort): Promise<CohortView> => {
-    const [persona, people, populations] = await Promise.all([deps.store.getPersona(cohort.personaId), deps.store.listPeople({ cohortId: cohort.id, includeArchived: true }), deps.store.listPopulations(projectId)]);
-    const live = people.filter((p) => p.ordinal < cohort.size);
+    const [people, populations, personas] = await Promise.all([
+      deps.store.listPeople({ cohortId: cohort.id, includeArchived: true }),
+      deps.store.listPopulations(projectId),
+      deps.store.listPersonas(projectId),
+    ]);
+    const byId = new Map(personas.map((persona) => [persona.id, persona]));
+    // Sized by the populations that send it, at the largest of them (ADR-0039).
+    const size = populations.reduce((largest, population) => Math.max(largest, sizeIn(population, cohort.id)), 0);
+    const lanes = await lanesIfWhole(cohort, size);
+    const live = people.filter((person) => person.archivedAt === null);
     return {
       id: cohort.id,
       slug: cohort.slug,
       name: cohort.name,
-      personaId: cohort.personaId,
-      personaName: persona?.spec.name ?? cohort.name,
-      size: cohort.size,
+      context: cohort.context,
+      mix: cohort.mix.map((entry) => ({
+        personaId: entry.personaId,
+        personaSlug: byId.get(entry.personaId)?.slug ?? "",
+        personaName: byId.get(entry.personaId)?.spec.name ?? entry.personaId,
+        weight: entry.weight,
+        people: lanes.find((lane) => lane.persona.id === entry.personaId)?.count ?? 0,
+      })),
+      traits: cohort.traits,
+      tools: cohort.tools,
+      model: cohort.model,
+      size,
       generated: {
         model: live.filter((p) => p.generatedBy === "model").length,
         seeded: live.filter((p) => p.generatedBy === "seeded").length,
@@ -812,23 +835,56 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       cadence: cohort.cadence ?? null,
       // The row spells it `maxWakes`; the wire does not (ADR-0032).
       maxVisits: cohort.maxWakes ?? null,
+      seed: cohort.seed,
       notes: cohort.notes,
-      usedByPopulations: populations.filter((pop) => pop.cohortIds.includes(cohort.id)).map((pop) => ({ id: pop.id, name: pop.name })),
+      usedByPopulations: populations.flatMap((population) => {
+        const held = sizeIn(population, cohort.id);
+        return held > 0 ? [{ id: population.id, name: population.name, size: held }] : [];
+      }),
     };
   };
 
-  const personView = (person: Person, size: number): PersonView => ({
+  /** A person as the wire says them: effective values, and what was set by hand beside them. */
+  const personView = (person: Person, cohort: Cohort, personaNames: ReadonlyMap<string, string>): PersonView => ({
     id: person.id,
+    laneSlug: person.laneSlug,
+    personaSlug: person.personaSlug,
+    personaName: personaNames.get(person.personaId) ?? person.personaSlug,
     ordinal: person.ordinal,
     name: person.name,
     details: person.details,
     handle: person.handle,
     generatedBy: person.generatedBy,
-    patience: person.persona.patience,
-    budgetUsd: person.persona.budgetUsd,
-    traits: person.persona.traits,
-    archived: person.archivedAt !== null || person.ordinal >= size,
+    // The same layering expansion does (`individuate`): the sample, the cohort, then the hand.
+    patience: person.overrides.patience ?? person.persona.patience,
+    budgetUsd: person.overrides.budgetUsd ?? person.persona.budgetUsd,
+    traits: { ...person.persona.traits, ...cohort.traits, ...person.overrides.traits },
+    overrides: person.overrides,
+    archived: person.archivedAt !== null,
   });
+
+  const personaNamesOf = async (projectId: string): Promise<Map<string, string>> =>
+    new Map((await deps.store.listPersonas(projectId)).map((persona) => [persona.id, persona.spec.name]));
+
+  /** A mix as sent, checked against the project's personas. */
+  const mixOf = async (
+    projectId: string,
+    entries: readonly { personaId: string; weight: number }[],
+  ): Promise<{ ok: true; mix: Cohort["mix"]; names: string[] } | { ok: false; message: string }> => {
+    const personas = new Map((await deps.store.listPersonas(projectId)).map((persona) => [persona.id, persona]));
+    const unknown = entries.filter((entry) => !personas.has(entry.personaId)).map((entry) => entry.personaId);
+    if (unknown.length) return { ok: false, message: `no such persona: ${unknown.join(", ")}` };
+    const seen = new Set<string>();
+    for (const entry of entries) {
+      if (seen.has(entry.personaId)) return { ok: false, message: `a persona goes into a mix once (${personas.get(entry.personaId)?.spec.name ?? entry.personaId} is in it twice)` };
+      seen.add(entry.personaId);
+    }
+    return {
+      ok: true,
+      mix: entries.map((entry) => ({ personaId: entry.personaId, weight: entry.weight })),
+      names: entries.map((entry) => personas.get(entry.personaId)?.spec.name ?? entry.personaId),
+    };
+  };
 
   /**
    * Writing people is refused while anything is executing. A live run is reading this cast through
@@ -870,10 +926,16 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const body = await parseBody(c, CohortInputSchema);
     if (!body.ok) return body.response;
-    const persona = body.value.personaId === undefined ? undefined : owned(await deps.store.getPersona(body.value.personaId), s.project.id);
-    if (!persona) return fail(c, "bad_request", "a cohort is N people on one persona; name the persona");
+    // What they share is required: a cohort with nothing in common is a saved recipe, not a
+    // cohort, and the word would stop meaning anything (ADR-0039).
+    const context = body.value.context?.trim() ?? "";
+    if (context === "") return fail(c, "bad_request", "a cohort is people who share something; say what it is");
+    const mix = await mixOf(s.project.id, body.value.mix ?? []);
+    if (!mix.ok) return fail(c, "bad_request", mix.message);
+    if (mix.mix.length === 0) return fail(c, "bad_request", "a cohort draws on at least one persona; name one");
+    const name = body.value.name ?? mix.names.join(" and ");
     const taken = new Set((await deps.store.listCohorts(s.project.id)).map((cohort) => cohort.slug));
-    const base = body.value.slug ?? (slugify(body.value.name ?? persona.spec.name) || "cohort");
+    const base = body.value.slug ?? (slugify(name) || "cohort");
     let slug = base;
     for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
     const at = now();
@@ -881,9 +943,12 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       id: newCohortId(),
       projectId: s.project.id,
       slug,
-      name: body.value.name ?? persona.spec.name,
-      personaId: persona.id,
-      size: body.value.size ?? 1,
+      name,
+      context,
+      mix: mix.mix,
+      traits: body.value.traits ?? {},
+      tools: body.value.tools ?? { allow: [], deny: [], destructive: "confirm" },
+      model: body.value.model ?? {},
       seed: body.value.seed ?? "populace",
       notes: body.value.notes ?? "",
       ...(body.value.cadence ? { cadence: body.value.cadence } : {}),
@@ -892,13 +957,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       updatedAt: at,
     };
     await deps.store.saveCohort(cohort);
-    // The cast is written on the way in, so a cohort created here reads back with its people
-    // rather than with an empty roster nobody asked to fill. Tier 1 is seeded, free and offline.
-    await ensureRoster(deps.store, cohort.id);
-    if (body.value.inPopulation !== false) {
-      const population = await ensurePopulation(deps.store, s.project.id);
-      await deps.store.savePopulation({ ...population, cohortIds: [...population.cohortIds, cohort.id], updatedAt: at });
-    }
+    // No people yet, and that is right: a cohort has no size. The population that sends it says
+    // how many, and setting that number is what writes the roster (ADR-0039).
     return c.json(await cohortView(s.project.id, cohort), 201);
   });
 
@@ -920,21 +980,36 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!existing) return fail(c, "not_found", "no such cohort");
     const body = await parseBody(c, CohortInputSchema);
     if (!body.ok) return body.response;
-    // The slug is immutable: it is the middle segment of every agent id and the first segment of
-    // every person id, so renaming it would orphan memory and silently empty a continuation.
-    const updated: Cohort = { ...existing, name: body.value.name ?? existing.name, size: body.value.size ?? existing.size, seed: body.value.seed ?? existing.seed, notes: body.value.notes ?? existing.notes, updatedAt: now() };
+    // The slug is immutable: it is the first half of every lane slug, and so of every agent id and
+    // person id, so renaming it would orphan memory and silently empty a continuation.
+    const updated: Cohort = {
+      ...existing,
+      name: body.value.name ?? existing.name,
+      seed: body.value.seed ?? existing.seed,
+      notes: body.value.notes ?? existing.notes,
+      traits: body.value.traits ?? existing.traits,
+      tools: body.value.tools ?? existing.tools,
+      model: body.value.model ?? existing.model,
+      updatedAt: now(),
+    };
+    if (body.value.context !== undefined) {
+      const context = body.value.context.trim();
+      if (context === "") return fail(c, "bad_request", "a cohort is people who share something; say what it is");
+      updated.context = context;
+    }
+    if (body.value.mix !== undefined) {
+      const mix = await mixOf(s.project.id, body.value.mix);
+      if (!mix.ok) return fail(c, "bad_request", mix.message);
+      updated.mix = mix.mix;
+    }
     if (body.value.cadence === null) delete updated.cadence;
     else if (body.value.cadence !== undefined) updated.cadence = body.value.cadence;
     if (body.value.maxVisits === null) delete updated.maxWakes;
     else if (body.value.maxVisits !== undefined) updated.maxWakes = body.value.maxVisits;
     await deps.store.saveCohort(updated);
-    // Shrinking puts people aside rather than deleting them, so growing back meets the same cast.
+    // A changed mix re-lanes the cohort at the size it holds: a lane that shrank puts its tail
+    // aside, a lane that grew draws new people, and nobody who stays is touched.
     await ensureRoster(deps.store, updated.id);
-    if (body.value.inPopulation !== undefined) {
-      const population = await ensurePopulation(deps.store, s.project.id);
-      const ids = body.value.inPopulation ? [...new Set([...population.cohortIds, updated.id])] : population.cohortIds.filter((id) => id !== updated.id);
-      await deps.store.savePopulation({ ...population, cohortIds: ids, updatedAt: now() });
-    }
     return c.json(await cohortView(s.project.id, updated));
   });
 
@@ -943,11 +1018,11 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const cohort = owned(await deps.store.getCohort(param(c, "c")), s.project.id);
     if (!cohort) return fail(c, "not_found", "no such cohort");
-    // The population lets go first: the store refuses to delete a cohort a population still holds,
+    // The populations let go first: the store refuses to delete a cohort a population still holds,
     // and naming the referrer is the point of that refusal (SPEC §2.14).
     for (const population of await deps.store.listPopulations(s.project.id)) {
-      if (!population.cohortIds.includes(cohort.id)) continue;
-      await deps.store.savePopulation({ ...population, cohortIds: population.cohortIds.filter((id) => id !== cohort.id), updatedAt: now() });
+      if (sizeIn(population, cohort.id) === 0) continue;
+      await deps.store.savePopulation({ ...population, members: population.members.filter((member) => member.cohortId !== cohort.id), updatedAt: now() });
     }
     await deps.store.deleteCohort(cohort.id);
     return c.body(null, 204);
@@ -961,8 +1036,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     // The roster is materialised on read (SPEC §5.1), not only on a size change: a cohort created
     // through the API otherwise answers `{ items: [] }` until somebody posts the generate job.
     await ensureRoster(deps.store, cohort.id);
-    const roster = await deps.store.listPeople({ cohortId: cohort.id, includeArchived: true });
-    return c.json({ items: roster.map((person) => personView(person, cohort.size)), nextCursor: null });
+    const [roster, names] = await Promise.all([deps.store.listPeople({ cohortId: cohort.id, includeArchived: true }), personaNamesOf(s.project.id)]);
+    return c.json({ items: roster.map((person) => personView(person, cohort, names)), nextCursor: null });
   });
 
   /**
@@ -997,7 +1072,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!body.value.confirm) return fail(c, "bad_request", "re-casting changes who these people are and breaks comparison with earlier executions; send confirm: true");
     const refusal = await refuseWhileRunning(s.project.id, cohort.name);
     if (refusal) return fail(c, "conflict", refusal);
-    const ordinals = body.value.ordinals;
+    const personIds = body.value.personIds;
     const job = await deps.jobs.enqueue(
       "people.generate",
       async (_job, report, spend) => {
@@ -1011,16 +1086,16 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
         // what the cohort was left holding.
         const at = now();
         const roster = await deps.store.listPeople({ cohortId: cohort.id, includeArchived: true });
-        const recast = roster.filter((person) => person.ordinal < cohort.size && (ordinals === undefined || ordinals.includes(person.ordinal)));
+        const recast = roster.filter((person) => person.archivedAt === null && (personIds === undefined || personIds.includes(person.id)));
         const used = new Set(roster.filter((person) => !recast.includes(person)).map((person) => person.name));
         for (const person of recast) {
           const name = nameFrom(person.seed, used);
           used.add(name);
           // The handle follows the name here, unlike a hand rename: re-casting is refused while
           // anything is running, so nobody has signed an account up as this person yet.
-          await deps.store.savePerson({ ...person, name, handle: handleFor(name, cohort.slug, person.ordinal), details: "", generatedBy: "seeded", generatedByModel: "", archivedAt: null, updatedAt: at });
+          await deps.store.savePerson({ ...person, name, handle: handleFor(name, person.laneSlug, person.ordinal), details: "", generatedBy: "seeded", generatedByModel: "", archivedAt: null, updatedAt: at });
         }
-        const generated = await runWriter(cohort.id, ordinals ? { ordinals } : {}, report, spend);
+        const generated = await runWriter(cohort.id, personIds ? { personIds } : {}, report, spend);
         // A confirmed re-cast that wrote nobody is a failure, not a quiet success: the cast the
         // user asked to replace is gone and what stands in its place is the free one.
         if (generated.written === 0 && generated.fellBackBecause !== null) throw new Error(`nobody was re-cast: ${generated.fellBackBecause}`);
@@ -1031,17 +1106,28 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.json(job, 202);
   });
 
-  /** The escape hatch: one person, renamed or re-blurbed by hand. */
-  app.patch(routes.cohortPerson(":p", ":c", ":ordinal"), async (c) => {
+  /**
+   * One person, by hand: a name, a blurb, and the sampled dimensions — patience, budget, traits —
+   * which is as much individuality as a person carries (ADR-0031 amendment). Goals, constraints
+   * and tool policy stay on the persona.
+   */
+  app.patch(routes.cohortPerson(":p", ":c", ":person"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
     const cohort = owned(await deps.store.getCohort(param(c, "c")), s.project.id);
     if (!cohort) return fail(c, "not_found", "no such cohort");
     const body = await parseBody(c, PersonPatchSchema);
     if (!body.ok) return body.response;
-    const ordinal = Number.parseInt(param(c, "ordinal"), 10);
-    const person = (await deps.store.listPeople({ cohortId: cohort.id, includeArchived: true })).find((p) => p.ordinal === ordinal);
-    if (!person) return fail(c, "not_found", "nobody at that place in the cohort");
+    const person = await deps.store.getPerson(s.project.id, param(c, "person"));
+    if (!person || person.cohortId !== cohort.id) return fail(c, "not_found", "nobody by that id in the cohort");
+    // Null clears an override and the sample shows through again; absent leaves it alone.
+    const overrides: Person["overrides"] = { ...person.overrides, traits: { ...person.overrides.traits } };
+    if (body.value.patience === null) delete overrides.patience;
+    else if (body.value.patience !== undefined) overrides.patience = body.value.patience;
+    if (body.value.budgetUsd === null) delete overrides.budgetUsd;
+    else if (body.value.budgetUsd !== undefined) overrides.budgetUsd = body.value.budgetUsd;
+    if (body.value.traits === null) overrides.traits = {};
+    else if (body.value.traits !== undefined) overrides.traits = body.value.traits;
     // The handle is NOT re-derived from a new name: it is what the account on the target was
     // signed up with, and a rename must not orphan it (SPEC §5.3.5).
     //
@@ -1049,9 +1135,9 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     // rename that left it looking like a placeholder — seeded, no details — would be handed
     // straight back to the next generate, which would overwrite the typed name AND re-derive the
     // handle this line just refused to move.
-    const updated: Person = { ...person, name: body.value.name ?? person.name, details: body.value.details ?? person.details, generatedBy: "authored", updatedAt: now() };
+    const updated: Person = { ...person, name: body.value.name ?? person.name, details: body.value.details ?? person.details, overrides, generatedBy: "authored", updatedAt: now() };
     await deps.store.savePerson(updated);
-    return c.json(personView(updated, cohort.size));
+    return c.json(personView(updated, cohort, await personaNamesOf(s.project.id)));
   });
 
   // ---- populations and settings -------------------------------------------
@@ -1063,31 +1149,25 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
    * is created with.
    */
 
-  const populationView = async (projectId: string, population: StoredPopulation): Promise<PopulationView> => {
+  const populationView = async (population: StoredPopulation): Promise<PopulationView> => {
     const cohorts = await cohortsOfPopulation(deps.store, population);
-    const personas = new Map((await deps.store.listPersonas(projectId)).map((p) => [p.id, p]));
-    // `seed`, `cadence` and `maxWakes` used to be reported here, read off the first simulation
-    // running this population and falling back to the project settings. They are not properties
-    // of a composition — see `PopulationInputSchema` — and reporting them made a population look
-    // like it owned a schedule and a visit cap that actually belong to a cohort and a simulation.
-    return {
-      id: population.id,
-      slug: population.slug,
-      name: population.name,
-      members: cohorts.map((cohort) => {
-        const persona = personas.get(cohort.personaId);
-        return {
-          cohortId: cohort.id,
-          cohort: cohort.slug,
-          cohortName: cohort.name,
-          personaId: cohort.personaId,
-          slug: persona?.slug ?? cohort.slug,
-          name: persona?.spec.name ?? cohort.name,
-          count: cohort.size,
-          maxVisits: cohort.maxWakes ?? null,
-        };
-      }),
-    };
+    const members: PopulationView["members"] = [];
+    for (const cohort of cohorts) {
+      const size = sizeIn(population, cohort.id);
+      // The same apportionment resolution does, so the screen's "6 first-timers and 4 power
+      // users" is the cast the next execution sends.
+      const lanes = await lanesIfWhole(cohort, size);
+      members.push({
+        cohortId: cohort.id,
+        cohort: cohort.slug,
+        cohortName: cohort.name,
+        context: cohort.context,
+        size,
+        personas: lanes.map((lane) => ({ personaId: lane.persona.id, slug: lane.persona.slug, name: lane.persona.spec.name, count: lane.count })),
+        maxVisits: cohort.maxWakes ?? null,
+      });
+    }
+    return { id: population.id, slug: population.slug, name: population.name, members, people: headcountOf(population) };
   };
 
   app.get(routes.populations(":p"), async (c) => {
@@ -1095,7 +1175,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     await ensurePopulation(deps.store, s.project.id);
     const populations = await deps.store.listPopulations(s.project.id);
-    return c.json({ items: await Promise.all(populations.map((population) => populationView(s.project.id, population))), nextCursor: null });
+    return c.json({ items: await Promise.all(populations.map((population) => populationView(population))), nextCursor: null });
   });
 
   app.post(routes.populations(":p"), async (c) => {
@@ -1108,9 +1188,9 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const base = body.value.slug ?? (slugify(body.value.name) || "population");
     let slug = base;
     for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
-    const population: StoredPopulation = { id: newPopulationId(), projectId: s.project.id, slug, name: body.value.name, cohortIds: [], createdAt: at, updatedAt: at };
+    const population: StoredPopulation = { id: newPopulationId(), projectId: s.project.id, slug, name: body.value.name, members: [], createdAt: at, updatedAt: at };
     await deps.store.savePopulation(population);
-    return c.json(await populationView(s.project.id, population), 201);
+    return c.json(await populationView(population), 201);
   });
 
   const populationOf = async (c: Context, projectId: string): Promise<StoredPopulation | undefined> => owned(await deps.store.getPopulation(param(c, "pop")), projectId);
@@ -1119,7 +1199,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const s = await scope(c);
     if (!s.ok) return s.response;
     const population = await populationOf(c, s.project.id);
-    return population ? c.json(await populationView(s.project.id, population)) : fail(c, "not_found", "no such population");
+    return population ? c.json(await populationView(population)) : fail(c, "not_found", "no such population");
   });
 
   app.put(routes.population_(":p", ":pop"), async (c) => {
@@ -1129,57 +1209,27 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!population) return fail(c, "not_found", "no such population");
     const body = await parseBody(c, PopulationInputSchema);
     if (!body.ok) return body.response;
-    const personas = new Map((await deps.store.listPersonas(s.project.id)).map((p) => [p.id, p]));
-    const unknown = (body.value.members ?? []).filter((m) => !personas.has(m.personaId)).map((m) => m.personaId);
-    if (unknown.length) return fail(c, "bad_request", `no such person: ${unknown.join(", ")}`);
-
-    /*
-      A population is composition and NOTHING else (ADR-0029), and this handler used to write
-      three things that are not composition: `seed`, `cadence` and `maxWakes` went to the project
-      settings row and were then fanned onto every simulation running this population.
-
-      The fan-out was not a bug in itself — writing only to settings made "lower the visit cap to
-      one" answer 200 and change nothing, and the fan-out is what fixed that. The bug is that
-      those fields are on a population at all. The visit cap decides the MODE (`visits === null ?
-      "longitudinal" : "ephemeral"`), so editing a population could flip a simulation between
-      ephemeral and longitudinal — an ADR-0030 property of the simulation, changed from a screen
-      that never says the word mode, for every simulation on that population at once.
-
-      Both halves go together. The fields are off `PopulationInput`, the fan-out is gone with
-      them, and the cap and the mode are set where they belong: on the simulation, by the
-      simulation editor.
-    */
-
-    // `cohortIds`, when sent, IS the composition — the whole ordered set, add and remove in one.
-    if (body.value.cohortIds) {
-      const known = new Set((await deps.store.listCohorts(s.project.id)).map((cohort) => cohort.id));
-      const strangers = body.value.cohortIds.filter((id) => !known.has(id));
-      if (strangers.length) return fail(c, "bad_request", `no such cohort: ${strangers.join(", ")}`);
-      await deps.store.savePopulation({ ...population, cohortIds: [...body.value.cohortIds], updatedAt: now() });
-    }
-
-    // The member list REPLACES what is there when it is sent at all. The browser drops a persona
-    // from the array rather than sending `count: 0`, so a handler that only walked the array left
-    // the cohort at its old size and the stepper snapped back.
+    let current: StoredPopulation = population;
+    if (body.value.name !== undefined) current = { ...current, name: body.value.name, updatedAt: now() };
     if (body.value.members) {
-      const sent = new Set(body.value.members.map((m) => m.personaId));
-      // Re-read: `cohortIds` above may have just changed what this population holds.
-      const current = (await deps.store.getPopulation(population.id)) ?? population;
-      for (const cohort of await cohortsOfPopulation(deps.store, current)) {
-        const persona = personas.get(cohort.personaId);
-        if (persona && !sent.has(cohort.personaId)) {
-          await setCohortSize(deps.store, (await deps.store.getPopulation(population.id)) ?? current, persona, 0);
-        }
-      }
+      const known = new Set((await deps.store.listCohorts(s.project.id)).map((cohort) => cohort.id));
+      const strangers = body.value.members.filter((member) => !known.has(member.cohortId)).map((member) => member.cohortId);
+      if (strangers.length) return fail(c, "bad_request", `no such cohort: ${strangers.join(", ")}`);
+      const seen = new Set<string>();
       for (const member of body.value.members) {
-        const persona = personas.get(member.personaId);
-        if (!persona) continue;
-        const fresh = (await deps.store.getPopulation(population.id)) ?? current;
-        await setCohortSize(deps.store, fresh, persona, member.count, member.maxVisits);
+        if (seen.has(member.cohortId)) return fail(c, "bad_request", `a cohort goes into a population once (${member.cohortId} is in it twice)`);
+        seen.add(member.cohortId);
       }
+      // The member list REPLACES what is there: the whole ordered set, sizes and all. A member at
+      // nought is taken out, so a browser can drop a row or send it at zero and mean the same.
+      current = { ...current, members: body.value.members.filter((member) => member.size > 0).map((member) => ({ cohortId: member.cohortId, size: member.size })), updatedAt: now() };
     }
-    const after = (await deps.store.getPopulation(population.id)) ?? population;
-    return c.json(await populationView(s.project.id, after));
+    await deps.store.savePopulation(current);
+    // Setting a number is what writes the people (ADR-0039): every cohort this touched — put in,
+    // resized or taken out — has its roster brought to the largest size any population gives it.
+    const touched = new Set([...population.members, ...current.members].map((member) => member.cohortId));
+    for (const cohortId of touched) await ensureRoster(deps.store, cohortId);
+    return c.json(await populationView(current));
   });
 
   app.delete(routes.population_(":p", ":pop"), async (c) => {
@@ -1473,9 +1523,11 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     // by the target is reported as blocked for "everyone" and a tool a persona refuses names the
     // cohorts it is shut off for.
     const targetOnly = effectiveToolPolicy(config.target.tools);
+    // One entry per lane: a cohort mixing two personas is shut out of a tool per persona, and the
+    // cohort's own policy narrows every lane in it.
     const cohorts = config.population.members.map((member) => ({
-      label: member.cohortName || member.cohort,
-      policy: effectiveToolPolicy(config.target.tools, member.persona.tools),
+      label: `${member.cohortName || member.cohort} (${member.persona.name})`,
+      policy: effectiveToolPolicy(config.target.tools, member.persona.tools, member.tools),
     }));
     // A self-signup target whose own policy blocks its sign-up tool is a dead configuration and it
     // is detectable without touching anything: nobody sent here could make an account, so every
@@ -1492,7 +1544,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       const shutOut = cohorts.filter((cohort) => !isToolPermitted(tool.name, cohort.policy));
       if (shutOut.length === 0) return [];
       const why = blockedBecause(tool.name, shutOut[0]?.policy ?? targetOnly) ?? "blocked";
-      return [{ name: tool.name, who: shutOut.length === cohorts.length ? "everyone" : shutOut.map((cohort) => cohort.label).join(", "), why: `their persona's tool policy — ${why}` }];
+      return [{ name: tool.name, who: shutOut.length === cohorts.length ? "everyone" : shutOut.map((cohort) => cohort.label).join(", "), why: `their persona's or cohort's tool policy — ${why}` }];
     });
 
     return c.json(

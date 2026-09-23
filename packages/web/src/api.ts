@@ -211,9 +211,10 @@ export const api = {
   cohortPeople: (p: string, c: string) => get(routes.cohortPeople(p, c), people),
   /** Fills the slots nobody has written yet. A job, because a model writes them (SPEC §5.4). */
   writePeople: (p: string, c: string) => send("POST", routes.cohortPeople(p, c), {}, JobViewSchema),
-  recastPeople: (p: string, c: string, ordinals?: number[]) =>
-    send("POST", routes.cohortPeopleRegenerate(p, c), { confirm: true, ...(ordinals === undefined ? {} : { ordinals }) }, JobViewSchema),
-  savePerson: (p: string, c: string, ordinal: number, body: PersonPatch) => send("PATCH", routes.cohortPerson(p, c, ordinal), body, PersonViewSchema),
+  recastPeople: (p: string, c: string, personIds?: string[]) =>
+    send("POST", routes.cohortPeopleRegenerate(p, c), { confirm: true, ...(personIds === undefined ? {} : { personIds }) }, JobViewSchema),
+  /** One person by id (`cohortSlug.personaSlug#n`); the route encodes the `#`. */
+  savePerson: (p: string, c: string, personId: string, body: PersonPatch) => send("PATCH", routes.cohortPerson(p, c, personId), body, PersonViewSchema),
 
   populations: (p: string) => get(routes.populations(p), populations),
   createPopulation: (p: string, body: { name: string }) => send("POST", routes.populations(p), body, PopulationViewSchema),

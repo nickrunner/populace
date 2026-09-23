@@ -22,9 +22,9 @@ the point of the split (ADR-0021 through ADR-0028).
 | **IdentityProvider** | Adapter yielding credentials for a persona. Strategies: `provision-url`, `self-signup`, `none`, `static`, `admin-mint`. All support `teardown` and `listByTag`. | interface in core, implementations in `@populace/adapters/*` |
 | **Project** | What scopes authoring: targets, personas, cohorts, populations, simulations, settings and triage belong to one and are never shared. | core `ProjectSchema` |
 | **Persona** | Static description: role, traits, goals, patience, budget, constraints, backstory. A template with no headcount. | core `PersonaSchema` |
-| **Cohort** | N people on one persona. Owns the headcount (`size`), the seed, and cadence / visit-cap overrides. There is no scale factor. | core `CohortSchema` |
-| **Person** | A durable individual in a cohort, `cohortSlug#ordinal`, with a stored name, detail line and handle. Written once, never silently overwritten. | core `PersonSchema` |
-| **Population** | Composition and nothing else: an ordered set of cohorts. Its size is the sum of theirs. | core `StoredPopulationSchema`, `expandPopulation()` |
+| **Cohort** | People who share a condition (`context`, required, told to every one of them) drawn from a mix of personas in a ratio. Owns the seed, a fixed-trait overlay, a narrowing tool policy, a model override and cadence / visit-cap overrides. **No headcount** (ADR-0039). | core `CohortSchema` |
+| **Person** | A durable individual in a cohort's lane, `cohortSlug.personaSlug#ordinal`, with a stored name, detail line, handle, and whatever was set on them by hand (patience, budget, traits). Written once, never silently overwritten. | core `PersonSchema` |
+| **Population** | Which cohorts go and how many of each: `members[{cohortId, size}]`. The only place a headcount lives; setting it writes the people. | core `StoredPopulationSchema`, `expandPopulation()` |
 | **Simulation** | A population, a target and a mode — `ephemeral` (clean slate, bounded) or `longitudinal` (accumulating, unbounded). What a user presses go on. | core `SimulationSchema` |
 | **Run** | One execution of a simulation, carrying `simulationId` and a `seq` counting from 1, plus the config snapshot it froze. | core `RunSchema`, `runs` table |
 | **Agent** | A persona instance with a person's name, an identity, persistent memory and a schedule. **The wire calls it a participant** (ADR-0032). | core `AgentSchema`, rows in the store |
@@ -161,12 +161,12 @@ different sentences on the screen. Registration happens behind the sign-in butto
 returns nothing and the agent signs up through the target's own tools; the
 interceptor recognises the configured signup tool, extracts the credential from
 its result and reconnects with the bearer token (ADR-0012). `static` reads a pool
-of accounts that already exist from a JSON file, preferably keyed by cohort
-(`{ "byCohort": { "<cohortSlug>": [ … ] } }`); person n of a cohort is always
-handed entry n, which is the same in every process and after a restart, and a pool
-too small — or an older persona-keyed pool that would serve two cohorts, which both
-number their people from 1 — is refused when the run starts rather than wrapping
-round and giving two people one login. Those accounts are not populace's, so a
+of accounts that already exist from a JSON file, preferably keyed by lane
+(`{ "byCohort": { "<cohortSlug>.<personaSlug>": [ … ] } }`, or by cohort slug for a
+cohort of one persona); person n of a lane is always handed entry n, which is the
+same in every process and after a restart, and a pool too small — or any pool that
+would serve two lanes, which both number their people from 1 — is refused when the
+run starts rather than wrapping round and giving two people one login. Those accounts are not populace's, so a
 sweep leaves them where they are and says so. `admin-mint` (Firebase Admin) creates a user with the run tag
 in its custom claims, mints a custom token and exchanges it at Google's identity
 toolkit for the ID token the target will actually accept — a custom token is not

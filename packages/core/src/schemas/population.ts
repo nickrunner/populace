@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { DurationSchema } from "../duration.js";
-import { PersonaSpecSchema } from "./persona.js";
+import { ModelOverrideSchema } from "./model.js";
+import { PersonOverridesSchema, PersonaSpecSchema, TraitValueSchema } from "./persona.js";
+import { ToolPolicySchema } from "./tool-policy.js";
 
 export const CadenceSchema = z.object({
   /** Time between wakes of one agent. */
@@ -15,19 +17,27 @@ export type Cadence = z.infer<typeof CadenceSchema>;
 /** One person, frozen into the snapshot so an old run still renders the right cast. */
 export const PersonProfileSchema = z.object({
   ordinal: z.number().int().nonnegative(),
-  /** `${cohortSlug}#${ordinal + 1}` */
+  /** `${cohortSlug}.${personaSlug}#${ordinal + 1}` */
   id: z.string().min(1),
   name: z.string().min(1),
   details: z.string().default(""),
-  /** Email local part for self-signup. Cohort-scoped, so two cohorts on one persona never collide. */
+  /** Email local part for self-signup. Lane-scoped, so two cohorts on one persona never collide. */
   handle: z.string().min(1),
+  /** What was set on this person by hand; applied last at expansion. */
+  overrides: PersonOverridesSchema.prefault({}),
 });
 export type PersonProfile = z.infer<typeof PersonProfileSchema>;
 
+/**
+ * One LANE of the snapshot: one cohort, one of its personas, and the people apportioned to that
+ * pair. A cohort mixing three personas resolves into three members that share `cohort`,
+ * `context`, `traits`, `tools` and `model`, and differ in `persona` and `count`.
+ */
 const PopulationMemberFields = z.object({
   /**
-   * The cohort slug. Agent ids and per-person seeds are built from this, which is what makes two
-   * cohorts on ONE persona two separate groups rather than one group counted twice.
+   * The cohort slug. Lane slugs, agent ids and per-person seeds are built from this and the
+   * persona's slug, which is what makes two cohorts on ONE persona two separate groups rather
+   * than one group counted twice.
    *
    * Left out, it falls back to the persona's id: a config that never heard of cohorts is a
    * population of one-cohort-per-persona, which is exactly what it always meant.
@@ -38,8 +48,16 @@ const PopulationMemberFields = z.object({
     .optional(),
   cohortName: z.string().min(1).optional(),
   persona: PersonaSpecSchema,
-  /** How many people are in this cohort. */
+  /** How many people are in this lane. Apportioned from the population's size for the cohort. */
   count: z.number().int().positive().default(1),
+  /** The cohort's shared condition, in prose. Handed to every person under the backstory. */
+  context: z.string().default(""),
+  /** The cohort's fixed trait overlay, applied over each person's sampled traits. */
+  traits: z.record(z.string(), TraitValueSchema).default({}),
+  /** The cohort's own tool policy. Narrows the persona's and the target's; never widens. */
+  tools: ToolPolicySchema.prefault({}),
+  /** The cohort's model override, layered over the persona's. */
+  model: ModelOverrideSchema.prefault({}),
   /** The cohort's own seed, so expansion samples exactly what the person row sampled. */
   seed: z.string().min(1).default("populace"),
   /**
@@ -64,7 +82,7 @@ export const PopulationSchema = z.object({
   /** The population slug: the first segment of every agent id. */
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   name: z.string().min(1).default("Everyone"),
-  /** One entry per cohort. */
+  /** One entry per lane: a cohort mixing N personas contributes N members. */
   members: z.array(PopulationMemberSchema).min(1),
   /** From the simulation. */
   cadence: CadenceSchema.prefault({ every: "10m", jitter: "0s", initialDelay: "0s" }),

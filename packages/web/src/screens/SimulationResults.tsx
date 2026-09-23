@@ -200,11 +200,11 @@ export function SimulationResults() {
     },
     {
       key: "persona",
-      header: "Persona",
+      header: "Personas",
       priority: 3,
       cell: (cohort) => (
         <Text size="ui" tone="muted">
-          {cohort.personaName}
+          {cohort.personas.join(", ")}
         </Text>
       ),
     },

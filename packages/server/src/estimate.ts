@@ -1,4 +1,4 @@
-import { resolveModel, type PopulaceConfig, type Store, type Wake } from "@populace/core";
+import { laneSlugFor, resolveModel, type PopulaceConfig, type Store, type Wake } from "@populace/core";
 import type { RunEstimate } from "@populace/contract";
 
 /**
@@ -46,8 +46,8 @@ function median(values: number[]): number | null {
 export function plannedVisits(
   config: PopulaceConfig,
   assumed: number,
-): { agents: number; visits: number; bounded: boolean; perCohort: { cohort: string; personaId: string; agents: number; visits: number; capped: boolean }[] } {
-  const perCohort: { cohort: string; personaId: string; agents: number; visits: number; capped: boolean }[] = [];
+): { agents: number; visits: number; bounded: boolean; perCohort: { lane: string; cohort: string; personaId: string; agents: number; visits: number; capped: boolean }[] } {
+  const perCohort: { lane: string; cohort: string; personaId: string; agents: number; visits: number; capped: boolean }[] = [];
   let agents = 0;
   let visits = 0;
   // Bounded exactly when every cohort has a visit cap — which for an ephemeral simulation is
@@ -63,7 +63,8 @@ export function plannedVisits(
     if (cap === null || cap === undefined) bounded = false;
     agents += count;
     visits += count * each;
-    perCohort.push({ cohort: member.cohort, personaId: member.persona.id, agents: count, visits: count * each, capped: cap !== null && cap !== undefined });
+    // One row per LANE: a cohort mixing two personas is two rows sharing `cohort`.
+    perCohort.push({ lane: laneSlugFor(member.cohort, member.persona.id), cohort: member.cohort, personaId: member.persona.id, agents: count, visits: count * each, capped: cap !== null && cap !== undefined });
   }
   return { agents, visits, bounded, perCohort };
 }
@@ -96,7 +97,7 @@ export async function estimateRun(store: Store, input: EstimateInput): Promise<R
     lowUsd: Number(Math.max(0, central * (1 - spread)).toFixed(2)),
     expectedUsd: Number(central.toFixed(2)),
     highUsd: Number((central * (1 + spread)).toFixed(2)),
-    perCohort: plan.perCohort.map((p) => ({ cohort: p.cohort, personaId: p.personaId, agents: p.agents, visits: p.visits, capped: p.capped, expectedUsd: Number((p.visits * perWake).toFixed(2)) })),
+    perCohort: plan.perCohort.map((p) => ({ lane: p.lane, cohort: p.cohort, personaId: p.personaId, agents: p.agents, visits: p.visits, capped: p.capped, expectedUsd: Number((p.visits * perWake).toFixed(2)) })),
     model: model.model,
     effort: model.effort,
     /** The ceilings that will actually stop it, whatever this estimate says (ADR-0009). */

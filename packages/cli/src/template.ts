@@ -66,8 +66,9 @@ verifier:
 
 digestDir: digests
 
-# Who exists. A COHORT is N people who share one persona; the population is the cohorts together.
-# There is no scale factor: a cohort's size is the only number that decides how many people exist.
+# Who exists. A COHORT is people who share a condition (its context, which every one of them is
+# told) drawn from one persona or a MIX of them in a ratio; size is how many of them this
+# population sends, split across the mix. There is no scale factor.
 population:
   id: tasklet-trial
   name: Everyone
@@ -87,6 +88,7 @@ simulations:
 cohorts:
   - slug: casual-listers
     name: Casual listers
+    context: You keep your lists on your phone, in the gaps between other things.
     size: 1
     persona:
       id: casual-lister
@@ -106,6 +108,7 @@ cohorts:
         device: { distribution: choice, values: [phone, laptop], weights: [3, 1] }
   - slug: project-planners
     name: Project planners
+    context: You are trying this in the middle of a working week, with client dates you will be held to.
     size: 1
     persona:
       id: project-planner
@@ -120,8 +123,13 @@ cohorts:
         - See what is overdue at a glance
       patience: 4
       budgetUsd: { distribution: uniform, min: 5, max: 15 }
+  # A cohort can mix personas in a ratio instead of naming one:
+  #   mix:
+  #     - { persona: casual-lister-persona.yaml, weight: 3 }
+  #     - { persona: power-organizer-persona.yaml, weight: 1 }
   - slug: power-organizers
     name: Power organizers
+    context: You are sizing this up for a team that will lean on it hard, and you push on it the way they would.
     size: 1
     persona:
       id: power-organizer

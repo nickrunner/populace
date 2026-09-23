@@ -288,10 +288,10 @@ describe("reports pipeline against the mock target", () => {
 
     // ---- per-cohort incidence ---------------------------------------------
     //
-    // Agent ids are `populationSlug/cohortSlug#ordinal`, so who was hit is readable from the
-    // findings alone; the census supplies the denominator nobody else knows.
+    // Agent ids are `populationSlug/cohortSlug.personaSlug#ordinal`, so who was hit is readable
+    // from the findings alone; the census supplies the denominator nobody else knows.
     const searchCluster = again.find((c) => c.tool === "search_tasks" && c.kind === "bug")!;
-    expect(searchCluster.personIds).toEqual(["planner#1", "searcher#1"]);
+    expect(searchCluster.personIds).toEqual(["planner.planner#1", "searcher.searcher#1"]);
     const census = [
       { slug: "searcher", name: "Searchers", people: 4 },
       { slug: "planner", name: "Planners", people: 3 },

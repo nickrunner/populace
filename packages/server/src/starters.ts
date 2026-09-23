@@ -22,18 +22,24 @@ export interface StarterPersona {
   slug: string;
   /** The one line the picker shows. */
   summary: string;
+  /**
+   * What the cohort adopting this starter makes has in common, addressed to its people: the
+   * `context` the cohort is created with (ADR-0039). A cohort of one persona still shares a
+   * condition, and this is the one the starter arrives with; the cohort screen rewrites it.
+   */
+  context: string;
   spec: PersonaSpec;
 }
 
 /** The spec as written below, before its schema fills in every default. `id` comes from the slug. */
 type StarterSpec = Omit<z.input<typeof PersonaSpecSchema>, "id">;
 
-function starter(slug: string, summary: string, spec: StarterSpec): StarterPersona {
-  return { slug, summary, spec: PersonaSpecSchema.parse({ ...spec, id: slug }) };
+function starter(slug: string, summary: string, context: string, spec: StarterSpec): StarterPersona {
+  return { slug, summary, context, spec: PersonaSpecSchema.parse({ ...spec, id: slug }) };
 }
 
 export const STARTER_PERSONAS: StarterPersona[] = [
-  starter("first-timer", "Arrives knowing nothing and leaves at the first snag", {
+  starter("first-timer", "Arrives knowing nothing and leaves at the first snag", "You found this product on your own a few minutes ago. Nobody has shown you round, and nobody is expecting you to stick with it.", {
     name: "First-time visitor",
     role: "someone trying this for the first time, on their phone, between other things",
     backstory:
@@ -44,7 +50,7 @@ export const STARTER_PERSONAS: StarterPersona[] = [
     budgetUsd: 0,
     traits: { device: { distribution: "choice", values: ["phone", "laptop"], weights: [3, 1] } },
   }),
-  starter("deadline-planner", "Methodical, lives by dates, notices when a field does not stick", {
+  starter("deadline-planner", "Methodical, lives by dates, notices when a field does not stick", "You are trying this in the middle of a working week, with real client dates you will be held to.", {
     name: "Deadline planner",
     role: "a freelancer juggling four or five client projects at once",
     backstory:
@@ -53,7 +59,7 @@ export const STARTER_PERSONAS: StarterPersona[] = [
     patience: 4,
     budgetUsd: { distribution: "uniform", min: 5, max: 15 },
   }),
-  starter("power-user", "Tests the limits early: lots of things, long lists, bulk changes", {
+  starter("power-user", "Tests the limits early: lots of things, long lists, bulk changes", "You are sizing this up for a team that will lean on it hard, so you push on it the way that team would from day one.", {
     name: "Power user",
     role: "an operations lead running a dozen parallel workstreams",
     backstory:
@@ -64,7 +70,7 @@ export const STARTER_PERSONAS: StarterPersona[] = [
     budgetUsd: 20,
     tools: { destructive: "confirm" },
   }),
-  starter("sceptic", "Checks the claims, searches for edge cases, trusts nothing it is told", {
+  starter("sceptic", "Checks the claims, searches for edge cases, trusts nothing it is told", "You have been asked to give a verdict on this product by the end of the week, and the verdict is yours alone.", {
     name: "Sceptical evaluator",
     role: "an evaluator deciding whether their team should adopt this",
     backstory:
@@ -74,7 +80,7 @@ export const STARTER_PERSONAS: StarterPersona[] = [
     patience: 5,
     budgetUsd: 0,
   }),
-  starter("bargain-hunter", "Wants the free tier to be enough and resents every wall", {
+  starter("bargain-hunter", "Wants the free tier to be enough and resents every wall", "You arrived from a list of free alternatives and will leave for the next one on it the moment this asks for money.", {
     name: "Bargain hunter",
     role: "someone who has decided in advance not to pay for this",
     backstory:
@@ -84,7 +90,7 @@ export const STARTER_PERSONAS: StarterPersona[] = [
     patience: 3,
     budgetUsd: 0,
   }),
-  starter("the-one-who-left", "Already walked away once; comes back only if you fixed it", {
+  starter("the-one-who-left", "Already walked away once; comes back only if you fixed it", "You used this product before, left over something specific, and have come back because you heard it changed.", {
     name: "The one who left",
     role: "a returning user who quit over something specific",
     backstory:

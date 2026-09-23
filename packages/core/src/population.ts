@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Agent } from "./schemas/agent.js";
-import type { Persona, PersonaSpec, TraitSpec, TraitValue } from "./schemas/persona.js";
+import type { ModelOverride } from "./schemas/model.js";
+import type { PersonOverrides, Persona, PersonaSpec, TraitSpec, TraitValue } from "./schemas/persona.js";
 import type { Cadence, PersonProfile, Population, PopulationMember } from "./schemas/population.js";
 import { handleFor, nameFrom } from "./names.js";
 
@@ -61,25 +62,56 @@ export function instantiatePersona(spec: PersonaSpec, seed: string): Persona {
   };
 }
 
-export function agentIdFor(populationSlug: string, cohortSlug: string, ordinal: number): string {
-  return `${populationSlug}/${cohortSlug}#${ordinal + 1}`;
-}
-
-/** A person's durable id. Cohort-scoped and 1-based, so it reads the same way an agent id does. */
-export function personIdFor(cohortSlug: string, ordinal: number): string {
-  return `${cohortSlug}#${ordinal + 1}`;
-}
-
 /**
- * The cohort slug out of an agent id. Agent ids are `populationSlug/cohortSlug#ordinal`, so
- * "which group was this?" is readable from a finding's `agentId` alone — which is what lets the
- * clusterer report per-cohort incidence without a second query per report.
+ * A lane is one (cohort, persona) pair, and it is the unit people are numbered in. Slugs are
+ * `[a-z0-9-]`, so the dot is unambiguous, and `cohortSlugOfAgentId` reads the group back out of
+ * any id without a lookup.
  */
-export function cohortSlugOfAgentId(agentId: string): string {
+export function laneSlugFor(cohortSlug: string, personaSlug: string): string {
+  return `${cohortSlug}.${personaSlug}`;
+}
+
+/** The cohort half of a lane slug. A slug with no dot is its own cohort (a pre-lane id). */
+export function cohortSlugOfLane(laneSlug: string): string {
+  const dot = laneSlug.indexOf(".");
+  return dot === -1 ? laneSlug : laneSlug.slice(0, dot);
+}
+
+/** The persona half of a lane slug; empty for a pre-lane id. */
+export function personaSlugOfLane(laneSlug: string): string {
+  const dot = laneSlug.indexOf(".");
+  return dot === -1 ? "" : laneSlug.slice(dot + 1);
+}
+
+export function agentIdFor(populationSlug: string, laneSlug: string, ordinal: number): string {
+  return `${populationSlug}/${laneSlug}#${ordinal + 1}`;
+}
+
+/** A person's durable id. Lane-scoped and 1-based, so it reads the same way an agent id does. */
+export function personIdFor(laneSlug: string, ordinal: number): string {
+  return `${laneSlug}#${ordinal + 1}`;
+}
+
+/** The lane slug out of an agent id: `populationSlug/laneSlug#ordinal`. */
+export function laneSlugOfAgentId(agentId: string): string {
   const slash = agentId.indexOf("/");
   const hash = agentId.lastIndexOf("#");
   if (slash === -1 || hash <= slash) return "";
   return agentId.slice(slash + 1, hash);
+}
+
+/**
+ * The cohort slug out of an agent id, so "which group was this?" is readable from a finding's
+ * `agentId` alone — which is what lets the clusterer report per-cohort incidence without a
+ * second query per report.
+ */
+export function cohortSlugOfAgentId(agentId: string): string {
+  return cohortSlugOfLane(laneSlugOfAgentId(agentId));
+}
+
+/** The persona slug out of an agent id, for a per-persona split inside a cohort. */
+export function personaSlugOfAgentId(agentId: string): string {
+  return personaSlugOfLane(laneSlugOfAgentId(agentId));
 }
 
 /**
@@ -89,6 +121,59 @@ export function cohortSlugOfAgentId(agentId: string): string {
 export function personIdOfAgentId(agentId: string): string {
   const slash = agentId.indexOf("/");
   return slash === -1 ? agentId : agentId.slice(slash + 1);
+}
+
+/**
+ * How many of `size` people each entry of a mix gets — Sainte-Laguë highest averages.
+ *
+ * The property that matters is that it is HOUSE-MONOTONE: growing the cohort never shrinks a
+ * lane, so raising a population from 10 to 11 people adds one person somewhere and archives
+ * nobody. Largest-remainder rounding does not have that property (the Alabama paradox), and a
+ * cohort that archived somebody because it grew would break ADR-0031 for no reason anybody could
+ * see. Ties go to the earlier entry, so the result is a pure function of `(size, weights)`.
+ *
+ * At small sizes a light entry gets nobody; that is the honest answer and the editor says so.
+ */
+export function apportion(size: number, weights: readonly number[]): number[] {
+  const seats = weights.map(() => 0);
+  if (weights.length === 0) return seats;
+  for (let seat = 0; seat < size; seat++) {
+    let best = 0;
+    let bestScore = -1;
+    for (let i = 0; i < weights.length; i++) {
+      const score = (weights[i] ?? 0) / (2 * (seats[i] ?? 0) + 1);
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    seats[best] = (seats[best] ?? 0) + 1;
+  }
+  return seats;
+}
+
+function definedOnly(override: ModelOverride): ModelOverride {
+  return {
+    ...(override.model === undefined ? {} : { model: override.model }),
+    ...(override.effort === undefined ? {} : { effort: override.effort }),
+    ...(override.maxTokens === undefined ? {} : { maxTokens: override.maxTokens }),
+  };
+}
+
+/**
+ * The persona one person actually runs with: the spec sampled from the person's seed, then the
+ * cohort's overlay (fixed traits, model), then whatever was set on the person by hand. Last
+ * wins, so a hand-set patience beats the sample and a cohort trait beats the persona's draw.
+ */
+export function individuate(spec: PersonaSpec, seed: string, cohort: { traits: Record<string, TraitValue>; model: ModelOverride }, overrides: PersonOverrides): Persona {
+  const base = instantiatePersona(spec, seed);
+  return {
+    ...base,
+    patience: overrides.patience ?? base.patience,
+    budgetUsd: overrides.budgetUsd ?? base.budgetUsd,
+    traits: { ...base.traits, ...cohort.traits, ...overrides.traits },
+    model: { ...base.model, ...definedOnly(cohort.model) },
+  };
 }
 
 /**
@@ -105,14 +190,14 @@ export interface ExpandedAgent {
 }
 
 /**
- * A cohort's cast, filling every ordinal the stored roster does not cover.
+ * A lane's cast, filling every ordinal the stored roster does not cover.
  *
  * The seeded tier is defined to be always available (SPEC §5.1): a config written by hand, or a
  * cohort whose roster has not been filled yet, still expands into named people, and the names it
  * produces for a seed are the ones the roster writer would have written for the same seed. An
  * ordinal that DOES have a row is never touched — a name a model wrote is not re-drawn.
  */
-export function seededRoster(cohortSlug: string, seed: string, count: number, existing: readonly PersonProfile[] = []): PersonProfile[] {
+export function seededRoster(laneSlug: string, seed: string, count: number, existing: readonly PersonProfile[] = []): PersonProfile[] {
   const byOrdinal = new Map(existing.map((p) => [p.ordinal, p]));
   const used = new Set(existing.map((p) => p.name));
   const out: PersonProfile[] = [];
@@ -122,42 +207,50 @@ export function seededRoster(cohortSlug: string, seed: string, count: number, ex
       out.push(already);
       continue;
     }
-    const name = nameFrom(`${seed}:${cohortSlug}:${ordinal}`, used);
+    const name = nameFrom(`${seed}:${laneSlug}:${ordinal}`, used);
     used.add(name);
-    out.push({ ordinal, id: personIdFor(cohortSlug, ordinal), name, details: "", handle: handleFor(name, cohortSlug, ordinal) });
+    out.push({ ordinal, id: personIdFor(laneSlug, ordinal), name, details: "", handle: handleFor(name, laneSlug, ordinal), overrides: { traits: {} } });
   }
   return out;
 }
 
+/** The lane a snapshot member stands for. */
+export function laneOf(member: PopulationMember): string {
+  return laneSlugFor(member.cohort, member.persona.id);
+}
+
 function seededPeople(member: PopulationMember): Map<number, PersonProfile> {
-  return new Map(seededRoster(member.cohort, member.seed, member.count, member.people).map((p) => [p.ordinal, p]));
+  return new Map(seededRoster(laneOf(member), member.seed, member.count, member.people).map((p) => [p.ordinal, p]));
 }
 
 /**
  * Expands a population config into concrete agents (without schedules; the daemon assigns those).
  *
- * This is a JOIN now, not a generator: every per-person decision — name, details, handle — was
- * made when the person row was written and is frozen into the config snapshot.
- * `instantiatePersona` still runs here because the persona spec may have changed since, and the
- * seed it draws from is the person's, so the draw is the same one.
+ * This is a JOIN now, not a generator: every per-person decision — name, details, handle, what
+ * was set by hand — was made when the person row was written and is frozen into the config
+ * snapshot. `individuate` still samples here because the persona spec may have changed since,
+ * and the seed it draws from is the person's, so the draw is the same one.
  */
 export function expandPopulation(population: Population, runId: string, simulationId: string, now: Date = new Date()): ExpandedAgent[] {
   const out: ExpandedAgent[] = [];
   for (const member of population.members) {
     const cadence = cadenceFor(population, member);
+    const lane = laneOf(member);
     const byOrdinal = seededPeople(member);
     for (let ordinal = 0; ordinal < member.count; ordinal++) {
       const person = byOrdinal.get(ordinal);
-      if (!person) throw new Error(`cohort ${member.cohort} has no person at ordinal ${ordinal}`);
-      const seed = `${member.seed}:${member.cohort}:${ordinal}`;
-      const persona = instantiatePersona(member.persona, seed);
+      if (!person) throw new Error(`lane ${lane} has no person at ordinal ${ordinal}`);
+      const seed = `${member.seed}:${lane}:${ordinal}`;
+      const persona = individuate(member.persona, seed, member, person.overrides);
       const agent: Agent = {
-        id: agentIdFor(population.id, member.cohort, ordinal),
+        id: agentIdFor(population.id, lane, ordinal),
         runId,
         simulationId,
         populationId: population.id,
         cohortSlug: member.cohort,
         personId: person.id,
+        context: member.context,
+        cohortTools: member.tools,
         name: person.name,
         details: person.details,
         handle: person.handle,

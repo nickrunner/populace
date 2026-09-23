@@ -179,7 +179,7 @@ export function SimulationSettings() {
                     onChange={setPopulationId}
                     options={(populations.data?.items ?? []).map((population) => ({
                       value: population.id,
-                      label: `${population.name} — ${people(population.members.reduce((n, m) => n + m.count, 0))} in ${plural(population.members.length, "cohort")}`,
+                      label: `${population.name} — ${people(population.people)} in ${plural(population.members.length, "cohort")}`,
                     }))}
                   />
                 )}

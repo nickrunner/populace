@@ -12,7 +12,7 @@ import {
 } from "@populace/core";
 import { toStrictInputSchema, type ModelProvider } from "@populace/runner";
 import { z } from "zod";
-import { ensureRoster } from "./cohort-store.js";
+import { ensureRoster, lanesOf, sizeOfCohort } from "./cohort-store.js";
 import { ensureSettings } from "./config-store.js";
 import type { JobSpend } from "./jobs.js";
 
@@ -64,8 +64,8 @@ export interface PeopleWriterDeps {
 }
 
 export interface GenerateOptions {
-  /** Restricts generation to these ordinals. Absent means every slot still holding a placeholder. */
-  ordinals?: number[];
+  /** Restricts generation to these people, by id. Absent means every slot still holding a placeholder. */
+  personIds?: string[];
 }
 
 export interface GeneratedRoster {
@@ -109,8 +109,6 @@ export async function generatePeople(deps: PeopleWriterDeps, cohortId: string, o
   const now = deps.now ?? ((): Date => new Date());
   const cohort = await deps.store.getCohort(cohortId);
   if (!cohort) throw new Error(`no cohort ${cohortId}`);
-  const persona = await deps.store.getPersona(cohort.personaId);
-  if (!persona) throw new Error(`the ${cohort.name} cohort points at a persona that no longer exists (${cohort.personaId})`);
 
   const live = await liveRunIds(deps.store, cohort.projectId);
   if (live.length > 0) throw new GenerationRefused(`${live.length} execution(s) are reading these people right now; stop or pause them before re-casting the ${cohort.name} cohort`);
@@ -118,6 +116,9 @@ export async function generatePeople(deps: PeopleWriterDeps, cohortId: string, o
   // Tier 1 first, always. Every slot below the cohort's size has a row before a single token is
   // spent, so every later exit — no key, a refusal, the kill switch — leaves a complete cast.
   const seededRoster = await ensureRoster(deps.store, cohortId, now());
+  // A cohort mixes personas, and the model is briefed one persona at a time: each lane is its
+  // own batch, so a batch is never asked to invent individuals of two kinds at once.
+  const personaOfLane = new Map((await lanesOf(deps.store, cohort, await sizeOfCohort(deps.store, cohort))).map((lane) => [lane.laneSlug, lane.persona]));
   const settings = await ensureSettings(deps.store, cohort.projectId);
   const model = resolveModel(settings.model, {
     // Writing twenty-five names and a sentence each does not need a thinking budget, and on a
@@ -125,8 +126,8 @@ export async function generatePeople(deps: PeopleWriterDeps, cohortId: string, o
     effort: "low",
   });
 
-  const wanted = options.ordinals === undefined ? undefined : new Set(options.ordinals);
-  const candidates = seededRoster.filter((person) => isPlaceholder(person) && (wanted === undefined || wanted.has(person.ordinal)));
+  const wanted = options.personIds === undefined ? undefined : new Set(options.personIds);
+  const candidates = seededRoster.filter((person) => isPlaceholder(person) && (wanted === undefined || wanted.has(person.id)));
   const result: GeneratedRoster = { people: seededRoster, written: 0, seeded: candidates.length, costUsd: 0, fellBackBecause: null, model: model.model };
   await deps.report?.({ done: 0, total: candidates.length });
   if (candidates.length === 0) return result;
@@ -139,70 +140,77 @@ export async function generatePeople(deps: PeopleWriterDeps, cohortId: string, o
   }
 
   const batchSize = settings.guardrails.maxPeoplePerGenerate;
-  const written = new Map<number, Person>();
+  const written = new Map<string, Person>();
   const used = new Set(seededRoster.map((person) => person.name));
 
-  for (let start = 0; start < candidates.length; start += batchSize) {
-    // Between batches as well as before the first: a cohort of six hundred is six calls, and the
-    // whole point of a kill switch is that it takes effect part-way through something.
-    await refuseIfStopped(deps.store, cohort.projectId, settings.guardrails.dailyUsd, now());
-    const batch = candidates.slice(start, start + batchSize);
-    let reply: z.infer<typeof WrittenRosterSchema>;
-    try {
-      // The names this batch is replacing are not "taken": they are the placeholders being
-      // written over, and listing them would tell the model to avoid the only names it is free
-      // to reuse.
-      const taken = new Set(used);
-      for (const person of batch) taken.delete(person.name);
-      const call = await writeBatch(provider, model, cohort, persona, batch, taken);
-      result.costUsd = Number((result.costUsd + call.costUsd).toFixed(8));
-      result.model = call.servedBy;
-      await deps.spend?.(call.costUsd);
-      if (!call.roster) {
-        result.fellBackBecause = "the model did not return a roster; the cast is the seeded one";
-        break;
-      }
-      reply = call.roster;
-    } catch (err) {
-      // A provider failure is not a reason to lose a cohort. The seeded rows stand and the reason
-      // rides back on the result, where the job's progress label shows it.
-      result.fellBackBecause = `${err instanceof Error ? err.message : String(err)}; the cast is the seeded one`;
-      break;
-    }
+  const byLane = new Map<string, Person[]>();
+  for (const person of candidates) byLane.set(person.laneSlug, [...(byLane.get(person.laneSlug) ?? []), person]);
 
-    const byOrdinal = new Map(batch.map((person) => [person.ordinal, person]));
-    const at = now().toISOString();
-    for (const entry of reply.people) {
-      const placeholder = byOrdinal.get(entry.ordinal);
-      if (!placeholder || written.has(entry.ordinal)) continue;
-      // Two people in one cohort never share a name. A model that repeats one keeps the seeded
-      // name for that person and contributes only the details — it is the smaller lie.
-      const collides = entry.name !== placeholder.name && used.has(entry.name);
-      const name = collides ? placeholder.name : entry.name;
-      used.delete(placeholder.name);
-      used.add(name);
-      const person: Person = {
-        ...placeholder,
-        name,
-        details: entry.details,
-        // The handle IS re-derived here, unlike a hand rename (`PATCH …/people/:ordinal`), because
-        // generation is refused while anything is running: nobody has signed an account up as this
-        // person yet, so an email local part that does not match their name has no history to
-        // protect and would just read as a bug on the roster.
-        handle: handleFor(name, cohort.slug, placeholder.ordinal),
-        generatedBy: "model",
-        generatedByModel: result.model,
-        updatedAt: at,
-      };
-      await deps.store.savePerson(person);
-      written.set(person.ordinal, person);
+  lanes: for (const [laneSlug, group] of byLane) {
+    const persona = personaOfLane.get(laneSlug);
+    if (!persona) continue;
+    for (let start = 0; start < group.length; start += batchSize) {
+      // Between batches as well as before the first: a cohort of six hundred is six calls, and the
+      // whole point of a kill switch is that it takes effect part-way through something.
+      await refuseIfStopped(deps.store, cohort.projectId, settings.guardrails.dailyUsd, now());
+      const batch = group.slice(start, start + batchSize);
+      let reply: z.infer<typeof WrittenRosterSchema>;
+      try {
+        // The names this batch is replacing are not "taken": they are the placeholders being
+        // written over, and listing them would tell the model to avoid the only names it is free
+        // to reuse.
+        const taken = new Set(used);
+        for (const person of batch) taken.delete(person.name);
+        const call = await writeBatch(provider, model, cohort, persona, batch, taken);
+        result.costUsd = Number((result.costUsd + call.costUsd).toFixed(8));
+        result.model = call.servedBy;
+        await deps.spend?.(call.costUsd);
+        if (!call.roster) {
+          result.fellBackBecause = "the model did not return a roster; the cast is the seeded one";
+          break lanes;
+        }
+        reply = call.roster;
+      } catch (err) {
+        // A provider failure is not a reason to lose a cohort. The seeded rows stand and the reason
+        // rides back on the result, where the job's progress label shows it.
+        result.fellBackBecause = `${err instanceof Error ? err.message : String(err)}; the cast is the seeded one`;
+        break lanes;
+      }
+
+      const byOrdinal = new Map(batch.map((person) => [person.ordinal, person]));
+      const at = now().toISOString();
+      for (const entry of reply.people) {
+        const placeholder = byOrdinal.get(entry.ordinal);
+        if (!placeholder || written.has(placeholder.id)) continue;
+        // Two people in one cohort never share a name. A model that repeats one keeps the seeded
+        // name for that person and contributes only the details — it is the smaller lie.
+        const collides = entry.name !== placeholder.name && used.has(entry.name);
+        const name = collides ? placeholder.name : entry.name;
+        used.delete(placeholder.name);
+        used.add(name);
+        const person: Person = {
+          ...placeholder,
+          name,
+          details: entry.details,
+          // The handle IS re-derived here, unlike a hand rename (`PATCH …/people/:person`), because
+          // generation is refused while anything is running: nobody has signed an account up as this
+          // person yet, so an email local part that does not match their name has no history to
+          // protect and would just read as a bug on the roster.
+          handle: handleFor(name, placeholder.laneSlug, placeholder.ordinal),
+          generatedBy: "model",
+          generatedByModel: result.model,
+          updatedAt: at,
+        };
+        await deps.store.savePerson(person);
+        written.set(person.id, person);
+      }
+      result.written = written.size;
+      result.seeded = candidates.length - written.size;
+      await deps.report?.({ done: written.size, total: candidates.length });
     }
-    result.written = written.size;
-    result.seeded = candidates.length - written.size;
-    await deps.report?.({ done: written.size, total: candidates.length });
   }
 
-  result.people = seededRoster.map((person) => written.get(person.ordinal) ?? person);
+  result.people = seededRoster.map((person) => written.get(person.id) ?? person);
   result.seeded = candidates.length - written.size;
   if (result.fellBackBecause !== null) await deps.report?.({ label: result.fellBackBecause });
   return result;
@@ -239,8 +247,8 @@ interface BatchOutcome {
 /** One model call: one batch of people, in, and a roster out. */
 async function writeBatch(provider: ModelProvider, model: ModelConfig, cohort: Cohort, persona: StoredPersona, batch: Person[], used: ReadonlySet<string>): Promise<BatchOutcome> {
   const instructions =
-        "You cast the people who will try a product. You are given one persona — a KIND of person, not an individual — and a number of slots to fill. " +
-        "Invent that many distinct individuals who all fit the persona, and for each one write a name and one or two sentences of specifics that tell them apart from the others: what device they are on, what they are actually here to do this month, one habit or constraint. " +
+        "You cast the people who will try a product. You are given one persona — a KIND of person, not an individual — the condition everybody in their cohort shares, and a number of slots to fill. " +
+        "Invent that many distinct individuals who all fit the persona and the shared condition, and for each one write a name and one or two sentences of specifics that tell them apart from the others: what device they are on, what they are actually here to do this month, one habit or constraint. " +
         "The specifics must be consistent with the persona's role, backstory and goals — you are making individuals within a kind, not new kinds. Do not restate the persona. Do not mention the product by name. Do not invent a company, a job title or a life story; one or two concrete sentences is the whole brief. " +
         "Draw names from a wide range of origins, as a real cross-section of users would be. Never repeat a name. Answer only by calling the tool, once, with every slot filled.";
   const spec = persona.spec;
@@ -252,6 +260,7 @@ async function writeBatch(provider: ModelProvider, model: ModelConfig, cohort: C
     ...(spec.constraints.length > 0 ? [`Constraints: ${spec.constraints.join("; ")}`] : []),
     "",
     `Cohort: ${cohort.name}${cohort.notes ? ` — ${cohort.notes}` : ""}`,
+    `What everybody in this cohort shares: ${cohort.context}`,
     `Fill these ${batch.length} slot(s), by ordinal: ${batch.map((person) => person.ordinal).join(", ")}`,
     ...(used.size > 0 ? [`Names already taken in this cohort, which you may not reuse: ${[...used].join(", ")}`] : []),
     "",

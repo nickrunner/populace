@@ -24,11 +24,12 @@ const config = PopulaceConfigSchema.parse({
 });
 
 describe("plannedVisits", () => {
-  it("returns one row per cohort, distinguishable when two cohorts share a persona", () => {
+  it("returns one row per lane, distinguishable when two cohorts share a persona", () => {
     const plan = plannedVisits(config, 4);
     expect(plan.perCohort.map((p) => p.personaId)).toEqual(["casual", "casual"]);
     expect(plan.perCohort.map((p) => p.cohort)).toEqual(["weekenders", "sceptics"]);
-    expect(new Set(plan.perCohort.map((p) => p.cohort)).size).toBe(plan.perCohort.length);
+    expect(plan.perCohort.map((p) => p.lane)).toEqual(["weekenders.casual", "sceptics.casual"]);
+    expect(new Set(plan.perCohort.map((p) => p.lane)).size).toBe(plan.perCohort.length);
     // The cohort's own cap wins over the population's for that cohort alone.
     expect(plan.perCohort.map((p) => p.visits)).toEqual([6, 4]);
     expect(plan.agents).toBe(6);

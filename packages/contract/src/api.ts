@@ -177,7 +177,8 @@ export const routes = {
   cohort: (p: string, c: string) => `${API_BASE}/projects/${seg(p)}/cohorts/${seg(c)}`,
   cohortPeople: (p: string, c: string) => `${API_BASE}/projects/${seg(p)}/cohorts/${seg(c)}/people`,
   cohortPeopleRegenerate: (p: string, c: string) => `${API_BASE}/projects/${seg(p)}/cohorts/${seg(c)}/people/regenerate`,
-  cohortPerson: (p: string, c: string, ordinal: string | number) => `${API_BASE}/projects/${seg(p)}/cohorts/${seg(c)}/people/${seg(String(ordinal))}`,
+  /** `person` is the person id (`cohortSlug.personaSlug#n`); the `#` is encoded on the way in. */
+  cohortPerson: (p: string, c: string, person: string) => `${API_BASE}/projects/${seg(p)}/cohorts/${seg(c)}/people/${seg(person)}`,
 
   populations: (p: string) => `${API_BASE}/projects/${seg(p)}/populations`,
   population_: (p: string, pop: string) => `${API_BASE}/projects/${seg(p)}/populations/${seg(pop)}`,

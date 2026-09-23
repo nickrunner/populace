@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { CredentialSchema, REDEEM_SKEW_MS, type Agent, type Identity, type IdentityProvider, type ProvisionContext, type ProvisionResult, type StaticIdentityConfig, type TeardownDeps } from "@populace/core";
+import { laneSlugOfAgentId, CredentialSchema, REDEEM_SKEW_MS, type Agent, type Identity, type IdentityProvider, type ProvisionContext, type ProvisionResult, type StaticIdentityConfig, type TeardownDeps } from "@populace/core";
 import { z } from "zod";
 
 /**
@@ -115,7 +115,13 @@ export class StaticIdentityProvider implements IdentityProvider {
    * the same person comes back to the same account next week.
    */
   private assign(agent: Agent): Assignment {
-    if (this.keyedBy === "cohort") return { key: agent.cohortSlug, index: agent.ordinal };
+    if (this.keyedBy === "cohort") {
+      // A lane-keyed pool first (`"mobile.first-timer"`), then the cohort's. A cohort that mixes
+      // personas numbers each lane from 1, so a pool keyed by the cohort alone can serve only a
+      // cohort of one persona — and `checkPopulation` says so before anybody connects.
+      const lane = laneSlugOfAgentId(agent.id);
+      return { key: this.pool.has(lane) ? lane : agent.cohortSlug, index: agent.ordinal };
+    }
     const personaId = agent.persona.id;
     return { key: this.pool.has(personaId) ? personaId : "*", index: agent.ordinal };
   }
@@ -183,16 +189,20 @@ export class StaticIdentityProvider implements IdentityProvider {
       const group = byKey.get(key) ?? [];
       const list = this.pool.get(key) ?? [];
       const cohorts = [...new Set(group.map((a) => a.cohortSlug))].sort();
+      const lanes = [...new Set(group.map((a) => laneSlugOfAgentId(a.id) || a.cohortSlug))].sort();
       if (list.length === 0) {
         problems.push(this.missing(key, group.length));
         continue;
       }
-      if (this.keyedBy !== "cohort" && cohorts.length > 1) {
-        const suggestion = cohorts.map((c) => `"${c}": [...]`).join(", ");
+      // Every lane numbers its people from 1, so one pool can serve exactly one of them. That is
+      // true of a persona-keyed pool two cohorts share and of a cohort-keyed pool whose cohort
+      // mixes two personas alike.
+      if (lanes.length > 1) {
+        const suggestion = lanes.map((lane) => `"${lane}": [...]`).join(", ");
         problems.push(
-          `the static pool "${key}" in ${this.config.file} serves ${cohorts.length} cohorts (${cohorts.join(", ")}), ` +
-            `and every cohort numbers its people from 1, so they would be handed the same accounts: ` +
-            `key the file by cohort instead — { "byCohort": { ${suggestion} } }`,
+          `the static pool "${key}" in ${this.config.file} serves ${lanes.length} lanes (${lanes.join(", ")}), ` +
+            `and every lane numbers its people from 1, so they would be handed the same accounts: ` +
+            `key the file by lane instead — { "byCohort": { ${suggestion} } }`,
         );
         continue;
       }

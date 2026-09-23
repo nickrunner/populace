@@ -41,9 +41,9 @@ that changes how every screen and every roadmap item is named.
 | **Project** | Scopes authoring: targets, personas, cohorts, populations, simulations, settings, triage. | Nothing; new. |
 | **Target** | The app under test, its MCP endpoints, its identity strategy, **and its tool policy** (ADR-0033). | A `target` block in YAML with no policy of its own. |
 | **Persona** | A template: role, backstory, goals, constraints, traits. **No headcount.** | A persona that also carried its count. |
-| **Cohort** | **N people on one persona.** Owns `size`, the seed, cadence and visit-cap overrides. | The `count` on a population member, and `scale`, both gone. |
-| **Person** | A durable named individual, `cohortSlug#ordinal`, stored once and never silently overwritten (ADR-0031). | Nothing; new, and it is the most product-visible addition. |
-| **Population** | Composition and nothing else: an ordered set of cohorts. | A population that also carried cadence, caps and scale. |
+| **Cohort** | **A shared condition and a mix of personas** (ADR-0039): `context`, `mix[{personaId, weight}]`, an overlay, the seed, cadence and visit-cap overrides. No headcount. | "N people on one persona" owning `size` (ADR-0029), which forced a cohort per persona per condition. |
+| **Person** | A durable named individual in a lane, `cohortSlug.personaSlug#ordinal`, stored once and never silently overwritten, with the sampled dimensions settable by hand (ADR-0031, amended). | Nothing; new, and it is the most product-visible addition. |
+| **Population** | Which cohorts go and how many of each: `members[{cohortId, size}]`. Setting the number writes the people. | Composition and nothing else, with the size on the cohort. |
 | **Simulation** | A population, a target and a mode — **ephemeral** or **longitudinal** (ADR-0030). What a user presses go on and what results belong to. | Nothing; new. The thing a user actually has in their head. |
 | **Run** | One execution of a simulation, with a `seq` counting from 1 and a frozen config snapshot. | An unnumbered run id. |
 

@@ -261,7 +261,8 @@ export function Preflight() {
                     />
                     <MetaLine
                       facts={[
-                        { key: "persona", node: cohort.personaName },
+                        // Who they are drawn from at this size: "6 First-time visitor, 4 Power user".
+                        { key: "persona", node: cohort.personas.map((persona) => `${String(persona.people)} ${persona.name}`).join(", ") },
                         { key: "slug", node: <Mono size="code-sm">{cohort.slug}</Mono> },
                         ...(cohort.sampleNames.length === 0
                           ? []

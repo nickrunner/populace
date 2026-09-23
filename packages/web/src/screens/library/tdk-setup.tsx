@@ -63,12 +63,39 @@ function newSecret(): string {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/** The one function only the app can write, spelled the same way in every mount. */
-const CREATE_PERSON = `  async createPerson({ email, displayName, password, tag }) {
+/**
+ * The functions only the app can write, spelled the same way in every mount.
+ *
+ * `refreshPerson` is here rather than left to the docs because the first question a reader asks
+ * of this snippet is the one it used to leave out: *what happens when that token goes stale?* A
+ * sample showing only `createPerson` teaches that a session is made once and lasts forever, which
+ * is untrue of every token with an expiry on it — and a population runs for days.
+ *
+ * The comments say where each argument comes from, because nothing else on the screen does and a
+ * reader cannot tell an argument they must honour from one they may ignore.
+ */
+const CREATE_PERSON = `  // populace makes up the person and sends you who they are. "handle" is their stable
+  // name for the whole run ("marta-2"), "displayName" is the name a screenshot will show,
+  // "email" carries the run so a sweep can find them, and "tag" identifies the run itself —
+  // store it if you can, it is how accounts are found again when populace's own rows are gone.
+  // Need a field populace does not send? It is your function: supply it here.
+  async createPerson({ email, displayName, password, handle, tag }) {
     // The only part populace cannot write for you: make a user of YOUR product.
     const user = await db.users.create({ email, name: displayName, password });
-    return { userId: user.id, bearerToken: await sessionTokenFor(user.id) };
+    return {
+      userId: user.id,                       // how populace names this person from now on
+      bearerToken: await sessionTokenFor(user.id),
+      expiresAt: null,                       // when it dies; null means it never does
+      refreshToken: null,                    // anything you need to mint the next one
+    };
   },
+
+  // Called before a visit when the bearer has expired or is within ten minutes of it —
+  // never mid-conversation. Leave it out and every session must outlive the whole run.
+  async refreshPerson({ userId, refreshToken }) {
+    return { bearerToken: await sessionTokenFor(userId), expiresAt: null, refreshToken };
+  },
+
   async removePerson({ userId }) {
     await db.users.delete(userId);
   },`;

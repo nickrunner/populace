@@ -87,26 +87,40 @@ export const StoredPersonaSchema = z.object({
 });
 export type StoredPersona = z.infer<typeof StoredPersonaSchema>;
 
-/**
- * Composition, and nothing else. `members`, `scale`, `cadence`, `maxWakes` and `seed` are gone:
- * headcount belongs to the cohort, the execution plan belongs to the simulation, and the seed
- * belongs to the cohort that owns the people.
- *
- * `scale` is deleted outright. Two numbers deciding how many people exist (count × scale) is
- * exactly the ambiguity this restructure removes; the user's sentence is "a cohort of 25 people".
- */
-export const StoredPopulationSchema = z.object({
-  id: z.string().min(1),
-  projectId: z.string().min(1),
-  /** Immutable; the first segment of every agent id. */
-  slug: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
-  /** Mutable: "Everyone", "Mobile only". */
-  name: z.string().min(1).default("Everyone"),
-  /** Ordered. Order is display order; it never affects ids or seeding. Duplicates rejected. */
-  cohortIds: z.array(z.string().min(1)).default([]),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
+/** One cohort in a population, and how many of its people go. */
+export const PopulationMemberRefSchema = z.object({
+  cohortId: z.string().min(1),
+  /** The headcount for this cohort in this population: apportioned across the cohort's mix. */
+  size: z.number().int().positive().default(1),
 });
+export type PopulationMemberRef = z.infer<typeof PopulationMemberRefSchema>;
+
+/**
+ * Which cohorts go, and how many of each (ADR-0039). This is the ONLY place a headcount lives:
+ * a cohort has no size of its own, and setting a member's size here is what instantiates its
+ * people. The execution plan — cadence, cap, mode — belongs to the simulation, and the seed to
+ * the cohort that owns the people.
+ */
+export const StoredPopulationSchema = z
+  .object({
+    id: z.string().min(1),
+    projectId: z.string().min(1),
+    /** Immutable; the first segment of every agent id. */
+    slug: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+    /** Mutable: "Everyone", "Mobile only". */
+    name: z.string().min(1).default("Everyone"),
+    /** Ordered. Order is display order; it never affects ids or seeding. A cohort appears once. */
+    members: z.array(PopulationMemberRefSchema).default([]),
+    createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+  })
+  .superRefine((population, ctx) => {
+    const seen = new Set<string>();
+    population.members.forEach((member, index) => {
+      if (seen.has(member.cohortId)) ctx.addIssue({ code: "custom", path: ["members", index, "cohortId"], message: "a cohort is in a population once" });
+      seen.add(member.cohortId);
+    });
+  });
 export type StoredPopulation = z.infer<typeof StoredPopulationSchema>;
 
 /**

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PersonaSchema } from "./persona.js";
+import { ToolPolicySchema } from "./tool-policy.js";
 
 export const AgentStatusSchema = z.enum(["active", "retired", "paused"]);
 export type AgentStatus = z.infer<typeof AgentStatusSchema>;
@@ -22,17 +23,22 @@ export type ContinuedFrom = z.infer<typeof ContinuedFromSchema>;
 
 export const AgentSchema = z.object({
   /**
-   * `${populationSlug}/${cohortSlug}#${ordinal + 1}`. Unique WITHIN A RUN, not globally.
+   * `${populationSlug}/${cohortSlug}.${personaSlug}#${ordinal + 1}`. Unique WITHIN A RUN, not
+   * globally.
    */
   id: z.string().min(1),
   runId: z.string().min(1),
   simulationId: z.string().min(1),
   /** The population slug. */
   populationId: z.string().min(1),
-  /** The cohort this participant belongs to. Two cohorts may share one persona. */
+  /** The cohort this participant belongs to. A cohort mixes personas; two cohorts may share one. */
   cohortSlug: z.string().min(1),
-  /** `${cohortSlug}#${ordinal + 1}` — the durable person this participant is an instance of. */
+  /** `${cohortSlug}.${personaSlug}#${ordinal + 1}` — the durable person this participant is an instance of. */
   personId: z.string().min(1),
+  /** What the cohort's people have in common, in prose; goes under the persona's backstory. */
+  context: z.string().default(""),
+  /** The cohort's own tool policy, merged with the target's and the persona's at the wake. */
+  cohortTools: ToolPolicySchema.prefault({}),
   /** The generated person name, copied in so a run renders without joining the people table. */
   name: z.string().min(1),
   /** The person's individuating line, inserted under the persona's backstory in the prompt. */
@@ -44,7 +50,7 @@ export const AgentSchema = z.object({
    */
   handle: z.string().min(1),
   persona: PersonaSchema,
-  /** Index within the cohort (0-based). */
+  /** Index within the lane (0-based). */
   ordinal: z.number().int().nonnegative(),
   status: AgentStatusSchema.default("active"),
   /** Set when status is `retired`; null while active. */
