@@ -125,7 +125,7 @@ function google(admin: FakeFirebase): Google {
   return state;
 }
 
-const PERSON: PersonRequest = { tag: "run-abc123", handle: "marta-2", email: "marta-2+run-abc123@populace.test", displayName: "Marta", password: "correct-horse-battery" };
+const PERSON: PersonRequest = { tag: "run-abc123", handle: "marta-2", email: "marta-2+run-abc123@populace.test", displayName: "Marta", password: "correct-horse-battery", attributes: {} };
 
 function preset(admin: FakeFirebase, endpoints: Google, extra: Partial<Parameters<typeof firebase>[0]> = {}) {
   return firebase({ apiKey: "web-api-key", auth: admin, fetch: endpoints.fetch, ...extra });

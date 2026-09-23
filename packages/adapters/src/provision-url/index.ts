@@ -134,6 +134,11 @@ export class ProvisionUrlProvider implements IdentityProvider {
       // Sent for the apps that have passwords; the kit's own contract marks it optional, and a
       // passwordless target ignores it.
       password: passwordFor(ctx),
+      // What this person IS, beyond their name — the traits `individuate` already merged from the
+      // persona, the cohort and whatever was set on the person by hand. It is the only field here
+      // that differs between two people in one run, which is what makes "half of them are on the
+      // free plan" expressible at all (ADR-0037 amendment).
+      attributes: ctx.agent.persona.traits,
     });
     const person = ProvisionedSchema.parse(body);
     return {

@@ -10,6 +10,7 @@ export { populaceProvisioning } from "./provisioning/index.js";
 export {
   createProvisioningHandler,
   firebase,
+  AttributeValueSchema,
   CreatedPersonSchema,
   ListedPersonSchema,
   ListQuerySchema,

@@ -125,3 +125,36 @@ The email has never been the authoritative copy of the tag: the identity row car
 provisioning wire it goes in the request body. What the address carries is a fallback for a target
 with nowhere else to put it, and a fallback that makes the address invalid was worth nobody's
 tolerance.
+
+## Amendment — attributes, so one person can differ from another
+
+`createPerson` was handed five fields, and every one of them had the same shape for everybody: a
+handle, a name, an address, a run, a password. A reader integrating the kit asked the obvious
+question — *"different apps will require different sign up parameters… is there a custom params
+field?"* — and the honest answer was no. What the docs called "supply them yourself" meant
+hardcoding a constant in your own function, which cannot express a population where half the people
+are on the paid plan.
+
+**`POST /people` now carries `attributes`: flat key/values drawn from the persona the person was
+invented from.** `individuate` already merges persona traits, the cohort's overlay and per-person
+overrides into one bag; this sends that bag. populace had the data all along and nowhere to put it.
+
+Three properties, decided deliberately:
+
+- **It is advisory, not a schema.** The keys are whatever a persona author typed. The kit's own
+  documentation tells an app to read what it recognises and ignore the rest, and says plainly that
+  `attributes.admin` is a sentence somebody wrote rather than a claim anybody checked — a product
+  reading one into a role has handed its test fixtures a privilege escalation.
+- **A value the kit cannot use is dropped, not refused.** Strictness would be paid in the wrong
+  place: the kit runs inside somebody else's server on their deploy cadence, so a populace that one
+  day sends a nested trait would make every already-installed kit refuse every person, failing a
+  whole run's provisioning over one odd value. Dropping costs an app an attribute it did not
+  recognise anyway.
+- **It needed no version bump of the contract.** `tdk` stays at 1. `PersonRequestSchema` is not
+  `strict`, so a 0.1.0 kit silently ignores the new field and every person arrives as before —
+  which is the behaviour that existed yesterday, not a failure. The kit's package version goes to
+  0.2.0 because it gained a capability; the wire did not break.
+
+What this does not do: populace still cannot send anything the persona model cannot hold. A trait
+is a string, a number or a boolean, so an app needing a nested object or a list gets neither, and
+the answer for now is to flatten it into keys.

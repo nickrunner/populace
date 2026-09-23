@@ -78,10 +78,16 @@ const CREATE_PERSON = `  // populace makes up the person and sends you who they 
   // name for the whole run ("marta-2"), "displayName" is the name a screenshot will show,
   // "email" carries the run so a sweep can find them, and "tag" identifies the run itself —
   // store it if you can, it is how accounts are found again when populace's own rows are gone.
-  // Need a field populace does not send? It is your function: supply it here.
-  async createPerson({ email, displayName, password, handle, tag }) {
+  // "attributes" is what differs between two people: the persona's traits, sampled per
+  // person. Read the keys you recognise and ignore the rest — it is never a claim.
+  async createPerson({ email, displayName, password, handle, tag, attributes }) {
     // The only part populace cannot write for you: make a user of YOUR product.
-    const user = await db.users.create({ email, name: displayName, password });
+    const user = await db.users.create({
+      email,
+      name: displayName,
+      password,
+      plan: attributes.plan === "paid" ? "paid" : "free",
+    });
     return {
       userId: user.id,                       // how populace names this person from now on
       bearerToken: await sessionTokenFor(user.id),

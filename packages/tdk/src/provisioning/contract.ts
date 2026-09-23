@@ -44,12 +44,51 @@ const OptionalTokenSchema = z
  * Clerk's magic links, Supabase's one-time codes — and a required field reads as one the
  * implementor has to honour. Use it if your app has passwords; ignore it if it does not.
  */
+export const AttributeValueSchema = z.union([z.string(), z.number(), z.boolean()]);
+
+/**
+ * The attribute bag, with anything that is not a flat value dropped rather than refused.
+ *
+ * Strictness here would be paid in the wrong place. This kit runs inside somebody else's server,
+ * on their deploy cadence, and a populace that one day sends a nested trait would make every
+ * already-installed kit refuse every person — a whole run failing to provision over one odd value
+ * somebody typed into a persona. Dropping the entry costs an app one attribute it did not
+ * recognise anyway.
+ */
+const AttributeBagSchema = z.preprocess(
+  (raw) =>
+    typeof raw === "object" && raw !== null && !Array.isArray(raw)
+      ? Object.fromEntries(
+          // eslint-disable-next-line no-restricted-syntax -- the wire boundary itself; every surviving value is parsed by the schema below.
+          Object.entries(raw as Record<string, unknown>).filter(
+            ([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean",
+          ),
+        )
+      : raw,
+  z.record(z.string(), AttributeValueSchema).default({}),
+);
+
 export const PersonRequestSchema = z.object({
   tag: z.string().min(1),
   handle: z.string().min(1),
   email: z.email(),
   displayName: z.string().min(1),
   password: z.string().min(1).optional(),
+  /**
+   * What populace knows about this person beyond their name, as flat key/values — a plan tier, a
+   * locale, whatever the persona was written with. Empty when nothing was set.
+   *
+   * These come from the PERSONA the person was drawn from, which is somebody's prose about a kind
+   * of user, and they arrive unvalidated and unnamespaced. **Read the ones you recognise and
+   * ignore the rest.** In particular they are not an authorization input: `attributes.admin` is a
+   * sentence a persona author typed, not a claim anybody checked, and a product that reads one
+   * into a role has given its test fixtures a privilege escalation.
+   *
+   * Sending more of them later cannot break a kit that shipped before them — this object is not
+   * `strict`, so an older kit drops fields it does not know, and a value it cannot use is dropped
+   * from the bag rather than failing the person.
+   */
+  attributes: AttributeBagSchema,
 });
 export type PersonRequest = z.infer<typeof PersonRequestSchema>;
 

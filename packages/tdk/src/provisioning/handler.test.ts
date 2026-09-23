@@ -3,7 +3,7 @@ import { ErrorBodySchema, TdkError } from "../errors.js";
 import { HandshakeSchema, TDK_CONTRACT_VERSION } from "../handshake.js";
 import type { TdkHandler, TdkRequest, TdkResponse } from "../http.js";
 import type { JsonValue } from "../json.js";
-import { PeopleListSchema, ProvisionedPersonSchema, RefreshResponseSchema, type CreatedPerson, type ProvisioningBackend } from "./contract.js";
+import { PeopleListSchema, ProvisionedPersonSchema, RefreshResponseSchema, type CreatedPerson, type PersonRequest, type ProvisioningBackend } from "./contract.js";
 import { createProvisioningHandler, type ProvisioningOptions } from "./handler.js";
 
 /**
@@ -85,9 +85,13 @@ function request(method: string, path: string, extra: Partial<TdkRequest> & { se
   };
 }
 
-const PERSON = { tag: "run-abc123", handle: "marta-2", email: "marta-2+run-abc123@populace.test", displayName: "Marta", password: "correct-horse-battery" };
+const PERSON: PersonRequest = { tag: "run-abc123", handle: "marta-2", email: "marta-2+run-abc123@populace.test", displayName: "Marta", password: "correct-horse-battery", attributes: {} };
 
-async function provision(handle: TdkHandler, overrides: Partial<typeof PERSON> = {}): Promise<TdkResponse> {
+/**
+ * `attributes` is loosened here on purpose: the wire tolerates a value the TYPE does not, and the
+ * test for that tolerance has to be able to send one. `JsonValue` is what actually crosses.
+ */
+async function provision(handle: TdkHandler, overrides: Partial<Omit<PersonRequest, "attributes">> & { attributes?: Record<string, JsonValue> } = {}): Promise<TdkResponse> {
   return await handle(request("POST", "/people", { body: { ...PERSON, ...overrides } }));
 }
 
@@ -100,6 +104,53 @@ function errorOf(response: TdkResponse): { code: string; message: string } {
 }
 
 describe("the handshake", () => {
+  /**
+   * The one field that differs between two people in one run, and the only one an app is invited
+   * to ignore. The rules matter more than the plumbing: it defaults, it survives whatever the
+   * populace above it happens to send, and it is never a claim.
+   */
+  it("hands the person's attributes to the app, and defaults them when none were sent", async () => {
+    const seen: Record<string, string | number | boolean>[] = [];
+    const handle = createProvisioningHandler({
+      secret: SECRET,
+      environment: "development",
+      backend: {
+        createPerson: (person) => {
+          seen.push(person.attributes);
+          return { userId: "u1", bearerToken: "b1" };
+        },
+      },
+    });
+
+    await provision(handle, { attributes: { plan: "paid", seats: 12, trialed: false } });
+    expect(seen[0]).toEqual({ plan: "paid", seats: 12, trialed: false });
+
+    // An older populace sends none. The app destructures `attributes` either way rather than
+    // guarding, so this is a default and not an absence.
+    await handle(request("POST", "/people", { body: { tag: "run-abc123", handle: "ingrid-1", email: "ingrid-1+run-abc123@populace.test", displayName: "Ingrid" } }));
+    expect(seen[1]).toEqual({});
+  });
+
+  it("drops an attribute whose value is not a flat one, rather than refusing the person", async () => {
+    const seen: Record<string, string | number | boolean>[] = [];
+    const handle = createProvisioningHandler({
+      secret: SECRET,
+      environment: "development",
+      backend: {
+        createPerson: (person) => {
+          seen.push(person.attributes);
+          return { userId: "u1", bearerToken: "b1" };
+        },
+      },
+    });
+    // A nested object is not something an app can put in a column. The person is still made, and
+    // the flat attributes beside it still arrive — refusing here would fail a whole run's
+    // provisioning inside somebody else's already-deployed server, over one odd trait.
+    const response = await provision(handle, { attributes: { plan: "paid", shape: { nested: true } } });
+    expect(response.status).toBe(201);
+    expect(seen[0]).toEqual({ plan: "paid" });
+  });
+
   it("names the contract version and answers honestly about what the app can do", async () => {
     const vendor = new FakeVendor();
     const full = handlerFor({ backend: backendFor(vendor) });

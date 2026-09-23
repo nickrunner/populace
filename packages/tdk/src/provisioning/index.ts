@@ -24,6 +24,7 @@ export function populaceProvisioning(options: ProvisioningOptions): Mounted {
 export { createProvisioningHandler, type ProvisioningOptions, type ProvisioningServerOptions } from "./handler.js";
 export { firebase, type FetchLike, type FirebaseAuthLike, type FirebaseOptions, type FirebasePerson } from "./firebase.js";
 export {
+  AttributeValueSchema,
   CreatedPersonSchema,
   ListedPersonSchema,
   ListQuerySchema,

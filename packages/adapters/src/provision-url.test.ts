@@ -17,13 +17,13 @@ const SECRET = "shared-secret-for-tests";
 
 /** The app's own half: an in-memory product that makes users, renews them and deletes them. */
 function fakeProduct(options: { capabilities?: { refresh?: boolean; teardown?: boolean; listByTag?: boolean } } = {}) {
-  const people = new Map<string, { userId: string; email: string; displayName: string; tag: string; bearer: string }>();
+  const people = new Map<string, { userId: string; email: string; displayName: string; tag: string; bearer: string; attributes: Record<string, string | number | boolean> }>();
   let minted = 0;
   const backend: ProvisioningBackend = {
     createPerson: (person) => {
       minted += 1;
       const userId = `user-${minted}`;
-      people.set(userId, { userId, email: person.email, displayName: person.displayName, tag: person.tag, bearer: `bearer-${userId}-1` });
+      people.set(userId, { userId, email: person.email, displayName: person.displayName, tag: person.tag, bearer: `bearer-${userId}-1`, attributes: person.attributes });
       return { userId, bearerToken: `bearer-${userId}-1`, expiresAt: new Date(Date.now() + 3_600_000), refreshToken: `refresh-${userId}` };
     },
     refreshPerson: ({ userId, refreshToken }) => {
@@ -79,11 +79,16 @@ function providerFor(product: ReturnType<typeof fakeProduct>, secret: string = S
   );
 }
 
-/** Only the three fields provisioning reads; an agent row is much larger than this. */
-// eslint-disable-next-line no-restricted-syntax -- a test fixture standing in for one row, narrowed to the fields under test.
-const agent = (handle: string, name: string): Agent => ({ id: `pop/cohort#${handle}`, handle, name }) as unknown as Agent;
+/** Only the fields provisioning reads; an agent row is much larger than this. */
+const agent = (handle: string, name: string, traits: Record<string, string | number | boolean> = {}): Agent =>
+  // eslint-disable-next-line no-restricted-syntax -- a test fixture standing in for one row, narrowed to the fields under test.
+  ({ id: `pop/cohort#${handle}`, handle, name, persona: { traits } }) as unknown as Agent;
 
-const context = (handle = "marta-1", tag = "populace:run_abc_123456"): ProvisionContext => ({ agent: agent(handle, "Marta"), runId: "run-1", tag });
+const context = (handle = "marta-1", tag = "populace:run_abc_123456", traits: Record<string, string | number | boolean> = {}): ProvisionContext => ({
+  agent: agent(handle, "Marta", traits),
+  runId: "run-1",
+  tag,
+});
 
 const identityFor = (credential: Identity["credential"], tag = "populace:run_abc_123456"): Identity => ({
   id: newIdentityId(),
@@ -115,6 +120,33 @@ describe("the app makes its own people", () => {
     // A refresh token comes back as a redeemable, which is what keeps a person alive past an hour.
     expect(result.credential.redeemable).toEqual({ kind: "refresh-token", secret: "refresh-user-1" });
     expect(result.credential.expiresAt).not.toBeNull();
+  });
+
+  /**
+   * What makes one person different from another on the way in.
+   *
+   * Every other field is the same shape for everybody — a handle, a name, an address, the run. The
+   * attributes are the person: a persona's traits, sampled per person and merged with the cohort's,
+   * which is the only thing that lets "half of these people are on the paid plan" reach an app's
+   * own `createPerson` instead of being a sentence in a prompt nobody's database ever sees.
+   */
+  it("carries the person's own traits through to the app that makes them", async () => {
+    const product = fakeProduct();
+    const provider = providerFor(product);
+    await provider.provision(context("marta-1", "populace:run_abc_123456", { plan: "paid", seats: 12, trialed: false }));
+    expect(product.people.get("user-1")?.attributes).toEqual({ plan: "paid", seats: 12, trialed: false });
+
+    // Two people of the same run differ by exactly this and nothing else.
+    await provider.provision(context("ingrid-2", "populace:run_abc_123456", { plan: "free", seats: 1, trialed: true }));
+    expect(product.people.get("user-2")?.attributes).toEqual({ plan: "free", seats: 1, trialed: true });
+  });
+
+  it("sends an empty bag rather than nothing when a person has no traits", async () => {
+    const product = fakeProduct();
+    await providerFor(product).provision(context());
+    // The kit defaults it, so an app can destructure without guarding — and a person with no
+    // traits is a normal person, not a malformed request.
+    expect(product.people.get("user-1")?.attributes).toEqual({});
   });
 
   it("renews with the redeemable it is holding, and keeps the person's other fields", async () => {

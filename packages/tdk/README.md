@@ -29,7 +29,7 @@ import { populaceProvisioning } from "@populace/tdk";
 
 app.use("/populace", populaceProvisioning({
   secret: process.env.POPULACE_SECRET,
-  async createPerson({ email, displayName, tag }) {
+  async createPerson({ email, displayName, tag, attributes }) {
     const { uid } = await admin.auth().createUser({ email, displayName, password: … });
     await ensureAppUser(uid, email);          // the bit only you can write
     return { userId: uid, bearerToken: await idTokenFor(uid) };
@@ -111,7 +111,7 @@ relative to the mount point; everything is JSON.
 | Route | What |
 | --- | --- |
 | `GET /` | Handshake. `{ "tdk": 1, "environment": "development", "capabilities": { "refresh": true, "teardown": true, "listByTag": true } }` |
-| `POST /people` | Provision one person. `{ tag, handle, email, displayName, password? }` → `201 { userId, bearerToken, expiresAt, refreshToken }` |
+| `POST /people` | Provision one person. `{ tag, handle, email, displayName, password?, attributes }` → `201 { userId, bearerToken, expiresAt, refreshToken }` |
 | `POST /people/refresh` | Renew an expiring bearer. `{ userId, refreshToken }` → `{ bearerToken, expiresAt, refreshToken }` |
 | `POST /people/remove` | Teardown. `{ userId }` → `204`, whether or not it existed. |
 | `GET /people?tag=…&cursor=…` | For a sweep whose local store is gone. → `{ people: [{ userId, email, displayName, tag }], nextCursor }` |
@@ -124,6 +124,33 @@ contract 2; this kit implements 1 — upgrade `@populace/tdk`" rather than a sch
 field it has never heard of. The header is optional — no header means the caller speaks this
 contract — and the handshake answers regardless of it, because the handshake is how a version
 disagreement gets diagnosed.
+
+**`attributes` is what makes one person different from another.** Every other field on the way in
+has the same shape for everybody — a handle, a name, an address, the run. The attributes are flat
+key/values drawn from the persona populace invented this person from: a plan tier, a locale, a seat
+count, whatever that persona was written with. It is what lets *half of these people are on the paid
+plan* reach your database instead of staying a sentence in a prompt.
+
+```ts
+async createPerson({ email, displayName, attributes }) {
+  const user = await db.users.create({
+    email,
+    name: displayName,
+    plan: attributes.plan === "paid" ? "paid" : "free",   // one you recognise
+  });
+  return { userId: user.id, bearerToken: await sessionTokenFor(user.id) };
+}
+```
+
+Three rules, and the third is the one that matters:
+
+- **Read what you recognise, ignore the rest.** The bag is whatever a persona author typed. It is
+  not namespaced and it is not a schema.
+- **It defaults to `{}`**, so destructuring it is always safe, and a value the kit cannot use — a
+  nested object, an array — is dropped from the bag rather than failing the person.
+- **It is never an authorization input.** `attributes.admin` is a sentence somebody wrote about a
+  fictional user, not a claim anyone checked. A product that reads one into a role has handed its
+  test fixtures a privilege escalation.
 
 **Removing a person takes the id in the body, not the path.** The id is your app's: a uuid, a
 `user_2ab…`, and for plenty of products an email address or a URN. Those do not survive a path

@@ -84,10 +84,14 @@ import { populaceProvisioning } from "@populace/tdk";
 
 app.use("/populace", populaceProvisioning({
   secret: process.env.POPULACE_SECRET,
-  async createPerson({ email, displayName, password, tag }) {
+  async createPerson({ email, displayName, password, tag, attributes }) {
     // The only part populace cannot write for you: make a user of YOUR product.
     const user = await db.users.create({ email, name: displayName, password });
     return { userId: user.id, bearerToken: await sessionTokenFor(user.id) };
+  },
+  async refreshPerson({ userId, refreshToken }) {
+    // Called when their token is about to go stale. See "How a person stays signed in".
+    return { bearerToken: await sessionTokenFor(userId), expiresAt: null, refreshToken };
   },
   async removePerson({ userId }) {
     await db.users.delete(userId);
@@ -97,6 +101,109 @@ app.use("/populace", populaceProvisioning({
 
 Everything else is the package: the HTTP contract, the constant-time secret check, the run tags,
 expiry and renewal, idempotent teardown, listing by tag, the dev-only guard, the error shapes.
+
+### Where those arguments come from
+
+Nothing in `createPerson`'s argument comes from your app. **populace invented the person** — before
+any of this, it wrote a roster of people with names and handles, and every field below is that
+person or the run they belong to.
+
+| field | what it is | example |
+| --- | --- | --- |
+| `handle` | the person's stable name for the whole run, minted once when their row was written and frozen | `marta-2` |
+| `displayName` | the person's actual name. This is what a screenshot of your product will show | `Marta Bergström` |
+| `email` | `handle` + the run id + the email domain set on the target | `marta-2+run_m8x_4k2p@populace.test` |
+| `tag` | the run itself | `populace:run_m8x_4k2p` |
+| `password` | derived from the run and the person, so the same person re-provisioned gets the same one | `Pw-1f3k9x-marta-2` |
+
+Two of those are worth a sentence more.
+
+**`tag` is the only way home.** A sweep whose local rows are gone finds this run's accounts by
+asking your endpoint for everything carrying that tag. Store it wherever you can — a column, a
+custom claim, a metadata field. If you have nowhere at all, it is in the email address too, which
+is why the address is shaped the way it is.
+
+**`password` is optional and may be meaningless to you.** Passwordless products are ordinary now;
+if yours has no passwords, ignore it.
+
+### What if my product needs fields populace does not send?
+
+Two answers, depending on whether the value differs between people.
+
+**The same for everybody: write it in your own function.** `createPerson` is your code, so an
+accepted-terms flag or a fixed locale is just something you pass to your own create call.
+
+**Different per person: that is what `attributes` is for.** populace sends a sixth field — flat
+key/values drawn from the persona this person was invented from, already merged with whatever the
+cohort set and whatever was set on the person by hand.
+
+```ts
+async createPerson({ email, displayName, attributes }) {
+  const user = await db.users.create({
+    email,
+    name: displayName,
+    plan: attributes.plan === "paid" ? "paid" : "free",
+    seats: typeof attributes.seats === "number" ? attributes.seats : 1,
+  });
+  return { userId: user.id, bearerToken: await sessionTokenFor(user.id) };
+}
+```
+
+Those keys come from the persona's traits, so *half of these people are on the paid plan* becomes a
+trait distribution you write once and populace samples per person — instead of a sentence in a
+prompt that your database never sees.
+
+Three rules:
+
+- **Read what you recognise and ignore the rest.** The bag is whatever a persona author typed. It
+  is not namespaced, and populace does not police it against your schema.
+- **It is always present**, defaulting to `{}`, so destructuring is safe. A value the kit cannot
+  use is dropped from the bag rather than failing the person.
+- **It is never an authorization input.** `attributes.admin` is a sentence somebody wrote about a
+  fictional user, not a claim anybody checked. Reading one into a role hands your test fixtures a
+  privilege escalation.
+
+Attributes need `@populace/tdk` **0.2.0 or later**. An older kit ignores them and every person
+arrives the same, which is the behaviour you had before.
+
+### How a person stays signed in
+
+The question the fifteen lines above leave open: a token with an hour on it, and a population that
+runs for days.
+
+`createPerson` returns four things, and only the first two are required:
+
+```ts
+return {
+  userId: user.id,                          // required — how populace names this person from now on
+  bearerToken: await sessionTokenFor(user.id), // required — what goes in Authorization: Bearer
+  expiresAt: session.expiresAt,             // when it dies. null means "it does not"
+  refreshToken: session.refreshToken,       // whatever YOU need to mint the next one. null if nothing
+};
+```
+
+`expiresAt` is what drives everything else. Before each visit, populace checks the bearer it holds:
+if it has expired, or expires within the next **ten minutes**, it calls `refreshPerson` *before*
+connecting — off the tool-dispatch path, so a renewal never appears in the person's transcript.
+
+```ts
+async refreshPerson({ userId, refreshToken }) {
+  return { bearerToken: await sessionTokenFor(userId), expiresAt: null, refreshToken };
+}
+```
+
+**Both arguments are sent every time, on purpose.** Some products can mint a fresh session from the
+user id alone — Firebase can, `createCustomToken` needs nothing from the old one — and others can
+only redeem a refresh token. Use whichever you have; ignore the other.
+
+**Leaving `refreshPerson` out is allowed and is sometimes right.** The handshake then reports
+`refresh: false`, populace knows not to try, and every person's session must outlive the whole run.
+That is fine for a product whose sessions last a month. It is not fine for anything issuing
+hour-long tokens: those people will be refused partway through, and their visits end as auth
+failures.
+
+**`expiresAt: null` means "never renew".** If your tokens do expire and you return `null`, nothing
+will call `refreshPerson` and the failure arrives mid-run looking like your product broke.
 
 ### Where it mounts
 
