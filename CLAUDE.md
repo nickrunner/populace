@@ -51,7 +51,8 @@ verification, clustering, digest and sweep are all exercised offline.
 ## Architecture
 
 Dependency direction is strictly downward: `cli -> reports/runner/adapters/store-sqlite -> core`.
-`mock-target` depends on nothing in the workspace.
+`mock-target` and `tdk` depend on nothing in the workspace — the first because it stands in for
+somebody else's product, the second because it installs into one.
 
 **The chain is project → simulation → population → cohort → person** (ADR-0029, ADR-0039). A
 *project* scopes authoring: targets, personas, cohorts, populations, simulations, settings and
@@ -99,6 +100,25 @@ execution of the simulation. `agents` is `PRIMARY KEY (run_id, id)`, `memories` 
 `(agent, memory, identity, target, config)` producing `(trace, memory', findings, cost, identity')`.
 No agent process lives between wakes; the local daemon and a future cloud job both just call it.
 Anything you add that needs to persist across a session belongs in memory, not in a variable.
+
+**Two credentials, and they must never be confused** (ADR-0036, ADR-0037). *Yours* is the OAuth
+sign-in to a gated address: discovery, dynamic registration and PKCE through the browser, kept in
+`sign_in_grants` keyed by `(project, url)` because signing in happens while connecting, before any
+target is saved. *Theirs* is one account per person, which is `identity` on the target. A sign-in
+is passed only by the things acting AS the user — `checkTarget` and the tool list behind it — and
+`runWake` passes an identity's bearer and nothing else; an explicit token wins over a provider
+inside `McpSession.connect`. A grant that reached a wake would send every person in wearing the
+owner's face. Pressing Check registers nothing with anybody: a provider reaches the check only for
+an address already signed in to.
+
+**`packages/tdk` is published to npm and is not an internal package.** It is the app-side half of
+`provision-url` — somebody mounts it in *their* server, so it depends on nothing in this workspace
+and carries its own inlined types. Changing it means a version bump and a release, and the wire it
+serves is versioned separately (`tdk: 1`) from the package. Its request schema is deliberately not
+`strict`, so a field added later is ignored by kits already installed rather than breaking them;
+that is what makes additions like `attributes` safe. There are five ways in now —
+`provision-url` (recommended), `none`, `self-signup`, `static`, `admin-mint` — and
+`docs/TARGET-SETUP.md` is the reader-facing account of choosing between them.
 
 **Two toolsets reach the model as one list.** The target's own MCP tools are passed through
 untouched, and the runner adds its own reporter toolset (`file_finding`, `give_up`, `remember`,

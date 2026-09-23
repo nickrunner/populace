@@ -21,6 +21,14 @@ Pointing populace at your own product for the first time is
 be, which to pick, the fifteen lines the recommended one asks for, and what to
 check when it does not answer.
 
+Two credentials are involved and they are not the same thing. **Yours**, to connect and look: an
+MCP server that answers `401` is signed in to with OAuth — discovery, dynamic registration and
+PKCE, in a browser, refreshed while it is held ([ADR-0036](docs/adr/0036-signing-in-to-a-target.md)).
+**Theirs**, one per person, to run: the people a simulation sends are strangers with accounts of
+their own, which is what `identity` on the target decides
+([ADR-0037](docs/adr/0037-the-app-makes-its-own-people.md)). A sign-in is never used to drive a
+population; that would send forty people in wearing the owner's face.
+
 ## Five-minute quickstart against the mock target
 
 Requirements: Node 22.13+, pnpm 10, an Anthropic API key.
@@ -75,23 +83,38 @@ on a specific run. The example config lives in
 
 ## Pointing it at your own app
 
-Edit `populace.yaml`:
+**Connecting is a browser flow.** Run `populace serve`, press *Connect a target*, and paste the
+address. If it answers `401`, populace signs you in to it; if it has no sign-up tool, the screen
+asks how the people should get accounts and hands you the code for the recommended answer. That
+path is written out in [docs/TARGET-SETUP.md](docs/TARGET-SETUP.md).
+
+Everything below is the same target described in `populace.yaml`, for a config-first setup:
 
 - `target.mcp[]`: one or more Streamable HTTP endpoints, with an optional static
   bearer token per endpoint and an optional `webBaseUrl` the agent may read pages from.
-- `identity`: `self-signup` (the agent signs up through your tools; name the
-  signup tool and where the token is in its result), `static` (a pool of accounts
-  that already exist, in a JSON file keyed by cohort — `{ "byCohort": { "<slug>": [
-  { "bearerToken": "..." } ] } }`, one entry per person, and a sweep leaves them
-  alone because populace did not create them), or `admin-mint` (Firebase Admin
-  custom tokens; install `firebase-admin`).
-- `cohorts[]`: "N people on one persona" — a slug, a `size`, and optional `seed`,
-  `cadence` and `maxWakes` overrides. **There is no scale factor: `size` is the only
-  number that decides how many people exist.** Two cohorts may share one persona, which
-  is how "twelve first-timers every ten minutes" and "eight first-timers on mobile
-  every four" become two different groups. A persona can be inline or
-  `persona: ./file.yaml`, and may set `model: { model, effort, maxTokens }` to override
-  the global `model` block, so one population can mix cheap and capable agents.
+- `identity`: **how the people get accounts**, which is a different credential from your own
+  sign-in above. Five ways, and the first is the one to reach for:
+  - `provision-url` — **recommended.** Your app answers on an address populace calls. Mount
+    [`@populace/tdk`](packages/tdk/README.md), write the one function that makes a user, and point
+    this at it. It is the only way that works when your accounts are not made through an MCP tool,
+    and the only one where populace holds no credential of your vendor's — just a secret you rotate
+    in one environment variable. Populace sends each person's traits as `attributes`, so "half of
+    these people are on the paid plan" reaches your database rather than staying in a prompt.
+  - `none` — the server has no users. Nobody is signed up and there is nothing to clean up.
+  - `self-signup` — the agent signs up through your own tools; name the signup tool and where the
+    token is in its result. populace holds no credential at all this way, which is its one real
+    advantage; it also puts account creation on a machine-facing surface, where your sign-up form's
+    defences are not.
+  - `static` — a pool of accounts that already exist, in a JSON file keyed by cohort —
+    `{ "byCohort": { "<slug>": [ { "bearerToken": "..." } ] } }`, one entry per person. A sweep
+    leaves them alone because populace did not create them, and **nothing renews them**, so a token
+    with an hour on it will be refused partway through a run.
+  - `admin-mint` — Firebase Admin custom tokens; install `firebase-admin`. populace then holds a
+    service account that can mint a token for any uid on the project, including an admin's.
+- `cohorts[]`: a shared condition and a mix of personas — a slug, a `context` sentence every
+  member carries, a `mix` of personas with weights, and optional `traits`, `seed`, `cadence` and
+  `maxWakes` overrides. The **population** says how many people there are and apportions them
+  across the cohorts' lanes.
 - `population`: composition and nothing else — a name and the cohorts in it.
 - `simulations[]`: a population against a target, in one of two modes.
   `visitsPerPerson: 4` is **ephemeral** — a clean slate every time it is run, bounded,
@@ -111,11 +134,15 @@ Then `populace validate` and `populace wake <persona>`.
 | Package | What |
 | --- | --- |
 | `packages/core` | Vocabulary types and zod schemas; Store, Scheduler, IdentityProvider interfaces; run ids and tags; population expansion; pricing |
-| `packages/runner` | The wake loop, MCP client with interception, reporter toolset, memory, guardrails, trace writer, Anthropic model provider, local daemon |
-| `packages/adapters` | Identity providers: `@populace/adapters/self-signup`, `/static`, `/firebase-admin` |
+| `packages/runner` | The wake loop, MCP client with interception and OAuth sign-in, reporter toolset, memory, guardrails, trace writer, Anthropic model provider, local daemon |
+| `packages/adapters` | Identity providers: `@populace/adapters/provision-url`, `/self-signup`, `/no-accounts`, `/static`, `/firebase-admin` |
 | `packages/store-sqlite` | Store on `node:sqlite` |
 | `packages/reports` | Verifier (replay + judge), clustering, Markdown digest, exporter plugin interface |
+| `packages/contract` | The wire: route table and zod schemas shared by the server and the browser, where the product's words are translated onto the code's rows (ADR-0032) |
+| `packages/server` | The HTTP API, the job queue, the run controller and the event log |
+| `packages/web` | The dashboard: connecting a target, composing a population, watching a run, reading a digest |
 | `packages/cli` | `populace init | validate | wake | run | scale | digest | sweep | kill | status | serve` |
+| `packages/tdk` | **Published as [`@populace/tdk`](packages/tdk/README.md).** The app-side half: mount it in your own product and a population can make accounts there. Depends on nothing else in this repository, because it installs into somebody else's server |
 | `packages/mock-target` | Tasklet, the reference app with an MCP server, self-signup and planted defects |
 | `examples/` | A three-cohort population for the mock target |
 
