@@ -168,7 +168,8 @@ Three rules:
   fictional user, not a claim anybody checked. Reading one into a role hands your test fixtures a
   privilege escalation.
 
-Attributes need `@populace/tdk` **0.2.0 or later**. An older kit ignores them and every person
+Attributes need `@populace/tdk` **0.2.0 or later**, and a CommonJS app needs **0.3.0 or later** —
+before that the package was ESM-only and `require` could not load it at all. An older kit ignores them and every person
 arrives the same, which is the behaviour you had before.
 
 ### How a person stays signed in

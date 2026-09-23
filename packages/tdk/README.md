@@ -51,6 +51,19 @@ secret and the population has accounts.
 Only `createPerson` is required. What the arguments mean, and what `attributes` carries, is under
 **The wire** below.
 
+## ESM or CommonJS
+
+Both. `import` and `require` each resolve to a build made for them, so the Express example above
+works whether your server is `import express from "express"` or `const express = require("express")`.
+
+```js
+const { populaceProvisioning } = require("@populace/tdk");   // CommonJS
+import { populaceProvisioning } from "@populace/tdk";        // ESM
+```
+
+Versions 0.1.0 and 0.2.0 were ESM-only and could not be `require`d at all — the failure was
+`ERR_PACKAGE_PATH_NOT_EXPORTED`, on every Node version. If you hit that, upgrade.
+
 ## The ladder
 
 Most people write less than that.

@@ -42,5 +42,7 @@ export default tseslint.config(
       "@typescript-eslint/no-unsafe-member-access": "off",
     },
   },
-  { files: ["eslint.config.js", "vitest.config.ts"], ...tseslint.configs.disableTypeChecked },
+  // Build scripts are not part of any tsconfig — they run `node`, not `tsc`, and putting them in
+  // one would compile them into somebody's package.
+  { files: ["eslint.config.js", "vitest.config.ts", "packages/*/scripts/*.mjs"], ...tseslint.configs.disableTypeChecked },
 );

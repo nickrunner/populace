@@ -1,0 +1,21 @@
+{
+  // The CommonJS half of the dual build. Most Express apps are still CJS, and an ESM-only package
+  // is unreachable from them — `require("@populace/tdk")` fails with ERR_PACKAGE_PATH_NOT_EXPORTED
+  // on every Node version, because the exports map offers no `require` condition to resolve.
+  //
+  // `verbatimModuleSyntax` is off here and only here: it forbids emitting CJS from ESM syntax,
+  // which is exactly what this build does. The ESM build keeps it, so the source stays honest.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist/cjs",
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "verbatimModuleSyntax": false,
+    "composite": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}
