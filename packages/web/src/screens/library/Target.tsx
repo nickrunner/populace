@@ -425,7 +425,17 @@ export function Target() {
             <Stack gap={8}>
               <Card>
                 <Stack gap={8}>
-                  <WaysIn draft={draft} onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))} />
+                  {/*
+                    The check orders the answers and says which of them this server cannot serve,
+                    and the target's id lets the TDK check use the stored secret this form has
+                    never been shown. Both are things this screen already holds.
+                  */}
+                  <WaysIn
+                    draft={draft}
+                    onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))}
+                    check={check}
+                    targetId={existing?.id ?? null}
+                  />
 
                   {attempted && missingWayIn !== null ? (
                     <Text size="read-sm" tone="critical" as="p">
@@ -456,6 +466,7 @@ export function Target() {
               <Card>
                 <FirstContactPanel
                   saved={existing !== undefined}
+                  makesAnAccount={draft.strategy !== "none"}
                   result={contact ?? existing?.firstContact ?? null}
                   running={firstContact.isPending}
                   error={firstContact.error}

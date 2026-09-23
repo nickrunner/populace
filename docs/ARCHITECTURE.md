@@ -19,7 +19,7 @@ the point of the split (ADR-0021 through ADR-0028).
 | Term | Meaning | Where it lives |
 | --- | --- | --- |
 | **Target** | The app under test: one or more MCP endpoints (Streamable HTTP, bearer auth), optional web base URL, optional product description. | `@populace/core` `TargetSchema` |
-| **IdentityProvider** | Adapter yielding credentials for a persona. Strategies: `self-signup`, `admin-mint`, `static`. All support `teardown` and `listByTag`. | interface in core, implementations in `@populace/adapters/*` |
+| **IdentityProvider** | Adapter yielding credentials for a persona. Strategies: `provision-url`, `self-signup`, `none`, `static`, `admin-mint`. All support `teardown` and `listByTag`. | interface in core, implementations in `@populace/adapters/*` |
 | **Project** | What scopes authoring: targets, personas, cohorts, populations, simulations, settings and triage belong to one and are never shared. | core `ProjectSchema` |
 | **Persona** | Static description: role, traits, goals, patience, budget, constraints, backstory. A template with no headcount. | core `PersonaSchema` |
 | **Cohort** | N people on one persona. Owns the headcount (`size`), the seed, and cadence / visit-cap overrides. There is no scale factor. | core `CohortSchema` |
@@ -42,7 +42,8 @@ packages/
                 interfaces, run ids and tagging, population expansion, pricing
   runner        wake loop, MCP client wrapper with interception, reporter
                 toolset, memory, guardrails, trace writer, model provider
-  adapters      identity providers: self-signup, static, firebase-admin
+  adapters      identity providers: provision-url, self-signup, no-accounts,
+                static, firebase-admin
                 (each on its own subpath so provider SDKs stay optional)
   store-sqlite  Store implementation on node:sqlite
   reports       verifier, dedup/clustering, digest renderer, exporters
@@ -185,6 +186,22 @@ page, because a sweep that stops at the first one reports success while leaving 
 run's accounts on somebody's product. Both halves are tested against each other rather than against
 a fixture apiece, which is what caught populace's long-standing habit of building an email address
 with a colon in the local part.
+
+`none` is the fifth, and it is the answer to "does this step apply to me at all" (ADR-0038). A
+documentation server, a search index, an internal read-only tool: the MCP surface is a library
+rather than an account, and every one of the other four demands a field the reader would have to
+invent. `provision()` returns `{ kind: "none" }`, which leaves `identity` null — the state `runWake`
+has always connected in, falling back to whatever the ADDRESS carries, and which no configuration
+could previously reach. No identity row is written, `ownsAccounts` is false, and a sweep therefore
+finds nothing and never counts a no-op as a removal. Where the address itself is gated, the token
+goes on the endpoint (`McpEndpoint.bearerToken`) and every person uses it, because it is the door
+that is closed and not the product.
+
+`describe()` is asked of a provider that has one before anything is torn down, in a sweep and in
+first contact's cleanup. `provision-url` learns from the kit's handshake whether the app can delete
+at all, and `cannotRemove` is `undefined` — "it can" — until it has asked: an app that soft-deletes
+would otherwise have every teardown attempted, refused, and reported as N failures rather than N
+accounts left behind.
 
 A credential is redeemable, not permanent. `Credential` carries `expiresAt` and a
 `redeemable` (a refresh token, a ticket, a password), and a wake whose bearer is

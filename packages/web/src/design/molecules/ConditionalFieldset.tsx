@@ -1,6 +1,7 @@
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { Measure, Radio, RadioGroup, Stack, Text } from "../atoms/index.js";
+import { Disclosure } from "./Disclosure.js";
 
 /**
  * ConditionalFieldset — one choice, and the fields that belong to whichever way was chosen.
@@ -36,6 +37,16 @@ export interface ConditionalBranch<T extends string> {
   note?: ReactNode;
   /** The fields that belong to this choice. Rendered only while it is chosen. */
   fields: ReactNode;
+  /**
+   * This branch cannot be chosen, and why — in the reader's words, as the radio's hint.
+   *
+   * DESIGN-SYSTEM §6: a control at a bound is inert, not gone. A branch the check has just told
+   * the reader is impossible ("nothing on this server looks like a sign-up") must still be
+   * visible with its reason attached, or the sentence and the missing option are two facts the
+   * reader has to join up themselves. The press is swallowed here rather than by the radio,
+   * because the value belongs to the group.
+   */
+  disabled?: { reason: string };
 }
 
 export interface ConditionalFieldsetProps<T extends string> {
@@ -46,6 +57,19 @@ export interface ConditionalFieldsetProps<T extends string> {
   value: T;
   onChange: (v: T) => void;
   branches: readonly ConditionalBranch<T>[];
+  /**
+   * The branches that are escape hatches rather than answers, behind a disclosure.
+   *
+   * Four options with four hints assert that these are four comparable choices a reader should
+   * weigh, and where they are not — where two of them exist for somebody who cannot change the
+   * app at all — that assertion is the thing that makes the question unanswerable. They are a
+   * second list and not a flag on the first because the fold is a piece of layout the group owns,
+   * and a caller reordering `branches` must not be able to interleave them.
+   *
+   * It opens by itself when the chosen value is one of them: a reader editing a target that
+   * already uses one must never have to go looking for the setting they are looking at.
+   */
+  folded?: { label: string; branches: readonly ConditionalBranch<T>[] };
 }
 
 export function ConditionalFieldset<T extends string>({
@@ -54,8 +78,29 @@ export function ConditionalFieldset<T extends string>({
   value,
   onChange,
   branches,
+  folded,
 }: ConditionalFieldsetProps<T>): ReactNode {
-  const chosen = branches.find((branch) => branch.value === value);
+  const all = [...branches, ...(folded?.branches ?? [])];
+  const chosen = all.find((branch) => branch.value === value);
+  /*
+   * Open when the chosen value is folded away: a reader editing a target that already uses one of
+   * these must never go looking for the setting they are looking at. Held here rather than left to
+   * the disclosure because what is INSIDE the fold depends on it — see the note below.
+   */
+  const [open, setOpen] = useState(folded?.branches.some((branch) => branch.value === value) ?? false);
+
+  const option = (branch: ConditionalBranch<T>): ReactNode => (
+    <Radio
+      key={branch.value}
+      value={branch.value}
+      label={branch.label}
+      // The reason replaces the hint rather than joining it: a branch that cannot be chosen has
+      // one thing to say about itself, and the hint describing what choosing it would mean is
+      // exactly the sentence that would contradict it.
+      hint={branch.disabled === undefined ? branch.hint : branch.disabled.reason}
+      atBound={branch.disabled !== undefined}
+    />
+  );
 
   return (
     <Stack gap={6}>
@@ -69,13 +114,26 @@ export function ConditionalFieldset<T extends string>({
         name={name}
         value={value}
         onChange={(next) => {
-          const picked = branches.find((branch) => branch.value === next);
-          if (picked !== undefined) onChange(picked.value);
+          const picked = all.find((branch) => branch.value === next);
+          // A branch at a bound swallows the press here, where the value lives, rather than being
+          // natively disabled — which would take it and its reason out of the tab order entirely.
+          if (picked !== undefined && picked.disabled === undefined) onChange(picked.value);
         }}
       >
-        {branches.map((branch) => (
-          <Radio key={branch.value} value={branch.value} label={branch.label} hint={branch.hint} />
-        ))}
+        {branches.map(option)}
+        {folded === undefined ? null : (
+          /*
+           * The folded radios are rendered ONLY while the fold is open, and that is not a
+           * nicety. `Disclosure` force-mounts its content so the close can animate, leaving it
+           * `visibility: hidden` — which takes an element out of the accessibility tree while the
+           * roving-focus group around it still counts the item, so an arrow key lands on
+           * something that cannot take focus and nothing happens. Rendering them late is what
+           * keeps the group's items and its focusable items the same set.
+           */
+          <Disclosure label={folded.label} open={open} onOpenChange={setOpen}>
+            <Stack gap={2}>{open ? folded.branches.map(option) : null}</Stack>
+          </Disclosure>
+        )}
       </RadioGroup>
 
       {chosen === undefined ? null : (

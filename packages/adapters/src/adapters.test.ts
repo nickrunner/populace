@@ -267,6 +267,39 @@ describe("StaticIdentityProvider", () => {
     expect(problems[0]).not.toContain("rotated-key");
   });
 
+  /**
+   * The limitation of this way in that is otherwise invisible (ADR-0038).
+   *
+   * There is no `refresh` on this provider and nothing to redeem, so `wake.ts` skips renewal
+   * entirely: the visit connects with a dead bearer and ends `auth-failed`, for every person, with
+   * nothing anywhere having said a word. Every `expiresAt` is in hand at run start, and this is the
+   * one moment before any money is spent.
+   */
+  it("refuses to start on a pool whose tokens are already dead, naming the entries rather than the tokens", () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const file = poolFile({ byCohort: { casual: [{ bearerToken: "stale-token", expiresAt: past }, { bearerToken: "b" }] } });
+    const problems = new StaticIdentityProvider({ strategy: "static", file }).checkPopulation([person("casual", 0), person("casual", 1)]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('"casual" entry 1');
+    expect(problems[0]).toContain("cannot renew");
+    // Never the token itself: these messages are printed and logged.
+    expect(problems[0]).not.toContain("stale-token");
+  });
+
+  /**
+   * Within the margin a visit is given, not merely past. A bearer with three minutes on it is
+   * judged fresh by anything looking at the clock, connects, and dies halfway through a session of
+   * up to `maxTurns` model calls — the whole reason `REDEEM_SKEW_MS` exists.
+   */
+  it("counts a token that dies during the visit, and leaves one with real time on it alone", () => {
+    const soon = new Date(Date.now() + 3 * 60_000).toISOString();
+    const later = new Date(Date.now() + 48 * 60 * 60_000).toISOString();
+    const dying = poolFile({ byCohort: { casual: [{ bearerToken: "a", expiresAt: soon }] } });
+    expect(new StaticIdentityProvider({ strategy: "static", file: dying }).checkPopulation([person("casual", 0)])).toHaveLength(1);
+    const fine = poolFile({ byCohort: { casual: [{ bearerToken: "a", expiresAt: later }] } });
+    expect(new StaticIdentityProvider({ strategy: "static", file: fine }).checkPopulation([person("casual", 0)])).toEqual([]);
+  });
+
   /** Static logins existed before populace and belong to whoever pasted them in; a sweep must not claim it removed them. */
   it("declares that it does not own the accounts it hands out", () => {
     const file = poolFile({ byCohort: { casual: [{ bearerToken: "a" }] } });

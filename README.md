@@ -16,6 +16,11 @@ development and CI.
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the map and
 [docs/adr/](docs/adr/README.md) for every design decision.
 
+Pointing populace at your own product for the first time is
+[docs/TARGET-SETUP.md](docs/TARGET-SETUP.md): the three ways your MCP server can
+be, which to pick, the fifteen lines the recommended one asks for, and what to
+check when it does not answer.
+
 ## Five-minute quickstart against the mock target
 
 Requirements: Node 22.13+, pnpm 10, an Anthropic API key.

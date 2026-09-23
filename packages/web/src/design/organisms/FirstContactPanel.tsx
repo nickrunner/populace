@@ -43,7 +43,11 @@ export const OUTCOME_WORDS: Record<FirstContact["outcome"], string> = {
   accepted: "they can get in",
   "connected-only": "connected, nothing called",
   "tool-failed": "got in; the tool failed",
-  rejected: "the target refused the account",
+  // "the credential" and not "the account": on a target with no accounts (ADR-0038) nobody was
+  // made, and what was refused is whatever the ADDRESS carries. The word has to be true of all
+  // five ways in, because this table is one table and the summary beneath names the account
+  // whenever there is one.
+  rejected: "the target refused the credential",
   "provision-failed": "no account could be made",
   unreachable: "could not reach it",
 };
@@ -67,10 +71,20 @@ export interface FirstContactPanelProps {
   /** Our own request failing, as opposed to the check reporting a failure. */
   error: Error | null;
   onRun: () => void;
+  /**
+   * False when this target makes nobody — the way in is "they don't need one" (ADR-0038).
+   *
+   * The resting copy promises an account: *"Makes one account the way you have set it up… and
+   * removes the account again."* On a target with no accounts that is a promise the check will
+   * not keep, and the sentence a reader has just read on the form said the opposite. What the
+   * check does there is still worth a button, and it is a smaller thing: one call, with whatever
+   * the address itself carries.
+   */
+  makesAnAccount?: boolean;
 }
 
 export const FirstContactPanel = forwardRef<HTMLElement, FirstContactPanelProps>(
-  function FirstContactPanel({ saved, result, running, error, onRun }, ref) {
+  function FirstContactPanel({ saved, result, running, error, onRun, makesAnAccount = true }, ref) {
     const facts: MetaFact[] = [];
     if (result !== null) {
       if (result.handle !== null) facts.push({ key: "account", node: `account ${result.handle}` });
@@ -121,8 +135,10 @@ export const FirstContactPanel = forwardRef<HTMLElement, FirstContactPanelProps>
 
         <Measure width="read">
           <Text as="p" size="read-sm" tone="soft">
-            Makes one account the way you have set it up, calls one read-only tool with it, and
-            removes the account again. It calls no model, so it costs nothing —
+            {makesAnAccount
+              ? "Makes one account the way you have set it up, calls one read-only tool with it, and removes the account again."
+              : "Nobody needs an account here, so nobody is made: it connects with whatever the address itself carries and calls one read-only tool."}
+            {" It calls no model, so it costs nothing —"}
             {saved
               ? " and it is the only way to find out before an execution does."
               : " save the target first."}

@@ -44,13 +44,13 @@ describe("what the tool list suggests", () => {
     // does not exist.
     expect(draft.strategy).toBe("undecided");
     expect(identityFrom(draft)).toBeNull();
-    expect(whatIdentityNeeds(draft)).toBe("a way in");
+    expect(whatIdentityNeeds(draft)).toBe("an answer to how people get accounts");
   });
 });
 
 describe("what a draft still needs", () => {
   it("refuses a way in nobody has chosen, and says so before anything is sent", () => {
-    expect(whatIdentityNeeds(EMPTY_IDENTITY)).toBe("a way in");
+    expect(whatIdentityNeeds(EMPTY_IDENTITY)).toBe("an answer to how people get accounts");
     expect(identityFrom(EMPTY_IDENTITY)).toBeNull();
   });
 
@@ -65,6 +65,21 @@ describe("what a draft still needs", () => {
     expect(whatIdentityNeeds({ ...EMPTY_IDENTITY, strategy: "static" })).toBe("a file of accounts to hand out");
   });
 
+  /**
+   * The fifth way in (ADR-0038): a target with no accounts. It carries no fields, so it needs
+   * nothing and asks for nothing — and it is an ANSWER, not the absence of one, which is the
+   * whole difference between it and `undecided`.
+   */
+  it("takes a target with no accounts with nothing else at all", () => {
+    const draft: IdentityDraft = { ...EMPTY_IDENTITY, strategy: "none" };
+    expect(whatIdentityNeeds(draft)).toBeNull();
+    expect(identityFrom(draft)).toEqual({ strategy: "none" });
+    expect(accepts(identityFrom(draft))).toBe(true);
+    // No field invented on the way out: not an email domain, not a sign-up tool, nothing.
+    expect(Object.keys(identityFrom(draft) ?? {})).toEqual(["strategy"]);
+    expect(whatIdentityWillNotDo(draft)).toBeNull();
+  });
+
   it("takes admin-mint with nothing but the strategy, because Firebase needs nothing else to save", () => {
     const draft: IdentityDraft = { ...EMPTY_IDENTITY, strategy: "admin-mint" };
     expect(whatIdentityNeeds(draft)).toBeNull();
@@ -72,6 +87,19 @@ describe("what a draft still needs", () => {
     // It will still not be able to sign anybody in, and that is a warning rather than a blocker:
     // a custom token is not an ID token, and the mint refuses without something to exchange with.
     expect(whatIdentityWillNotDo(draft)).toContain("custom token is not an ID token");
+  });
+
+  /**
+   * The one limitation of the static pool that is otherwise invisible: nothing renews it. A pool
+   * of Firebase ID tokens is dead in an hour and the product used to say nothing until every
+   * visit failed. It warns rather than blocks, because an expiry a day out is perfectly valid
+   * today — the run itself refuses the ones that are already near (`checkPopulation`).
+   */
+  it("warns that a pool of logins cannot be renewed, without blocking the save", () => {
+    const draft: IdentityDraft = { ...EMPTY_IDENTITY, strategy: "static", staticFile: "accounts.json" };
+    expect(whatIdentityWillNotDo(draft)).toContain("cannot renew");
+    expect(whatIdentityNeeds(draft)).toBeNull();
+    expect(accepts(identityFrom(draft))).toBe(true);
   });
 
   it("stops warning once there is something to exchange with", () => {

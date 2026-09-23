@@ -60,6 +60,22 @@ export async function sweepRun(store: Store, config: PopulaceConfig, runId: stri
 
   const lines: string[] = [];
   const tag = tagForRun(runId);
+
+  // Asked BEFORE anything is torn down, because `cannotRemove` on a provider that learns its
+  // answer from the target is `undefined` until it has asked — and `undefined` reads as "it can
+  // remove them". Nothing outside the tests called this, so a sweep against an app that
+  // soft-deletes attempted every teardown, got `unsupported` back from each one and reported N
+  // FAILURES: the wrong word for N accounts left behind, and the opposite of what ADR-0037
+  // promised in writing. A failure to ask is reported and then ignored — the endpoint being down
+  // is the teardown loop's news to break, in its own words, one account at a time.
+  if (identityProvider.describe) {
+    try {
+      await identityProvider.describe();
+    } catch (err) {
+      lines.push(`  could not ask the target what it can do: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   const found: Identity[] = await identityProvider.listByTag(tag, deps);
   lines.push(`run ${runId}: ${found.length} identit${found.length === 1 ? "y" : "ies"} tagged ${tag}`);
 

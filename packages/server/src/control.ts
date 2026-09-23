@@ -11,6 +11,7 @@ import {
   PopulationInputSchema,
   ProjectInputSchema,
   SettingsInputSchema,
+  ProvisioningCheckBodySchema,
   SignInQuerySchema,
   SignInStartBodySchema,
   SimulationInputSchema,
@@ -97,6 +98,7 @@ import { STARTER_PERSONAS, starterBySlug } from "./starters.js";
 import { checkPromises, checkTarget, type CheckCredentials } from "./target-check.js";
 import { callbackPage, callbackUri, examine, isAddress, pendingFor, providerFor, signInStatus, statusOf } from "./sign-in.js";
 import { firstContact } from "./first-contact.js";
+import { checkProvisioning } from "./provisioning-check.js";
 import { resetTarget } from "./target-reset.js";
 import { targetView as liveTargetView } from "./target.js";
 import type { ControlDeps } from "./deps.js";
@@ -493,6 +495,31 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!target) return fail(c, "not_found", "no such target");
     const check = await checkTarget(target.mcp, target.identity, await asTheUser(c, s.project.id));
     return c.json(await checkPromises(target.webBaseUrl ?? null, check.tools));
+  });
+
+  /**
+   * Does the app's provisioning endpoint answer, and what can it do (ADR-0038)?
+   *
+   * Off the PROJECT rather than off a target, because the two fields it checks are typed before
+   * a target exists and finding out afterwards is finding out too late. A POST because the body
+   * carries a secret — the same reason first contact is one — and not because it writes: the
+   * handshake is a `GET` at somebody else's mount point that creates nobody and registers
+   * nothing, which is what makes it safe to offer before Save (ADR-0036).
+   *
+   * An absent secret is read off the named target, so the saved-target editor — which has never
+   * been shown the secret it is editing — can ask the same question as the connect screen.
+   */
+  app.post(routes.provisioningCheck(":p"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const body = await parseBody(c, ProvisioningCheckBodySchema);
+    if (!body.ok) return body.response;
+    let secret = body.value.secret;
+    if ((secret === undefined || secret === "") && body.value.target !== undefined) {
+      const target = owned(await deps.store.getTarget(body.value.target), s.project.id);
+      if (target?.identity.strategy === "provision-url") secret = target.identity.secret;
+    }
+    return c.json(await checkProvisioning(body.value.url, secret));
   });
 
   // ---- signing in to an address (ADR-0036) ---------------------------------

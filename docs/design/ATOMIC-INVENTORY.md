@@ -431,6 +431,7 @@ Two or three atoms with one job. Still product-agnostic except where a name is a
 | 33 | `Disclosure` | `Disclosure.tsx` | `Collapsible` | 2 bare toggles with no aria | 5 |
 | 34 | `Pagination` | `Pagination.tsx` | — | — (new; Visits, Executions) | 3 |
 | 35 | `FactList` / `Fact` | `FactList.tsx` | — | **ADDED (port review, S5.37):** the hand-written `grid-cols-[minmax(0,6.5rem)_minmax(0,1fr)]` on `Person` | 1 |
+| 36 | `ConditionalFieldset` | `ConditionalFieldset.tsx` | `RadioGroup` | the nested ternary returning three JSX trees for the identity strategy | 2 |
 
 ### Signatures
 
@@ -581,6 +582,35 @@ export interface StateBlockProps {
 // 33/34
 export interface DisclosureProps { label: string; count?: number; defaultOpen?: boolean; children: React.ReactNode }
 export interface PaginationProps { page: number; pages: number; onChange: (p: number) => void; label: string }
+
+// 36 — ConditionalFieldset. One choice, and the fields of whichever way was chosen.
+export interface ConditionalBranch<T extends string> {
+  value: T; label: string; hint?: React.ReactNode; note?: React.ReactNode; fields: React.ReactNode;
+  /** This branch cannot be chosen, and why. See below. */
+  disabled?: { reason: string };
+}
+export interface ConditionalFieldsetProps<T extends string> {
+  legend: string; name: string; value: T; onChange: (v: T) => void;
+  branches: readonly ConditionalBranch<T>[];
+  /** Escape hatches, inside the same radio group, behind a `Disclosure`. */
+  folded?: { label: string; branches: readonly ConditionalBranch<T>[] };
+}
+// AMENDED (ADR-0038). Two additions, and both are §6 rules applied to a radio for the first time.
+//
+// `disabled` is "a control at a bound is inert, not gone" where the control is an OPTION. The way
+// in a check has just said is impossible — "nothing on this server looks like a sign-up" — must
+// stay visible with its reason attached, or the sentence and the missing option are two facts the
+// reader has to join up. The radio keeps its stop, its name and its hint (`Radio` grows `atBound`,
+// which sets `aria-disabled` without leaving the tab order); the GROUP swallows the press, because
+// the value is the group's. A natively `disabled` radio takes the reason out of the accessibility
+// tree along with the option.
+//
+// `folded` is the other half of the same problem. N options with N hints assert that these are N
+// comparable choices a reader should weigh, and where two of them exist only for somebody who
+// cannot change the app at all, that assertion is what makes the question unanswerable. They live
+// in the same `RadioGroup` — one tab stop, arrow keys, one value — inside a `Disclosure` that
+// opens by itself when the chosen value is one of them, so a reader editing such a target never
+// has to go looking for the setting they are already looking at.
 
 // 35 — FactList / Fact. ADDED by the port review (S5.37).
 export interface FactListProps { children: React.ReactNode }   // Fact elements

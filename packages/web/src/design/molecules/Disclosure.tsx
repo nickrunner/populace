@@ -63,15 +63,31 @@ export interface DisclosureProps {
   /** How many records are folded away. Tabular by construction (§4.4). */
   count?: number;
   defaultOpen?: boolean;
+  /**
+   * Controlled, for the caller that has to know whether the fold is open to decide what to put
+   * inside it. The content here is `forceMount`ed (see the note above), so a caller whose children
+   * carry FOCUSABLE things cannot leave them mounted while closed — `visibility: hidden` takes an
+   * element out of the accessibility tree but a roving-focus group above it still counts the item,
+   * and arrow-key navigation then lands on something that cannot take focus.
+   *
+   * Passing both is what lets such a caller render nothing until it is open, while the animation
+   * this component exists to get right still works for everybody else.
+   */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }
 
 export const Disclosure = forwardRef<HTMLDivElement, DisclosureProps>(function Disclosure(
-  { label, count, defaultOpen = false, children },
+  { label, count, defaultOpen = false, open, onOpenChange, children },
   ref,
 ) {
   return (
-    <CollapsiblePrimitive.Root ref={ref} defaultOpen={defaultOpen}>
+    <CollapsiblePrimitive.Root
+      ref={ref}
+      {...(open === undefined ? { defaultOpen } : { open })}
+      {...(onOpenChange === undefined ? {} : { onOpenChange })}
+    >
       <CollapsiblePrimitive.Trigger asChild>
         {/*
          * `-mx-2` against the button's own `px-2`: the label sits flush with the content beneath

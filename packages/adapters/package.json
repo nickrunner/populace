@@ -23,6 +23,10 @@
     "./provision-url": {
       "types": "./dist/provision-url/index.d.ts",
       "import": "./dist/provision-url/index.js"
+    },
+    "./no-accounts": {
+      "types": "./dist/no-accounts/index.d.ts",
+      "import": "./dist/no-accounts/index.js"
     }
   },
   "files": [

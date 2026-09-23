@@ -260,7 +260,7 @@ export async function firstContact(target: StoredTarget, options: FirstContactOp
     });
   }
   const ready: IdentityProvider = provider;
-  let credential: Credential;
+  let credential: Credential | null;
   try {
     credential = await provisionOne(ready, probeAgent(at), anonymous, anonymousTools, policy, secrets);
   } catch (err) {
@@ -283,6 +283,79 @@ export async function firstContact(target: StoredTarget, options: FirstContactOp
       leftBehind: created === null ? null : { handle: created, why: "the sign-up tool made it before this failed, and no credential came back to authenticate a deletion with, so populace could not remove it — delete it by hand" },
     });
   }
+
+  // ---- 2a. nobody needs an account here ------------------------------------
+  // The provider said there is no account and there will not be one (ADR-0038), so the session
+  // already open IS the session a person would have: whatever the address itself carries. Every
+  // sentence below about a handle, a teardown and what was left behind has nothing to answer, and
+  // "an account was made" would be a lie. What is left is the same vocabulary minus
+  // `provision-failed`, which cannot happen when nothing is provisioned.
+  if (credential === null) {
+    const candidate = readOnlyCandidate(anonymousTools, policy);
+    if (candidate.tool === null) {
+      await anonymous.close();
+      return report({
+        outcome: "connected-only",
+        checkedAt,
+        strategy,
+        summary: `Nobody needs an account here, and ${endpoint.url} answered — but ${candidate.why}. The connection is verified; a call is not.`,
+        detail: null,
+        handle: null,
+        tool: null,
+        latencyMs: reachLatency,
+        tornDown: false,
+        leftBehind: null,
+      });
+    }
+    const anonymousCall = await anonymous.call(candidate.tool.name, {});
+    await anonymous.close();
+    const tried = candidate.tool.name;
+    if (!anonymousCall.result.isError) {
+      return report({
+        outcome: "accepted",
+        checkedAt,
+        strategy,
+        summary: `Nobody needs an account here, and \`${tried}\` answered. Everyone a simulation sends will visit exactly as this did.`,
+        detail: null,
+        handle: null,
+        tool: tried,
+        latencyMs: anonymousCall.latencyMs,
+        tornDown: false,
+        leftBehind: null,
+      });
+    }
+    // The failure this branch exists to name, which has two causes and says both. Either the
+    // ADDRESS is gated and the token on the endpoint is missing or wrong — the gateway case — or
+    // this product does have users and "they don't need one" is the wrong answer. Nobody's
+    // account was refused either way, because nobody has one.
+    if (looksLikeAuthRejection(anonymousCall.result.text)) {
+      return report({
+        outcome: "rejected",
+        checkedAt,
+        strategy,
+        summary: `Nobody needs an account here, but \`${tried}\` was refused anyway. Either this address wants a credential of its own — which goes on the endpoint, where every person will use it — or this product does have users after all, and one of the other ways in is the answer.`,
+        detail: anonymousCall.result.text,
+        handle: null,
+        tool: tried,
+        latencyMs: anonymousCall.latencyMs,
+        tornDown: false,
+        leftBehind: null,
+      });
+    }
+    return report({
+      outcome: "tool-failed",
+      checkedAt,
+      strategy,
+      summary: `Nobody needs an account here and the target ran the call — but \`${tried}\` answered with an error. Getting in is fine; that tool is not.`,
+      detail: anonymousCall.result.text,
+      handle: null,
+      tool: tried,
+      latencyMs: anonymousCall.latencyMs,
+      tornDown: false,
+      leftBehind: null,
+    });
+  }
+
   await anonymous.close();
 
   secrets.add(credential.bearerToken, credential.redeemable?.secret);
@@ -431,6 +504,11 @@ function provisionFailureSummary(strategy: FirstContact["strategy"], created: st
       // The endpoint is the app's own, so the sentence points at the app rather than at populace:
       // whatever `createPerson` did or refused to do is what a reader has to go and look at.
       return "The target's provisioning endpoint answered, but no account came back out of it. Whether anything was left behind is the endpoint's to say — check what `createPerson` did before it failed.";
+    case "none":
+      // Reachable only if building the provider itself failed, which for a strategy with no
+      // fields and no dependencies it cannot. Written out rather than defaulted, because the
+      // `switch` being exhaustive is what names every site the next strategy has to visit.
+      return "Nobody needs an account here, so nothing was provisioned and nothing was left behind.";
   }
 }
 
@@ -471,9 +549,13 @@ async function provisionOne(
   tools: readonly TargetTool[],
   policy: EffectiveToolPolicy,
   secrets: Secrets,
-): Promise<Credential> {
+): Promise<Credential | null> {
   const provisioned = await provider.provision({ agent, runId: FIRST_CONTACT_TAG, tag: FIRST_CONTACT_TAG });
   if (provisioned.kind === "credential") return provisioned.credential;
+  // No account, and there will not be one (ADR-0038). Null rather than a credential with nothing
+  // in it: a credential with no bearer means "an account was made and came back unusable", which
+  // is a failure, and this is the opposite — nothing was asked of anybody.
+  if (provisioned.kind === "none") return null;
 
   const { signupTool, suggested } = provisioned;
   if (!tools.some((tool) => tool.name === signupTool)) {
@@ -528,6 +610,18 @@ async function tearDown(
 ): Promise<Pick<FirstContact, "tornDown" | "leftBehind">> {
   if (provider.ownsAccounts === false) {
     return { tornDown: false, leftBehind: { handle, why: "this account existed before populace — it came from the accounts file — so it was used and left exactly as it was" } };
+  }
+  // Asked before `cannotRemove` is read, for the same reason a sweep asks: a provider that learns
+  // what the target can do from the target's own handshake reports `undefined` — "it can remove
+  // them" — until it has asked. An app that soft-deletes would otherwise have the removal
+  // attempted, refused, and reported as a failure of populace's rather than as an account left
+  // on the product with its reason named.
+  if (provider.describe) {
+    try {
+      await provider.describe();
+    } catch {
+      /* the endpoint could not be asked; the teardown below tries anyway and reports its own failure */
+    }
   }
   const cannotRemove = provider.cannotRemove;
   if (cannotRemove !== undefined) return { tornDown: false, leftBehind: { handle, why: cannotRemove } };

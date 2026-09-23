@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { CredentialSchema, type Agent, type Identity, type IdentityProvider, type ProvisionContext, type ProvisionResult, type StaticIdentityConfig, type TeardownDeps } from "@populace/core";
+import { CredentialSchema, REDEEM_SKEW_MS, type Agent, type Identity, type IdentityProvider, type ProvisionContext, type ProvisionResult, type StaticIdentityConfig, type TeardownDeps } from "@populace/core";
 import { z } from "zod";
 
 /**
@@ -152,9 +152,24 @@ export class StaticIdentityProvider implements IdentityProvider {
    * visible from one agent: too few entries, one legacy pool serving more than one cohort (both
    * number their people from 1, so both would take the same entries), and the same bearer pasted
    * into the file twice.
+   *
+   * And a fourth thing, which is not about distinctness at all: **a dead token**. This provider
+   * implements no `refresh` and there is nothing for it to redeem — a human pasted these in — so
+   * `wake.ts` skips redemption entirely, the visit connects with an expired bearer and ends
+   * `auth-failed`. Every `expiresAt` in the file is in hand right here, at the one moment before
+   * any money is spent, and saying nothing about it is the one limitation of this way in that is
+   * otherwise invisible until every person has failed.
    */
   checkPopulation(agents: readonly Agent[]): string[] {
     const problems: string[] = [];
+    const dead = this.expired(new Date());
+    if (dead.length > 0) {
+      problems.push(
+        `${dead.length} ${plural(dead.length, "entry in", "entries in")} ${this.config.file} ${plural(dead.length, "has", "have")} already expired or will within the ${Math.round(REDEEM_SKEW_MS / 60_000)} minutes a visit is given (${dead.join(", ")}): ` +
+          `populace cannot renew a pasted-in login, so those people would connect with a dead token and every visit would end at the front door. ` +
+          `Replace them, or drop \`expiresAt\` if the token in fact does not expire`,
+      );
+    }
     const byKey = new Map<string, Agent[]>();
     for (const agent of agents) {
       const { key } = this.assign(agent);
@@ -196,6 +211,26 @@ export class StaticIdentityProvider implements IdentityProvider {
       }
     }
     return problems;
+  }
+
+  /**
+   * The entries whose token is dead, or dead before a visit could finish with it, named the way a
+   * reader could find them in their own file: the pool key and the position in it, never a bearer.
+   *
+   * `credentialNeedsRedeem` is deliberately not reused. It answers "should this be renewed", and
+   * the whole point here is that nothing will be — an entry with no `expiresAt` is taken at its
+   * word exactly as a wake takes it, and only a stated expiry can be a problem.
+   */
+  private expired(now: Date): string[] {
+    const named: string[] = [];
+    for (const key of [...this.pool.keys()].sort()) {
+      (this.pool.get(key) ?? []).forEach((entry, index) => {
+        if (entry.expiresAt === null) return;
+        if (Date.parse(entry.expiresAt) - REDEEM_SKEW_MS > now.getTime()) return;
+        named.push(`"${key}" entry ${index + 1}, which expires ${entry.expiresAt}`);
+      });
+    }
+    return named;
   }
 
   /**

@@ -7,6 +7,7 @@ import {
   GuardrailsSchema,
   JobSchema,
   ModelConfigSchema,
+  NoAccountsConfigSchema,
   PauseReasonSchema,
   PersonaSpecSchema,
   ProvisionUrlConfigSchema,
@@ -58,6 +59,9 @@ export const IdentityConfigViewSchema = z.discriminatedUnion("strategy", [
   // The provisioning secret obeys the same rule as every other credential: it goes up and never
   // comes back down. `secretSet` is how the form knows one is stored without being shown it.
   ProvisionUrlConfigSchema.omit({ secret: true }).extend({ secretSet: z.boolean() }),
+  // Nobody needs an account here (ADR-0038). It carries no fields, so there is nothing to hide
+  // on the way down and nothing to keep on the way up: it is the core schema, both directions.
+  NoAccountsConfigSchema,
 ]);
 export type IdentityConfigView = z.infer<typeof IdentityConfigViewSchema>;
 
@@ -71,6 +75,7 @@ export const IdentityConfigInputSchema = z.discriminatedUnion("strategy", [
   StaticIdentityConfigSchema,
   FirebaseAdminConfigSchema.extend({ apiKey: z.string().optional() }),
   ProvisionUrlConfigSchema.extend({ secret: z.string().optional() }),
+  NoAccountsConfigSchema,
 ]);
 export type IdentityConfigInput = z.infer<typeof IdentityConfigInputSchema>;
 
@@ -220,6 +225,45 @@ export type TargetCheck = z.infer<typeof TargetCheckSchema>;
  */
 export { FirstContactSchema };
 export type { FirstContact } from "@populace/core/isomorphic";
+
+/**
+ * The TDK handshake as this screen asks it (ADR-0038): does the address answer, is the secret the
+ * one it expects, and what has the app actually implemented behind it.
+ *
+ * `secret` is optional for the same reason it is optional everywhere else — a form editing a
+ * saved target has never been shown the secret it is editing — and `target` is how the server
+ * finds the stored one. A body with neither is checked with no secret at all, which the kit
+ * answers `unauthorized` to, and that is the honest result rather than a guess.
+ */
+export const ProvisioningCheckBodySchema = z.object({
+  url: z.url(),
+  /** Absent means "use whatever `target` has stored". Present is used as typed. */
+  secret: z.string().optional(),
+  /** A saved target to read the stored secret from, when the form has not been shown one. */
+  target: z.string().optional(),
+});
+export type ProvisioningCheckBody = z.infer<typeof ProvisioningCheckBodySchema>;
+
+/**
+ * What the handshake found, in the register first contact uses: one sentence a human can act on,
+ * and the machine's own words underneath when there are any.
+ *
+ * Four outcomes and not six, because four is all that can happen to a `GET` that creates nobody:
+ * it answered, nothing was there, it refused, or something answered that is not the kit.
+ */
+export const ProvisioningCheckSchema = z.object({
+  outcome: z.enum(["answered", "unreachable", "refused", "not-a-kit"]),
+  summary: z.string(),
+  /** The kit's own words, or the transport's. Null when there was nothing to quote. */
+  detail: z.string().nullable(),
+  /** The contract version the kit implements. Null unless it answered. */
+  tdk: z.number().int().nullable(),
+  /** `development`, `production`, or whatever the app called it. Null when it did not say. */
+  environment: z.string().nullable(),
+  /** What the app implemented, as the kit reports it. Null unless it answered. */
+  capabilities: z.object({ refresh: z.boolean(), teardown: z.boolean(), listByTag: z.boolean() }).nullable(),
+});
+export type ProvisioningCheck = z.infer<typeof ProvisioningCheckSchema>;
 
 /**
  * The website's copy against the tool list: a promise with no tool behind it is a coverage gap

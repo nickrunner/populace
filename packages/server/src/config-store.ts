@@ -123,7 +123,10 @@ export async function ensureSettings(store: Store, projectId = DEFAULT_PROJECT_I
   if (existing) return existing;
   const base = PopulaceConfigSchema.parse({
     target: { name: "unset", mcp: [{ url: "http://127.0.0.1:1/" }] },
-    identity: { strategy: "self-signup", signupTool: "unset" },
+    // `none` and not a self-signup naming a tool called "unset": these are the SCHEMA DEFAULTS a
+    // fresh project starts from, a target overrides every one of them, and a placeholder that
+    // names a tool no target has is the sort of thing that surfaces in an error message one day.
+    identity: { strategy: "none" },
     population: { id: "unset", members: [{ persona: { id: "unset", name: "unset", role: "unset", backstory: "unset", goals: ["unset"] } }] },
   });
   const settings: StoredSettings = {

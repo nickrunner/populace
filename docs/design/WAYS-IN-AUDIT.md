@@ -1,8 +1,14 @@
 # The ways in: an audit and a recommendation
 
-**Status:** a proposal. Nothing here is built. It asks for one new way in, three demotions, one
-reshaped screen and about four days of work, and it argues that ADR-0037 got the recommendation
-right and the screen got it wrong.
+**Status:** accepted and built. Items 1 through 7 of §5 shipped; the decision, what was built and
+what was knowingly left open are recorded in
+[ADR-0038](../adr/0038-a-way-in-for-a-target-with-no-accounts.md). The §5 "later, and separable"
+list and the §4 per-user-surface heuristic are not built.
+
+This document is kept as the reasoning, unedited: it is where the five ways in are weighed against
+each other, and an argument is worth more than its conclusion when the next person wants to reopen
+one. It was written as a proposal — one new way in, three demotions, one reshaped screen, and the
+claim that ADR-0037 got the recommendation right and the screen got it wrong.
 
 ## What prompted it
 

@@ -18,7 +18,29 @@ export type ProvisionResult =
       signupTool: string;
       /** Deterministic values the runner should suggest to the agent so the identity carries the tag. */
       suggested: { email: string; displayName: string; password: string };
+    }
+  | {
+      /**
+       * There is no account and there will not be one (ADR-0038).
+       *
+       * Distinct from `self-service`, which is "the agent has to go and get one": nobody here is
+       * going to. The runner leaves `identity` null and connects with whatever the ADDRESS itself
+       * carries, which is the endpoint's own token or nothing at all — and no identity row is
+       * written, so a sweep finds nothing to remove and correctly says so.
+       */
+      kind: "none";
     };
+
+/**
+ * What a target says it can do, asked rather than assumed.
+ *
+ * A provider may answer with more than this — `provision-url` answers with the kit's whole
+ * handshake — and callers that only need to know whether teardown is possible read
+ * `cannotRemove` afterwards rather than this shape.
+ */
+export interface ProviderDescription {
+  capabilities: { refresh: boolean; teardown: boolean; listByTag: boolean };
+}
 
 export interface CaptureContext {
   tool: string;
@@ -56,6 +78,17 @@ export interface IdentityProvider {
    * dropped on the strength of it.
    */
   readonly cannotRemove?: string | undefined;
+  /**
+   * Ask the target what it can do, before anything is asked OF it. Absent when there is nothing
+   * to ask, which is every provider whose capabilities are decided here rather than over a wire.
+   *
+   * `cannotRemove` on a provider that learns its answer from the target is `undefined` until this
+   * has been called, and `undefined` reads as "it can remove them". A sweep that skipped this
+   * attempted every teardown against an app that soft-deletes, got `unsupported` back from each
+   * one, and reported N FAILURES where the truth is N accounts left behind — the outcome ADR-0037
+   * promised in writing and did not deliver.
+   */
+  describe?(): Promise<ProviderDescription>;
   provision(ctx: ProvisionContext): Promise<ProvisionResult>;
   /**
    * Problems with serving this WHOLE population, in the user's words; empty when there are none.

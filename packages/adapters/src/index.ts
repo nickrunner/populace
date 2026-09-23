@@ -1,5 +1,6 @@
 import type { IdentityConfig, IdentityProvider } from "@populace/core";
 import { FirebaseAdminProvider } from "./firebase-admin/index.js";
+import { NoAccountsProvider } from "./no-accounts/index.js";
 import { SelfSignupProvider } from "./self-signup/index.js";
 import { ProvisionUrlProvider } from "./provision-url/index.js";
 import { StaticIdentityProvider } from "./static/index.js";
@@ -8,6 +9,7 @@ export { SelfSignupProvider } from "./self-signup/index.js";
 export { StaticIdentityProvider } from "./static/index.js";
 export { FirebaseAdminProvider, type FetchLike, type FirebaseAuthLike } from "./firebase-admin/index.js";
 export { ProvisionUrlProvider, TdkRefusal, type TdkHandshake } from "./provision-url/index.js";
+export { NoAccountsProvider } from "./no-accounts/index.js";
 
 export function identityProviderFor(config: IdentityConfig): IdentityProvider {
   switch (config.strategy) {
@@ -19,5 +21,7 @@ export function identityProviderFor(config: IdentityConfig): IdentityProvider {
       return new FirebaseAdminProvider(config);
     case "provision-url":
       return new ProvisionUrlProvider(config);
+    case "none":
+      return new NoAccountsProvider();
   }
 }

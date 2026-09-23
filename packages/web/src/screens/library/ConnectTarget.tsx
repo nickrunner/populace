@@ -29,6 +29,7 @@ import {
   PageHeader,
   PayloadBlock,
   Section,
+  SecretField,
   Stack,
   Text,
   ToolName,
@@ -67,6 +68,16 @@ export function ConnectTarget() {
   const navigate = useNavigate();
 
   const [url, setUrl] = useState("");
+  /**
+   * The ADDRESS's own credential, not a person's (ADR-0036's last open bullet).
+   *
+   * A server gated by a plain bearer with no OAuth to discover could not be connected at all: the
+   * check posted no token, failed, and everything below — the identity section, the Save button —
+   * rendered only behind a check that had succeeded. The one field that would have fixed it lived
+   * on the saved-target editor, which is reachable only for a target that already exists. It is
+   * here now, beside the address it belongs to, and it goes up with both the check and the save.
+   */
+  const [bearer, setBearer] = useState("");
   const [name, setName] = useState("");
   const [check, setCheck] = useState<TargetCheck | null>(null);
   const [saved, setSaved] = useState<{ id: string; name: string } | null>(null);
@@ -81,10 +92,12 @@ export function ConnectTarget() {
   /** Set while the consent screen is open in another tab. Null the rest of the time. */
   const [waitingOn, setWaitingOn] = useState<string | null>(null);
   const checkErrorId = useId();
+  /** Named by the Save button while it is at a bound, so the reason is reachable from it. */
+  const missingId = useId();
 
   /** Ask the endpoint what it can do. Nothing is written; the address stays the reader's to fix. */
   const ask = useMutation({
-    mutationFn: () => api.checkDraftTarget(key, { mcp: [{ name: "default", url }] }),
+    mutationFn: () => api.checkDraftTarget(key, { mcp: [{ name: "default", url, ...(bearer === "" ? {} : { bearerToken: bearer }) }] }),
     onSuccess: (result) => {
       setCheck(result);
       if (result.signIn) setSignedIn(result.signIn);
@@ -155,7 +168,11 @@ export function ConnectTarget() {
       // The button is disabled while this is null, so reaching it means the two disagreed —
       // better to say which than to send a body the server will refuse in its own words.
       if (chosen === null) throw new Error("choose how the people get in before saving this target");
-      return api.saveTarget(key, null, { name: name.trim() || hostOf(url), mcp: [{ name: "default", url }], identity: chosen });
+      return api.saveTarget(key, null, {
+        name: name.trim() || hostOf(url),
+        mcp: [{ name: "default", url, ...(bearer === "" ? {} : { bearerToken: bearer }) }],
+        identity: chosen,
+      });
     },
     onSuccess: async (target) => {
       await queries.invalidateQueries();
@@ -172,6 +189,8 @@ export function ConnectTarget() {
   });
 
   const result = check;
+  /** What is keeping Save at a bound, in the reader's words, or null when nothing is. */
+  const missing = name.trim() === "" ? "a name" : whatIdentityNeeds(identity);
 
   return (
     <DocumentPage
@@ -199,6 +218,14 @@ export function ConnectTarget() {
                 />
               )}
             </Field>
+
+            <SecretField
+              label="A token this address needs"
+              stored={false}
+              value={bearer}
+              onChange={setBearer}
+              hint="Only for an address behind a static token — a QA gateway, an internal proxy. Every person uses it. If it publishes an OAuth sign-in instead, leave this empty and press Check."
+            />
 
             <Inline gap={3} align="center">
               <Button
@@ -271,7 +298,7 @@ export function ConnectTarget() {
           </Stack>
         </Section>
 
-        {result?.ok !== true ? null : (
+        {result === null ? null : (
           <Section title="What to call it">
             <Stack gap={4}>
               <Text size="read-sm" tone="soft" as="p">
@@ -297,7 +324,7 @@ export function ConnectTarget() {
           </Section>
         )}
 
-        {result?.ok !== true ? null : (
+        {result === null ? null : (
           <Section title="How will they get in?">
             <Stack gap={4}>
               <Text size="read-sm" tone="soft" as="p">
@@ -305,14 +332,13 @@ export function ConnectTarget() {
                 list. This is how the people a simulation sends get accounts of their{" "}
                 <em>own</em>, which is the whole point of sending them.
               </Text>
-              {result.identity.signupTool === null ? (
-                <Text size="read-sm" tone="soft" as="p">
-                  Nothing in the tool list looks like a sign-up, so they cannot make their own
-                  accounts here. The other two ways both need something from you.
-                </Text>
-              ) : null}
+              <WhatTheCheckLearned check={result} gated={bearer.trim() !== ""} />
               <Card>
-                <WaysIn draft={identity} onChange={(patch) => setIdentity((d) => ({ ...d, ...patch }))} />
+                <WaysIn
+                  draft={identity}
+                  onChange={(patch) => setIdentity((d) => ({ ...d, ...patch }))}
+                  check={result}
+                />
               </Card>
               {whatIdentityWillNotDo(identity) === null ? null : (
                 <FieldWarning>{whatIdentityWillNotDo(identity)}</FieldWarning>
@@ -324,13 +350,20 @@ export function ConnectTarget() {
               {saved === null ? (
                 <Stack gap={2}>
                   <Inline gap={3} align="center">
+                    {/*
+                      At a bound, not natively disabled (DESIGN-SYSTEM §6): the reason is a
+                      sentence right below and `aria-describedby` is what makes it reachable from
+                      the control rather than only findable by looking.
+                    */}
                     <Button
                       variant="primary"
                       onClick={() => {
                         save.mutate();
                       }}
                       pending={save.isPending}
-                      disabled={save.isPending || name.trim() === "" || whatIdentityNeeds(identity) !== null}
+                      atBound={missing !== null}
+                      disabled={save.isPending}
+                      aria-describedby={missing === null ? undefined : missingId}
                     >
                       Save this target
                     </Button>
@@ -338,11 +371,25 @@ export function ConnectTarget() {
                   {/*
                     Said here rather than sent to the server and rendered back as a schema error.
                     A reader who never chose self-signup should not be told what is too small
-                    about `identity.signupTool`.
+                    about `identity.signupTool`. The name counts too: a control at a bound names
+                    what would release it, and "nothing happens when I press it" is the failure
+                    that rule exists to prevent (DESIGN-SYSTEM §6).
                   */}
-                  {whatIdentityNeeds(identity) === null ? null : (
+                  {missing === null ? null : (
+                    <Text size="read-sm" tone="soft" as="p" id={missingId}>
+                      It still needs {missing}.
+                    </Text>
+                  )}
+                  {/*
+                    A check that did not get through is no longer a wall. An address behind a
+                    static token, or one that is simply not up yet, is a target worth saving — the
+                    editor is where it gets fixed, and it is only reachable once it exists.
+                  */}
+                  {result.ok ? null : (
                     <Text size="read-sm" tone="soft" as="p">
-                      It still needs {whatIdentityNeeds(identity)}.
+                      Nothing has confirmed this address answers yet. Saving it anyway is fine —
+                      the check, and one person through the front door, are both offered again on
+                      the target itself.
                     </Text>
                   )}
                 </Stack>
@@ -361,13 +408,14 @@ export function ConnectTarget() {
           <Section title="Can anybody actually get in?">
             <Stack gap={4}>
               <Text size="read-sm" tone="soft" as="p">
-                One person, one account, one read-only call. No model is called, so this costs
-                nothing — and it is the difference between finding out now and finding out after
-                forty people have been cast.
+                {identity.strategy === "none"
+                  ? "One connection, one read-only call, with whatever the address itself carries — nobody is signed up. No model is called, so this costs nothing."
+                  : "One person, one account, one read-only call. No model is called, so this costs nothing — and it is the difference between finding out now and finding out after forty people have been cast."}
               </Text>
               <Card>
                 <FirstContactPanel
                   saved
+                  makesAnAccount={identity.strategy !== "none"}
                   result={contact}
                   running={contacting.isPending}
                   error={contacting.error}
@@ -392,6 +440,38 @@ export function ConnectTarget() {
         )}
       </Stack>
     </DocumentPage>
+  );
+}
+
+/**
+ * What the check learned about getting an account here, said before the options are offered.
+ *
+ * There was one sentence here and it had three errors in it: *"Nothing in the tool list looks
+ * like a sign-up, so they cannot make their own accounts here. The other two ways both need
+ * something from you."* The count was wrong — there were four ways and there are five now. The
+ * framing was wrong: "something from you" is true of every option including the recommended one.
+ * And the implication was wrong: a product whose accounts are not made through an MCP tool is the
+ * ordinary case, not a problem the reader has to work around.
+ *
+ * So it branches on what the check ACTUALLY learned, which is two facts it has had all along and
+ * never used together: whether a sign-up tool is on the list, and whether the address talked to
+ * strangers at all. A server that answered anonymously and has no sign-up might genuinely have no
+ * users; one that is gated certainly has some, and somebody will have to make them.
+ */
+function WhatTheCheckLearned({ check, gated }: { check: TargetCheck; gated: boolean }) {
+  // Nothing to say about a tool list nobody got. "Nobody can sign up here" is not a thing to
+  // conclude from a server that did not answer.
+  if (!check.ok) return null;
+  if (check.identity.signupTool !== null) return null;
+  // Gated either because it refused strangers and we signed in, or because the reader put a token
+  // on the address themselves. Both mean the same thing here: this product has users.
+  const closed = check.signIn !== null || gated;
+  return (
+    <Text size="read-sm" tone="soft" as="p">
+      {closed
+        ? "Nothing here looks like a sign-up, so nobody can make their own account. Whoever runs this app will have to make them — the recommended way is the first one below."
+        : "Nothing here looks like a sign-up, and this server answered without asking who we were. If it has no users at all, say so below and nobody will be signed up. If it does, your app will have to make them."}
+    </Text>
   );
 }
 

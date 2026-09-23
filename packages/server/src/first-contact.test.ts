@@ -272,6 +272,47 @@ describe("first contact: one person through the front door", () => {
     expect(result.tornDown).toBe(true);
   });
 
+  /**
+   * A target with no accounts (ADR-0038). Every sentence this check normally says is about an
+   * account — it was made, it was accepted, it was taken back down — and there is no account, so
+   * saying any of them would be a lie. What is left is the same question one step lower: can
+   * anybody reach this thing at all, with whatever the ADDRESS carries.
+   */
+  it("calls a read-only tool with the address's own credentials, and never claims an account was made", async () => {
+    // Narrowed to the ONE tool this target serves anonymously, because Tasklet is not really an
+    // accountless product — every other read-only tool resolves a caller. That narrowing is the
+    // target's own tool policy doing exactly what it does for a population, and it makes this
+    // endpoint behave like the servers the fifth way in exists for: a library, not an account.
+    const target_ = storedTarget({ identity: { strategy: "none" }, tools: { allow: ["get_product_info"], deny: [], destructive: "confirm" } });
+    const result = await firstContact(target_, { now: () => at });
+
+    expect(result.outcome).toBe("accepted");
+    expect(result.strategy).toBe("none");
+    expect(result.tool).toBe("get_product_info");
+    expect(result.summary).toContain("Nobody needs an account here");
+    // Nothing was made, so nothing was torn down and nothing was left — and the count on the
+    // target proves the first half rather than the wording doing it.
+    expect(result.handle).toBeNull();
+    expect(result.tornDown).toBe(false);
+    expect(result.leftBehind).toBeNull();
+    expect(accounts()).toEqual([]);
+  });
+
+  /**
+   * The same configuration against a product that DOES have users: the call bounces, and the
+   * result has to name both of the things that can mean. "Put a token on the endpoint" alone
+   * would send half the readers who see it to fix something that is not broken.
+   */
+  it("says both of the things a refusal can mean when nobody was signed up", async () => {
+    const result = await firstContact(storedTarget({ identity: { strategy: "none" } }), { now: () => at });
+
+    expect(result.outcome).toBe("rejected");
+    expect(result.summary).toContain("goes on the endpoint");
+    expect(result.summary).toContain("does have users after all");
+    expect(result.leftBehind).toBeNull();
+    expect(accounts()).toEqual([]);
+  });
+
   it("uses a fresh handle each time, so a second check is not a duplicate-account failure", async () => {
     const first = await firstContact(storedTarget(), { now: () => at });
     const second = await firstContact(storedTarget(), { now: () => new Date(at.getTime() + 60_000) });

@@ -97,9 +97,26 @@ export const ProvisionUrlConfigSchema = z.object({
   emailDomain: z.string().min(1).default("populace.test"),
 });
 
-export const IdentityConfigSchema = z.discriminatedUnion("strategy", [SelfSignupConfigSchema, StaticIdentityConfigSchema, FirebaseAdminConfigSchema, ProvisionUrlConfigSchema]);
+/**
+ * There are no accounts here, and there will not be any (ADR-0038).
+ *
+ * A documentation server, a search index, an internal read-only tool: its MCP surface is a
+ * library rather than an account, and every one of the other four ways in demands a field the
+ * reader would have to invent. It is also, more often than the category suggests, the FIRST thing
+ * somebody points populace at while they are working out what it does.
+ *
+ * It carries no fields on purpose. Where the address itself is gated — a QA gateway in front of
+ * an otherwise open server — the token goes on the endpoint (`McpEndpoint.bearerToken`) and every
+ * person uses it, because it is the address that is closed and not the product.
+ */
+export const NoAccountsConfigSchema = z.object({
+  strategy: z.literal("none"),
+});
+
+export const IdentityConfigSchema = z.discriminatedUnion("strategy", [SelfSignupConfigSchema, StaticIdentityConfigSchema, FirebaseAdminConfigSchema, ProvisionUrlConfigSchema, NoAccountsConfigSchema]);
 export type IdentityConfig = z.infer<typeof IdentityConfigSchema>;
 export type SelfSignupConfig = z.infer<typeof SelfSignupConfigSchema>;
 export type StaticIdentityConfig = z.infer<typeof StaticIdentityConfigSchema>;
 export type FirebaseAdminConfig = z.infer<typeof FirebaseAdminConfigSchema>;
 export type ProvisionUrlConfig = z.infer<typeof ProvisionUrlConfigSchema>;
+export type NoAccountsConfig = z.infer<typeof NoAccountsConfigSchema>;

@@ -1,3 +1,4 @@
+import { NoAccountsProvider } from "@populace/adapters/no-accounts";
 import { SelfSignupProvider } from "@populace/adapters/self-signup";
 import { PopulaceConfigSchema, expandPopulation, newRunId, type Agent, type PopulaceConfig, type TraceEvent } from "@populace/core";
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
@@ -445,6 +446,41 @@ describe("the target's tool policy, merged with the persona's", () => {
       expect(ofType(trace, "guardrail").filter((e) => e.rule === "tool-denied").map((e) => e.tool), `${agent.persona.id} reached upgrade_plan`).toEqual(["upgrade_plan"]);
       expect(ofType(trace, "tool.call").some((e) => e.tool === "upgrade_plan")).toBe(false);
     }
+    await store.close();
+  });
+
+  /**
+   * A target with no accounts at all (ADR-0038).
+   *
+   * The null-identity state was already the one `runWake` connects in — it hands `McpSession`
+   * `undefined` and the session falls back to whatever the ADDRESS carries — and no configuration
+   * could reach it: every strategy either produced a credential or told the agent to go and sign
+   * up. This is the whole of the fifth way in, from the wake's side: nobody is provisioned, no
+   * identity row is written, and a tool still answers.
+   *
+   * `get_product_info` is the mock target's one anonymous tool, which is exactly the shape of the
+   * servers this exists for — a surface that is a library rather than an account.
+   */
+  it("makes nobody, writes no identity row, and still reaches a tool when the target has no accounts", async () => {
+    const store = new SqliteStore(":memory:");
+    const base = makeConfig();
+    const config: PopulaceConfig = { ...base, identity: { strategy: "none" } };
+    const agent = firstAgent(config);
+    const policy = sequence([() => ({ calls: [call("get_product_info")] })]);
+
+    const result = await runWake({ agent, config }, { store, provider: new ScriptedProvider(policy), identityProvider: new NoAccountsProvider() });
+
+    expect(result.wake.status).toBe("done");
+    // Nobody was made, and nothing claims anybody was.
+    expect(result.identity).toBeNull();
+    expect(result.agent.identityId).toBeNull();
+    expect(await store.listIdentitiesByTag(`populace:${agent.runId}`)).toEqual([]);
+    // And the visit is a real visit: the anonymous tool answered.
+    const trace = await store.getTrace(result.wake.id);
+    expect(ofType(trace, "tool.call").map((e) => e.tool)).toEqual(["get_product_info"]);
+    expect(ofType(trace, "tool.call").every((e) => !e.result.isError)).toBe(true);
+    // The trace says why there is no account, rather than leaving an absence to be inferred.
+    expect(ofType(trace, "identity").map((e) => e.detail).join(" ")).toContain("no accounts");
     await store.close();
   });
 });

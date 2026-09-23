@@ -290,9 +290,15 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
       agent = { ...agent, identityId: identity.id };
       await store.upsertAgent(agent);
       await trace.write({ type: "identity", event: "provisioned", strategy: identityProvider.strategy, detail: provisioned.credential.email ?? provisioned.credential.userId ?? "credential" });
-    } else {
+    } else if (provisioned.kind === "self-service") {
       signup = { tool: provisioned.signupTool, ...provisioned.suggested };
       await trace.write({ type: "identity", event: "missing", strategy: identityProvider.strategy, detail: `agent may sign up via ${provisioned.signupTool} as ${provisioned.suggested.email}` });
+    } else {
+      // Nobody needs an account here (ADR-0038). `identity` and `signup` both stay null, which is
+      // the one state the connect section below has always handled and nothing could configure:
+      // the session is opened with whatever the ADDRESS carries — a gateway token, or nothing —
+      // and no identity row is written, so a sweep finds nothing and says so.
+      await trace.write({ type: "identity", event: "missing", strategy: identityProvider.strategy, detail: "this target has no accounts; everybody who visits it sees the same thing" });
     }
   }
 

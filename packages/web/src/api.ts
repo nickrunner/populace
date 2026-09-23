@@ -9,6 +9,7 @@ import {
   PopulationViewSchema,
   PreflightViewSchema,
   ProjectViewSchema,
+  ProvisioningCheckSchema,
   RunEstimateSchema,
   RunLiveSchema,
   SettingsViewSchema,
@@ -33,6 +34,7 @@ import {
   type PersonaInput,
   type PopulationInput,
   type ProjectInput,
+  type ProvisioningCheckBody,
   type SettingsInput,
   type SimulationInput,
   type StartExecutionBody,
@@ -173,6 +175,12 @@ export const api = {
    * not because it spends anything, which it does not: no model is called.
    */
   firstContact: (p: string, id: string) => send("POST", routes.targetFirstContact(p, id), undefined, FirstContactSchema),
+  /**
+   * The TDK handshake, asked on the reader's behalf (ADR-0038). A POST because the body may carry
+   * the shared secret, and not because it writes: at the far end it is a `GET` that creates
+   * nobody, which is what makes it safe to offer before a target is saved.
+   */
+  checkProvisioning: (p: string, body: ProvisioningCheckBody) => send("POST", routes.provisioningCheck(p), body, ProvisioningCheckSchema),
 
   /**
    * YOUR sign-in to an address (ADR-0036). Keyed by the address rather than by a target, because
@@ -337,6 +345,7 @@ export type TargetCheck = z.infer<typeof TargetCheckSchema>;
 export type SignInStatus = z.infer<typeof SignInStatusSchema>;
 export type TargetPromises = z.infer<typeof TargetPromisesSchema>;
 export type FirstContact = z.infer<typeof FirstContactSchema>;
+export type ProvisioningCheck = z.infer<typeof ProvisioningCheckSchema>;
 export type Persona = z.infer<typeof PersonaViewSchema>;
 export type Starter = z.infer<typeof StarterPersonaViewSchema>;
 export type PopulationView = z.infer<typeof PopulationViewSchema>;

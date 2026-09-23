@@ -48,6 +48,19 @@ export interface RadioProps {
   label: ReactNode;
   hint?: ReactNode;
   disabled?: boolean;
+  /**
+   * The option is not available, and the reason is in `hint` (DESIGN-SYSTEM §6, "A control at a
+   * bound is inert, not gone").
+   *
+   * Distinct from `disabled`, which takes the option out of the tab order and out of the
+   * accessibility tree along with the sentence explaining it — so a keyboard reader never meets
+   * the choice or its reason at all. Here the radio keeps its stop, its name and its hint, and
+   * the press is swallowed by the group that owns the value. The one radio in the product that
+   * needs this is "they sign themselves up" on a server whose tool list holds no sign-up: the
+   * reader has just been told nobody can, and a pressable radio would contradict the sentence
+   * above it.
+   */
+  atBound?: boolean;
 }
 
 const groupLayout = cva("flex", {
@@ -117,7 +130,7 @@ export const RadioGroup = forwardRef<HTMLDivElement, RadioGroupProps>(function R
 });
 
 export const Radio = forwardRef<HTMLButtonElement, RadioProps>(function Radio(
-  { value, label, hint, disabled = false },
+  { value, label, hint, disabled = false, atBound = false },
   ref,
 ) {
   const generatedId = useId();
@@ -131,6 +144,9 @@ export const Radio = forwardRef<HTMLButtonElement, RadioProps>(function Radio(
         id={controlId}
         value={value}
         disabled={disabled}
+        // At a bound the radio stays focusable and named; the group it belongs to is what refuses
+        // the value, because the value is the group's and not this control's.
+        aria-disabled={atBound ? true : undefined}
         aria-describedby={hint ? hintId : undefined}
         className={cn(dotRing, "mt-0.5")}
       >
@@ -138,7 +154,7 @@ export const Radio = forwardRef<HTMLButtonElement, RadioProps>(function Radio(
       </RadioGroupPrimitive.Item>
 
       <div className="min-w-0">
-        <label htmlFor={controlId} className={labelText({ disabled })}>
+        <label htmlFor={controlId} className={labelText({ disabled: disabled || atBound })}>
           {label}
         </label>
         {hint ? (

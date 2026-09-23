@@ -154,6 +154,18 @@ export const routes = {
    */
   signInCallback: `${API_BASE}/sign-in/callback`,
 
+  /**
+   * "Did I wire the kit up right?" — the TDK handshake, asked on the reader's behalf (ADR-0038).
+   *
+   * It hangs off the PROJECT and not off a target because it has to answer before a target is
+   * saved: the two fields it checks are the two most likely to be wrong, and finding out after
+   * saving is finding out too late. A POST because the request body carries a secret, which is
+   * the same reason first contact is one — not because it writes: `GET /` at the kit's mount
+   * point creates nobody and registers nothing, which is what makes it safe to offer here at all
+   * (ADR-0036's rule).
+   */
+  provisioningCheck: (p: string) => `${API_BASE}/projects/${seg(p)}/provisioning/check`,
+
   personas: (p: string) => `${API_BASE}/projects/${seg(p)}/personas`,
   /** Registered before `/personas/:x` so the literal path is not captured as an id. */
   personaStarters: (p: string) => `${API_BASE}/projects/${seg(p)}/personas/starters`,

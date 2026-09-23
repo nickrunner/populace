@@ -1,3 +1,4 @@
+import { createServer, type Server } from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,6 +95,52 @@ async function seed(store: Store, strategy: Identity["strategy"]): Promise<void>
   await store.saveFinding(finding);
 }
 
+
+/**
+ * An app that mounted the kit and cannot delete — the shape ADR-0037 promised populace would
+ * report honestly, and did not.
+ *
+ * Hand-written rather than `@populace/tdk` itself, and deliberately: the contract between the two
+ * halves is tested against the real kit in `provision-url.test.ts`, and what is under test HERE is
+ * populace's own sweep — that it ASKS before it tears down. A stub is the right fake for that and
+ * keeps this package's dependencies where they are.
+ */
+function softDeletingApp(): Promise<{ url: string; close: () => Promise<void>; handshakes: number }> {
+  const state = { handshakes: 0 };
+  const server: Server = createServer((req, res) => {
+    const path = (req.url ?? "/").split("?")[0] ?? "/";
+    const send = (status: number, body: object): void => {
+      res.statusCode = status;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(body));
+    };
+    if (path === "/" || path === "") {
+      state.handshakes++;
+      // The whole point: teardown is OFF, which populace can only learn by asking.
+      send(200, { tdk: 1, environment: "development", capabilities: { refresh: false, teardown: false, listByTag: true } });
+      return;
+    }
+    if (path === "/people") {
+      send(200, { people: [{ userId: "u_1", email: "someone@example.test", displayName: "Someone", tag: tagForRun(RUN_ID) }], nextCursor: null });
+      return;
+    }
+    send(501, { error: { code: "unsupported", message: "This app soft-deletes and cannot remove an account." } });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address !== null ? address.port : 0;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise<void>((done) => server.close(() => { done(); })),
+        get handshakes() {
+          return state.handshakes;
+        },
+      });
+    });
+  });
+}
+
 describe("sweeping accounts populace cannot remove", () => {
   /**
    * `teardownTool` is OPTIONAL and self-signup is the DEFAULT strategy, so "the population signed
@@ -161,6 +208,56 @@ describe("sweeping accounts populace cannot remove", () => {
     const wet = await sweepRun(store, cfg, RUN_ID, { dryRun: false, keepData: true });
     expect(wet.preExisting).toBe(1);
     expect(wet.removed).toBe(0);
+    await store.close();
+  });
+
+  /**
+   * `ProvisionUrlProvider.describe()` was called nowhere outside its own tests, and `cannotRemove`
+   * is guarded on what only `describe()` sets — so an app that soft-deletes had every teardown
+   * ATTEMPTED, every one refused `unsupported`, and the run reported N failures. ADR-0037 promised
+   * the other outcome in writing: *"a sweep then reports the accounts it left behind instead of
+   * counting a no-op as a removal."*
+   *
+   * This is the wiring, asserted from the app's side: the handshake happens, and the accounts are
+   * reported as left behind rather than as populace failing.
+   */
+  it("asks the provisioning endpoint what it can do before tearing anything down, and reports the accounts it cannot remove", async () => {
+    const app = await softDeletingApp();
+    const store = new SqliteStore(":memory:");
+    await seed(store, "provision-url");
+    const cfg = config({ strategy: "provision-url", url: app.url, secret: "shh-not-a-real-secret", emailDomain: "example.test" });
+
+    const result = await sweepRun(store, cfg, RUN_ID, { dryRun: false, keepData: false });
+
+    expect(app.handshakes).toBeGreaterThan(0);
+    expect(result.stranded).toBe(1);
+    expect(result.failures).toBe(0);
+    expect(result.removed).toBe(0);
+    expect(result.lines.join("\n")).toContain("cannot delete accounts");
+    // Still on somebody's product, so the row does not claim the run was swept and the evidence
+    // naming the accounts survives even a `--delete-data`.
+    expect((await store.getRun(RUN_ID))?.sweptAt).toBeNull();
+    expect(await store.listFindings({ runIds: [RUN_ID] })).toHaveLength(1);
+    await store.close();
+    await app.close();
+  });
+
+  /**
+   * A target with no accounts (ADR-0038). Nothing was created, so nothing can be removed — and the
+   * one thing a sweep must never do is report that as a removal.
+   */
+  it("reports nothing to remove for a target with no accounts, without claiming it removed anything", async () => {
+    const store = new SqliteStore(":memory:");
+    await seed(store, "none");
+    const cfg = config({ strategy: "none" });
+
+    const result = await sweepRun(store, cfg, RUN_ID, { dryRun: false, keepData: true });
+
+    expect(result.identities).toBe(1);
+    expect(result.removed).toBe(0);
+    expect(result.stranded).toBe(0);
+    expect(result.failures).toBe(0);
+    expect(result.lines.join("\n")).not.toContain("tore down");
     await store.close();
   });
 });

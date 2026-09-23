@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-export const IdentityStrategySchema = z.enum(["self-signup", "admin-mint", "static", "provision-url"]);
+/**
+ * `none` is a strategy with no identities: nobody is signed up, no row is written and there is
+ * nothing to sweep (ADR-0038). It is here rather than modelled as an absent `identity` because
+ * every row and every check that reports a strategy has to be able to report this one.
+ */
+export const IdentityStrategySchema = z.enum(["self-signup", "admin-mint", "static", "provision-url", "none"]);
 export type IdentityStrategy = z.infer<typeof IdentityStrategySchema>;
 
 /**
