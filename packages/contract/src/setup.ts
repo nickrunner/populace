@@ -194,6 +194,21 @@ export const TargetCheckSchema = z.object({
    * talk to strangers" are different sentences and the screen says the right one.
    */
   signIn: SignInStatusSchema.nullable(),
+  /**
+   * What is at the address, when the check did not get through. Null when it did.
+   *
+   * "Could not reach it" used to be the only thing the screen could say, and it covered four
+   * different situations. Two of them a reader fixes in seconds once they are told which one they
+   * have: nothing is listening, or something is listening that is not an MCP server — a mistyped
+   * path answers the second way, with an HTML 404 that used to be printed at them in full.
+   */
+  reached: z
+    .object({
+      kind: z.enum(["nothing", "not-mcp", "gated", "mcp"]),
+      /** The target's own words, stripped of markup and clipped. Null when it said nothing. */
+      says: z.string().nullable(),
+    })
+    .nullable(),
   errors: z.array(z.string()),
 });
 export type TargetCheck = z.infer<typeof TargetCheckSchema>;

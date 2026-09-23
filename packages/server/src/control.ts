@@ -95,7 +95,7 @@ import { ProjectReadModel } from "./project-read-model.js";
 import { ReadModel } from "./read-model.js";
 import { STARTER_PERSONAS, starterBySlug } from "./starters.js";
 import { checkPromises, checkTarget, type CheckCredentials } from "./target-check.js";
-import { callbackPage, callbackUri, isAddress, pendingFor, providerFor, signInStatus, statusOf } from "./sign-in.js";
+import { callbackPage, callbackUri, examine, isAddress, pendingFor, providerFor, signInStatus, statusOf } from "./sign-in.js";
 import { firstContact } from "./first-contact.js";
 import { resetTarget } from "./target-reset.js";
 import { targetView as liveTargetView } from "./target.js";
@@ -208,7 +208,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
         isAddress(endpoint.url) && held.has(normalizeEndpointUrl(endpoint.url))
           ? providerFor(deps.store, projectId, endpoint.url, callbackUri(c, routes.signInCallback))
           : undefined,
-      askAboutSignIn: (endpoint) => signInStatus(deps.store, projectId, endpoint.url, { probe: true }),
+      askAboutSignIn: (endpoint) => examine(deps.store, projectId, endpoint.url),
     };
   };
 

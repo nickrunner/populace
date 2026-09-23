@@ -1,6 +1,7 @@
 import { auth, extractWWWAuthenticateParams, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { normalizeEndpointUrl, type SignInGrant } from "@populace/core";
+import { htmlToText } from "../web-fetch.js";
 import { z } from "zod";
 
 /**
@@ -225,6 +226,35 @@ function defaultState(): string {
   return crypto.randomUUID().replace(/-/g, "");
 }
 
+/**
+ * What is actually at an address, for a screen that has to say something useful about a failure.
+ *
+ * "Could not reach it" was the only sentence populace had, and it covered four different
+ * situations — nothing listening, something listening that is not an MCP server, a server that
+ * wants a sign-in, and a server that answered and then failed for some other reason. The first two
+ * are the ones a reader can fix in five seconds if they are told which one they have.
+ */
+export type Reached =
+  /** Nothing answered: no DNS, refused, timed out, TLS. */
+  | "nothing"
+  /** Something answered, but not as an MCP server — an ordinary web page, or a 404 from a router. */
+  | "not-mcp"
+  /** It answered `401`/`403`: it works, and it will not talk to strangers. */
+  | "gated"
+  /** It answered as an MCP server, so whatever failed came later. */
+  | "mcp";
+
+export interface EndpointProbe {
+  reached: Reached;
+  /**
+   * What it said, in as few words as it can be honestly reduced to: markup stripped, whitespace
+   * collapsed, clipped. A reader needs `Cannot POST /mpc`, not the twelve-line HTML document an
+   * Express router wraps it in.
+   */
+  says: string | null;
+  signIn: SignInRequirement;
+}
+
 /** What a `401` from an MCP endpoint says about how to get in. */
 export interface SignInRequirement {
   /** The endpoint asked for a bearer token. */
@@ -250,7 +280,7 @@ const GATED: SignInRequirement = { ...NOT_REQUIRED, required: true };
  * not talk to strangers" stop being the same sentence. Registering a client is a write on somebody
  * else's authorization server, so that stays behind the sign-in button and never happens here.
  */
-export async function probeSignIn(url: string): Promise<SignInRequirement> {
+export async function probeEndpoint(url: string): Promise<EndpointProbe> {
   let response: Response;
   try {
     response = await fetch(url, {
@@ -262,9 +292,16 @@ export async function probeSignIn(url: string): Promise<SignInRequirement> {
       signal: AbortSignal.timeout(15_000),
     });
   } catch (err) {
-    return { ...NOT_REQUIRED, error: err instanceof Error ? err.message : String(err) };
+    const message = err instanceof Error ? err.message : String(err);
+    return { reached: "nothing", says: message, signIn: { ...NOT_REQUIRED, error: message } };
   }
-  if (response.status !== 401 && response.status !== 403) return NOT_REQUIRED;
+  if (response.status !== 401 && response.status !== 403) {
+    const said = saidBy(await response.text().catch(() => ""));
+    // A JSON-RPC answer means the address IS an MCP server and the failure is further in; anything
+    // else answering here is something other than the endpoint the reader meant.
+    const spoke = response.ok && said !== null && said.includes("jsonrpc");
+    return { reached: spoke ? "mcp" : "not-mcp", says: said, signIn: NOT_REQUIRED };
+  }
 
   const { resourceMetadataUrl, scope } = extractWWWAuthenticateParams(response);
   const scopes = scope ? scope.split(" ").filter(Boolean) : [];
@@ -272,28 +309,49 @@ export async function probeSignIn(url: string): Promise<SignInRequirement> {
   // like, and this is a probe whose whole job is to report rather than to fail. A resource that
   // publishes nothing is still gated — the screen says so, and says populace cannot do it for you.
   const metadataUrl = resourceMetadataUrl?.href ?? wellKnownFor(url);
-  if (metadataUrl === null) return { ...GATED, scopes };
+  if (metadataUrl === null) return gated({ ...GATED, scopes });
   let metadata: z.infer<typeof ProtectedResourceMetadataSchema>;
   try {
     const found = await fetch(metadataUrl, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
-    if (!found.ok) return { ...GATED, scopes };
+    if (!found.ok) return gated({ ...GATED, scopes });
     const parsed = ProtectedResourceMetadataSchema.safeParse(await found.json());
     // A document that does not parse is a resource that published something we cannot use, which
     // is the same position as one that published nothing: gated, and not ours to sign in to.
-    if (!parsed.success) return { ...GATED, scopes };
+    if (!parsed.success) return gated({ ...GATED, scopes });
     metadata = parsed.data;
   } catch (err) {
-    return { ...GATED, scopes, error: err instanceof Error ? err.message : String(err) };
+    return gated({ ...GATED, scopes, error: err instanceof Error ? err.message : String(err) });
   }
   const servers = metadata.authorization_servers ?? [];
-  return {
+  return gated({
     required: true,
     supported: servers.length > 0,
     resourceName: metadata.resource_name ?? null,
     authorizationServer: servers[0] ?? null,
     scopes: scopes.length > 0 ? scopes : (metadata.scopes_supported ?? []),
     error: null,
-  };
+  });
+}
+
+/** A gated address answered, and answered correctly; there is nothing for the reader to fix. */
+function gated(signIn: SignInRequirement): EndpointProbe {
+  return { reached: "gated", says: null, signIn };
+}
+
+/**
+ * What a body says, reduced to something a person can read: an HTML document becomes its text,
+ * runs of whitespace become one space, and the whole thing is clipped. `Cannot POST /mpc` is the
+ * useful part of a router's 404 and the other eleven lines are packaging.
+ */
+function saidBy(body: string): string | null {
+  const markup = /<\/?[a-z][\s\S]*>/i.test(body);
+  // `<head>` goes first: an error page's `<title>` is nearly always the word "Error", and putting
+  // it in front of the sentence that matters is how "Cannot POST /mpc" becomes "Error Cannot POST
+  // /mpc" — noise at exactly the position a reader looks first.
+  const text = markup ? htmlToText(body.replace(/<head[\s\S]*?<\/head>/gi, "")) : body;
+  const tidy = text.replace(/\s+/g, " ").trim();
+  if (tidy === "") return null;
+  return tidy.length > 300 ? `${tidy.slice(0, 300)}…` : tidy;
 }
 
 /** RFC 9728's default location, for a server that gates without saying where its metadata is. */

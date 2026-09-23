@@ -266,14 +266,7 @@ export function ConnectTarget() {
                 }}
               />
             ) : (
-              <Stack gap={2}>
-                <Text size="read" tone="critical" as="p">
-                  Could not reach it. Nothing was saved; the address is still yours to fix.
-                </Text>
-                {result.errors.length === 0 ? null : (
-                  <PayloadBlock caption="What came back" value={result.errors.join("\n")} error />
-                )}
-              </Stack>
+              <WouldNotAnswer reached={result.reached} errors={result.errors} url={url} />
             )}
           </Stack>
         </Section>
@@ -399,6 +392,69 @@ export function ConnectTarget() {
         )}
       </Stack>
     </DocumentPage>
+  );
+}
+
+/**
+ * The check did not get through, and which of the ways it did not is the whole message.
+ *
+ * There was one sentence here — "Could not reach it" — over four different situations, with the
+ * machine's own words printed underneath in full. For a mistyped path that meant a reader was
+ * shown a twelve-line HTML document from a router, whose one useful line was `Cannot POST /mpc`,
+ * and a sentence that told them to check an address that was very nearly right.
+ *
+ * Each branch below says what was found and what to do about it. The target's words are still
+ * shown, because a machine's own account of itself is evidence and paraphrasing it would be
+ * worse — but reduced to the part a person can read.
+ */
+function WouldNotAnswer({
+  reached,
+  errors,
+  url,
+}: {
+  reached: TargetCheck["reached"];
+  errors: string[];
+  url: string;
+}) {
+  const says = reached?.says ?? null;
+  return (
+    <Stack gap={2}>
+      {reached?.kind === "not-mcp" ? (
+        <>
+          <Text size="read" tone="critical" as="p">
+            Something answered at {hostOf(url)}, but not as an MCP server.
+          </Text>
+          <Text size="read-sm" tone="soft" as="p">
+            The address is the MCP endpoint itself, not the product&rsquo;s home page — most servers
+            answer on a path like <Mono size="code-sm">/mcp</Mono>. Check the path and the port.
+          </Text>
+        </>
+      ) : reached?.kind === "nothing" ? (
+        <>
+          <Text size="read" tone="critical" as="p">
+            Nothing answered at {hostOf(url)}.
+          </Text>
+          <Text size="read-sm" tone="soft" as="p">
+            Either the address is wrong or the server is not running. Nothing was saved.
+          </Text>
+        </>
+      ) : (
+        <>
+          <Text size="read" tone="critical" as="p">
+            It answered, and then the connection failed.
+          </Text>
+          <Text size="read-sm" tone="soft" as="p">
+            The address is right enough to reach something that speaks MCP, so this is the server
+            itself refusing. Its own words are below. Nothing was saved.
+          </Text>
+        </>
+      )}
+      {says === null ? (
+        errors.length === 0 ? null : <PayloadBlock caption="What came back" value={errors.join("\n")} error />
+      ) : (
+        <PayloadBlock caption="What came back" value={says} error />
+      )}
+    </Stack>
   );
 }
 

@@ -155,7 +155,13 @@ async function startGatedTarget(): Promise<GatedTarget> {
       return;
     }
 
-    json(res, 404, { error: "not found" });
+    // An unknown path answers the way Express's default router does — a whole HTML document
+    // wrapping one useful line. This is what a reader gets for a transposed path, and reducing it
+    // to that line is the thing under test.
+    res.writeHead(404, { "content-type": "text/html; charset=utf-8" });
+    res.end(
+      `<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot ${req.method ?? "GET"} ${url.pathname}</pre>\n</body>\n</html>\n`,
+    );
   }
 
   await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
@@ -251,6 +257,7 @@ describe("signing in to an address that will not talk to strangers", () => {
     expect(gated.signIn?.resourceName).toBe("Fake Stays");
     expect(gated.signIn?.scopes).toContain("stays");
     expect(gated.signIn?.connected).toBe(false);
+    expect(gated.reached?.kind).toBe("gated");
     // Pressing Check is a read. Registering this installation with somebody else's authorization
     // server is not, and it stays behind the button.
     expect(target.registrations).toBe(0);
@@ -307,6 +314,35 @@ describe("signing in to an address that will not talk to strangers", () => {
     const check = TargetCheckSchema.parse(await json(await post(h.app, routes.targetsCheck(P), { mcp: [{ name: "default", url: target.mcpUrl }] })));
     expect(check.ok).toBe(false);
     expect(check.signIn?.required).toBe(true);
+  });
+
+  it("tells a mistyped path apart from a dead address, and does not print the router's HTML at anybody", async () => {
+    // Exactly the shape a transposed path produces: the host is up, the router does not know the
+    // route, and Express answers with a whole HTML document whose one useful line is the `<pre>`.
+    const wrongPath = TargetCheckSchema.parse(
+      await json(await post(h.app, routes.targetsCheck(P), { mcp: [{ name: "default", url: `${target.origin}/mpc` }] })),
+    );
+    expect(wrongPath.ok).toBe(false);
+    expect(wrongPath.reached?.kind).toBe("not-mcp");
+    // The words, and only the words: no tags, no eleven lines of packaging.
+    expect(wrongPath.reached?.says).toBe("Cannot POST /mpc");
+    expect(wrongPath.reached?.says).not.toContain("<");
+    // And it is not mistaken for a sign-in, which is the other thing a non-200 could mean.
+    expect(wrongPath.signIn).toBeNull();
+
+    const nothing = TargetCheckSchema.parse(
+      await json(await post(h.app, routes.targetsCheck(P), { mcp: [{ name: "default", url: "http://127.0.0.1:1/mcp" }] })),
+    );
+    expect(nothing.reached?.kind).toBe("nothing");
+  });
+
+  it("says nothing about how it was reached when it was reached", async () => {
+    const started = await json(await post(h.app, routes.signIn(P), { url: target.mcpUrl }));
+    const back = consent((started as { authorizeUrl: string }).authorizeUrl, target);
+    await h.app.request(`${routes.signInCallback}?code=${back.code}&state=${back.state}`);
+    const check = TargetCheckSchema.parse(await json(await post(h.app, routes.targetsCheck(P), { mcp: [{ name: "default", url: target.mcpUrl }] })));
+    expect(check.ok).toBe(true);
+    expect(check.reached).toBeNull();
   });
 
   it("refuses a callback whose state matches no flow in flight", async () => {

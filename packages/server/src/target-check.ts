@@ -13,7 +13,8 @@ import { z } from "zod";
  */
 export interface CheckCredentials {
   signIn?: (endpoint: McpEndpoint) => SignInProvider | undefined;
-  askAboutSignIn?: (endpoint: McpEndpoint) => Promise<SignInStatus>;
+  /** What is at the address, asked of the first endpoint that fails. Read-only; registers nothing. */
+  askAboutSignIn?: (endpoint: McpEndpoint) => Promise<{ signIn: SignInStatus; reached: TargetCheck["reached"] }>;
 }
 
 /**
@@ -27,6 +28,7 @@ export async function checkTarget(endpoints: McpEndpoint[], identity?: IdentityC
   let latencyMs: number | null = null;
   let server: TargetCheck["server"] = null;
   let signIn: SignInStatus | null = null;
+  let reached: TargetCheck["reached"] = null;
 
   for (const endpoint of endpoints) {
     const session = new McpSession(endpoint, undefined, credentials.signIn?.(endpoint));
@@ -42,9 +44,10 @@ export async function checkTarget(endpoints: McpEndpoint[], identity?: IdentityC
       // Why it refused matters more than that it refused. Asked of the FIRST endpoint that fails
       // and no further: one address needing a sign-in is the whole answer the screen can act on,
       // and a second probe of a second dead address tells the reader nothing new.
-      if (signIn === null && credentials.askAboutSignIn) {
+      if (reached === null && credentials.askAboutSignIn) {
         const asked = await credentials.askAboutSignIn(endpoint);
-        if (asked.required) signIn = asked;
+        reached = asked.reached;
+        if (asked.signIn.required) signIn = asked.signIn;
       }
     } finally {
       await session.close();
@@ -62,6 +65,8 @@ export async function checkTarget(endpoints: McpEndpoint[], identity?: IdentityC
     undescribed: tools.filter((t) => t.description.trim() === "").map((t) => t.name),
     identity: guessIdentity(tools, identity),
     signIn,
+    // Only when the check failed: a connection that worked has nothing to diagnose.
+    reached: errors.length === 0 ? null : reached,
     errors,
   };
 }

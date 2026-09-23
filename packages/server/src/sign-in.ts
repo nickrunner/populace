@@ -1,6 +1,6 @@
 import type { SignInStatus } from "@populace/contract";
 import { normalizeEndpointUrl, type SignInGrant, type Store } from "@populace/core";
-import { probeSignIn, SignInProvider, type GrantStore, type SignInRequirement } from "@populace/runner";
+import { probeEndpoint, SignInProvider, type GrantStore, type SignInRequirement } from "@populace/runner";
 import type { Context } from "hono";
 
 /**
@@ -79,10 +79,19 @@ export function statusOf(url: string, grant: SignInGrant | undefined, probe?: Si
 export async function signInStatus(store: Store, projectId: string, url: string, options: { probe: boolean }): Promise<SignInStatus> {
   const grant = await store.getSignInGrant(projectId, url);
   if (!options.probe) return statusOf(url, grant);
-  const probe = await probeSignIn(url);
   // What the endpoint says now wins over what the row remembers, except about the grant itself:
   // a resource that has stopped requiring a sign-in should stop asking for one on screen.
-  return statusOf(url, grant, probe);
+  return statusOf(url, grant, (await probeEndpoint(url)).signIn);
+}
+
+/**
+ * The whole diagnosis, for the check screen: what is at the address AND what a sign-in to it would
+ * look like, from one probe rather than two round trips at somebody else's server.
+ */
+export async function examine(store: Store, projectId: string, url: string): Promise<{ signIn: SignInStatus; reached: { kind: "nothing" | "not-mcp" | "gated" | "mcp"; says: string | null } }> {
+  const grant = await store.getSignInGrant(projectId, url);
+  const probe = await probeEndpoint(url);
+  return { signIn: statusOf(url, grant, probe.signIn), reached: { kind: probe.reached, says: probe.says } };
 }
 
 /**
