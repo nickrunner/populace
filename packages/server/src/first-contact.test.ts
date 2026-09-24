@@ -104,6 +104,61 @@ describe("first contact: one person through the front door", () => {
     expect(accounts()).toEqual([]);
   });
 
+  /**
+   * The address is already known to answer — connecting is creating (ADR-0040) — so the check
+   * makes the account FIRST and lets the account be what opens the door. A server that
+   * authenticates in middleware refuses `initialize` itself without a bearer, and a probe that
+   * carried none used to report that as "could not reach" for an address that was up (ADR-0034
+   * amendment).
+   */
+  it("goes straight through a door that wants a bearer, because the account is what opens it", async () => {
+    const gated = await startMockTarget({ quiet: true, gateway: true });
+    try {
+      const real = gated.app.signUp({ email: "minted@populace.test", displayName: "Minted", password: "pw-minted-1" });
+      const provider = new FakeProvider({ bearerToken: real.token, expiresAt: null, redeemable: null, email: "minted@populace.test", extra: {} });
+      const behindGate = storedTarget({ mcp: [{ name: "default", url: gated.mcpUrl, headers: {} }] });
+      const result = await firstContact(behindGate, { identityProvider: provider, now: () => at });
+
+      expect(result.outcome).toBe("accepted");
+      expect(result.tool).toBe("get_me");
+      expect(result.handle).toBe("minted@populace.test");
+      expect(result.tornDown).toBe(true);
+    } finally {
+      await gated.close();
+    }
+  });
+
+  it("says a gated address refused a session, not that it could not be reached, when the way in needs the tool list", async () => {
+    // Self-signup has to see the tool list to find the sign-up tool, and nobody has a credential
+    // yet — so the refusal is real, and the words for it are "this address wants one of its own".
+    const gated = await startMockTarget({ quiet: true, gateway: true });
+    try {
+      const behindGate = storedTarget({ mcp: [{ name: "default", url: gated.mcpUrl, headers: {} }] });
+      const result = await firstContact(behindGate, { now: () => at });
+
+      expect(result.outcome).toBe("rejected");
+      expect(result.summary).toContain("goes on the endpoint");
+      expect(result.detail).toContain("Missing bearer token");
+      expect(result.handle).toBeNull();
+      expect(result.leftBehind).toBeNull();
+      expect(gated.app.listUsers()).toEqual([]);
+    } finally {
+      await gated.close();
+    }
+  });
+
+  it("names the account it made, and takes it back down, when the address has gone away since it was connected", async () => {
+    const provider = new FakeProvider({ bearerToken: "tok", expiresAt: null, redeemable: null, email: "probe@populace.test", extra: {} });
+    const dead = storedTarget({ mcp: [{ name: "default", url: "http://127.0.0.1:1/mcp", headers: {} }] });
+    const result = await firstContact(dead, { identityProvider: provider, now: () => at });
+
+    expect(result.outcome).toBe("unreachable");
+    expect(result.handle).toBe("probe@populace.test");
+    expect(result.summary).toContain("stopped answering");
+    expect(result.tornDown).toBe(true);
+    expect(provider.tornDownCount).toBe(1);
+  });
+
   it("distinguishes a token the target refuses from an endpoint that never answered", async () => {
     const provider = new FakeProvider({ bearerToken: "not-a-token-this-target-issued", expiresAt: null, redeemable: null, email: "probe@populace.test", extra: {} });
     const result = await firstContact(storedTarget(), { identityProvider: provider, now: () => at });
@@ -189,7 +244,8 @@ describe("first contact: one person through the front door", () => {
       const behindGateway = storedTarget({ mcp: [{ name: "default", url: `http://127.0.0.1:${port}/mcp`, bearerToken: gatewayToken, headers: {} }] });
       const result = await firstContact(behindGateway, { now: () => at });
 
-      expect(result.outcome).toBe("unreachable");
+      // A 401 is an address that is up and wants a credential, which is what `rejected` means.
+      expect(result.outcome).toBe("rejected");
       expect(JSON.stringify(result)).not.toContain(gatewayToken);
       // The failure is still reported in full — the secret is replaced, not the message.
       expect(result.detail).toContain("[redacted]");

@@ -5,7 +5,9 @@ import { IdentityStrategySchema } from "./identity.js";
  * How far one person got through the front door. The whole value of the check is that these are
  * different words rather than one "it did not work":
  *
- * - `unreachable`      — the MCP endpoint never answered, so nothing else could be tried.
+ * - `unreachable`      — the MCP endpoint never answered. For a way in that goes through its tool
+ *                        list nothing was made; for one that hands back a credential the account was
+ *                        made, named, and taken back down (ADR-0034 amendment).
  * - `provision-failed` — the endpoint answered, and the identity strategy could not make an
  *                        account; the provider's own error is in `detail`.
  * - `rejected`         — an account was made and the target refused its credential (401/403).

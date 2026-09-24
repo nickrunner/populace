@@ -72,7 +72,7 @@ import {
 } from "@populace/core";
 import { identityProviderFor } from "@populace/adapters";
 import { buildDigest, verifyPending } from "@populace/reports";
-import { finishSignIn, personaSystemPrompt, startSignIn } from "@populace/runner";
+import { finishSignIn, personaSystemPrompt, startSignIn, type SignInProvider } from "@populace/runner";
 import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { ensureRoster, headcountOf, lanesOf, RosterIncomplete, sizeIn, type Lane } from "./cohort-store.js";
@@ -1514,7 +1514,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const resolved = await resolve(c, simulation);
     if (!resolved.ok) return resolved.response;
     const { config } = resolved.value;
-    const view = await liveTargetView(config);
+    const view = await liveTargetView(config, true, (await asTheUser(c, s.project.id)).signIn);
     const [estimate, killSwitch] = await Promise.all([estimateRun(deps.store, { config }), deps.store.getKillSwitch()]);
     const first = expandPopulation(config.population, "preflight", simulation.id)[0];
     const blockers: string[] = [];
@@ -1696,7 +1696,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const simulation = await simulationOf(c, s.project.id);
     if (!simulation) return fail(c, "not_found", "no such simulation");
     const latest = (await deps.store.listRuns({ simulationId: simulation.id })).sort((a, b) => a.seq - b.seq).at(-1);
-    const coverage = latest ? await coverageOf(latest.id) : { items: [], exposedCount: 0, neverCalledCount: 0, toolsError: null };
+    const coverage = latest ? await coverageOf(latest.id, (await asTheUser(c, s.project.id)).signIn) : { items: [], exposedCount: 0, neverCalledCount: 0, toolsError: null };
     return c.json(await projects.results(simulation, coverage));
   });
 
@@ -1720,8 +1720,14 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return compared ? c.json(compared) : fail(c, "not_found", "those two executions are not both in this simulation");
   });
 
-  /** The tool list a run's coverage is measured against, from the config that run froze. */
-  const coverageOf = async (runId: string) => {
+  /**
+   * The tool list a run's coverage is measured against, from the config that run froze.
+   *
+   * `signIn` is the OPERATOR's grant, threaded in from the request: reading which tools a target
+   * exposes is one of the things ADR-0036 means by acting as the user. It is not the credential
+   * the run itself used, and cannot become one — a wake builds its own session.
+   */
+  const coverageOf = async (runId: string, signIn?: (endpoint: McpEndpoint) => SignInProvider | undefined) => {
     const read = new ReadModel(deps.store);
     let config: PopulaceConfig | undefined;
     try {
@@ -1729,7 +1735,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     } catch {
       config = undefined;
     }
-    const view = config ? await liveTargetView(config) : { name: "", endpoints: [], webBaseUrl: null, description: null, identityStrategy: "", tools: null, toolsError: "no target is set up" };
+    const view = config ? await liveTargetView(config, true, signIn) : { name: "", endpoints: [], webBaseUrl: null, description: null, identityStrategy: "", tools: null, toolsError: "no target is set up" };
     return read.toolUsage(runId, view);
   };
 

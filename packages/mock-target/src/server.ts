@@ -13,6 +13,12 @@ export interface MockTargetOptions {
   repaired?: ReadonlySet<Repairable>;
   adminToken?: string;
   quiet?: boolean;
+  /**
+   * Refuse any `/mcp` request that carries no bearer at the HTTP layer, before the MCP handshake —
+   * the shape of a server that authenticates in middleware rather than in its tools, where even
+   * `initialize` needs a credential. The token is not checked here; the tools still do that.
+   */
+  gateway?: boolean;
 }
 
 export interface RunningMockTarget {
@@ -71,6 +77,7 @@ export async function startMockTarget(options: MockTargetOptions = {}): Promise<
       // Stateless Streamable HTTP: one server + transport per request.
       const header = req.headers.authorization;
       const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : undefined;
+      if (options.gateway && !token) return send(res, 401, JSON.stringify({ error: "Missing bearer token" }));
       const auth: AuthInfo | undefined = token ? { token, clientId: "populace", scopes: [] } : undefined;
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       const mcp = buildMcpServer(app);

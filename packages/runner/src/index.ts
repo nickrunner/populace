@@ -1,6 +1,6 @@
 export { runWake, looksLikeAuthRejection, type WakeDeps, type WakeOptions, type WakeResult } from "./wake.js";
 export { LocalDaemon, type DaemonOptions } from "./daemon.js";
-export { McpSession, type TargetTool, type CallOutcome } from "./mcp/session.js";
+export { McpSession, httpStatusOf, type TargetTool, type CallOutcome } from "./mcp/session.js";
 export { SignInProvider, probeEndpoint, startSignIn, finishSignIn, type GrantStore, type SignInProviderOptions, type SignInRequirement, type EndpointProbe, type Reached } from "./mcp/sign-in.js";
 export { AnthropicProvider } from "./model/anthropic.js";
 export { usageFrom, type ModelProvider, type ModelRequest, type ModelResponse, type ModelRequestMetadata } from "./model/provider.js";

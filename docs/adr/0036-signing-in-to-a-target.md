@@ -191,3 +191,30 @@ sites.
 blocking, for the admin-mint config that will save happily and then refuse at the mint because a
 custom token is not an ID token. The distinction is the schema boundary: what the server will
 refuse is a blocker, what the *run* will refuse is a warning.
+
+## Amendment — there is more than one tool list
+
+A reader signed in to a gated target, connected it, composed a population against it, and the
+simulation's preflight told them the target was not answering:
+
+```
+default: Streamable HTTP error: Error POSTing to endpoint: {"error":"Missing bearer token"}
+The target did not answer with a tool list.
+```
+
+The decision above says a grant is passed by "the things acting AS the user — the check and the
+tool list behind it". Only the check was wired. `targetView` (`packages/server/src/target.ts`)
+built its sessions with `new McpSession(endpoint, undefined)`, and it is what preflight and a run's
+coverage list connect through — so signing in got a reader through the connect screen and nowhere
+else, which is arguably worse than not offering the sign-in at all: the failure arrives later,
+somewhere the reader has no reason to connect it to a credential.
+
+`targetView` takes the same resolver `checkTarget` does, and the three operator-facing callers pass
+it. The rule is unchanged and was always the rule; the implementation had covered one case of it.
+
+**What still does not get a grant, deliberately:** anything inside a wake. `runWake` builds its own
+sessions from an identity's bearer and cannot reach one of these. That boundary is what the
+decision is actually about, and it is untouched.
+
+The regression test asserts preflight's tool list against a gated fixture, and was checked to fail
+without the fix — `[]` where `['search_stays']` belongs, which is exactly what the reader saw.

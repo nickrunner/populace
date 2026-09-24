@@ -3,6 +3,24 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { JsonValueSchema, type JsonObject, type JsonValue, type McpEndpoint, type ToolResultContent } from "@populace/core";
+import { z } from "zod";
+
+/** What the SDK's transport error carries besides its message: the HTTP status it got. */
+const HttpStatusShape = z.object({ code: z.number().int().min(100).max(599) });
+
+/**
+ * The HTTP status behind a failed connect, when there is one.
+ *
+ * The SDK answers an HTTP response it did not like with a `StreamableHTTPError` whose message
+ * quotes the body and whose `code` is the status — and only the message reaches a caller's
+ * `catch` as words. A caller telling "the address answered 401" from "nothing answered at all"
+ * needs the number: the body is somebody else's and says whatever they chose. Null for a
+ * connection that was refused, a name that did not resolve, a timeout — anything with no response.
+ */
+export function httpStatusOf(err: Error): number | null {
+  const parsed = HttpStatusShape.safeParse(err);
+  return parsed.success ? parsed.data.code : null;
+}
 
 export interface TargetTool {
   endpoint: string;

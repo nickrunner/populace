@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { SignInStatusSchema, TargetCheckSchema, routes } from "@populace/contract";
-import { normalizeEndpointUrl, type Store } from "@populace/core";
+import { PreflightViewSchema, SignInStatusSchema, TargetCheckSchema, routes } from "@populace/contract";
+import { normalizeEndpointUrl, PopulaceConfigSchema, type Simulation, type Store } from "@populace/core";
 import { SqliteStore } from "@populace/store-sqlite";
 import type { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
-import { ensureProject, ensureSettings } from "./config-store.js";
+import { ensureProject, ensureSettings, seedProjectFromConfig } from "./config-store.js";
 import { EventHub, RecordingStore } from "./events.js";
 import { JobRunner } from "./jobs.js";
 import { RunController } from "./runs.js";
@@ -225,6 +225,30 @@ async function harness(): Promise<Harness> {
 
 const P = "default";
 
+/**
+ * A simulation pointed at the gated address, built the way `populace.yaml` builds one, so the
+ * preflight route has something real to answer about. `identity: none` keeps it to the one thing
+ * under test — nobody is provisioned, so the only credential in play is the operator's sign-in.
+ */
+async function simulationAgainst(store: Store, mcpUrl: string): Promise<Simulation> {
+  await seedProjectFromConfig(
+    store,
+    PopulaceConfigSchema.parse({
+      target: { name: "Fake Stays", mcp: [{ url: mcpUrl }] },
+      identity: { strategy: "none" },
+      verifier: { judge: "heuristic" },
+      population: {
+        id: "everyone",
+        maxWakes: 1,
+        members: [{ persona: { id: "one", name: "One", role: "a visitor", backstory: "b", goals: ["look around"] } }],
+      },
+    }),
+  );
+  const simulation = (await store.listSimulations({}))[0];
+  if (!simulation) throw new Error("seeding produced no simulation");
+  return simulation;
+}
+
 const post = async (app: Hono, path: string, body: object = {}): Promise<Response> =>
   app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
@@ -343,6 +367,27 @@ describe("signing in to an address that will not talk to strangers", () => {
     const check = TargetCheckSchema.parse(await json(await post(h.app, routes.targetsCheck(P), { mcp: [{ name: "default", url: target.mcpUrl }] })));
     expect(check.ok).toBe(true);
     expect(check.reached).toBeNull();
+  });
+
+  /**
+   * A sign-in has to reach every screen that lists tools, not just the one that asked for it.
+   *
+   * It did not. Signing in got a reader through the connect screen and then, on the simulation
+   * they set up with that target, `Missing bearer token` — because preflight connects through
+   * `targetView`, which built its sessions with no provider. ADR-0036 names "the check and the
+   * tool list behind it" as the things acting AS the user; there is more than one tool list.
+   */
+  it("reaches preflight's tool list, not only the connect screen's", async () => {
+    const started = await json(await post(h.app, routes.signIn(P), { url: target.mcpUrl }));
+    const back = consent((started as { authorizeUrl: string }).authorizeUrl, target);
+    await h.app.request(`${routes.signInCallback}?code=${back.code}&state=${back.state}`);
+
+    const simulation = await simulationAgainst(h.store, target.mcpUrl);
+    const preflight = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    // The tool list the people will be offered — the thing the screen could not get before.
+    expect(preflight.target.tools).toEqual(["search_stays"]);
+    // And no warning saying the target would not talk to us, which is what it used to print.
+    expect(preflight.target.warnings.join(" ")).not.toContain("Missing bearer token");
   });
 
   it("refuses a callback whose state matches no flow in flight", async () => {

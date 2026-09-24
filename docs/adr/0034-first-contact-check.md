@@ -36,7 +36,7 @@ It **distinguishes the failure modes**, which is the entire value:
 
 | outcome | what it means |
 | --- | --- |
-| `unreachable` | the endpoint never answered; nothing was created |
+| `unreachable` | the endpoint never answered — before anything was made, for the ways in that go through its tool list; with the account named and taken back down, for the ones that do not |
 | `provision-failed` | the endpoint answered and the strategy could not make an account; the provider's own error is carried |
 | `rejected` | the account was made and the target refused its credential (401/403) |
 | `accepted` | the account was made and a read-only tool answered it |
@@ -94,3 +94,35 @@ precondition of a page that must not.
 
 The probe identity is never persisted. Its tag is `populace:first-contact` rather than
 `tagForRun(...)` of an invented run id, so a sweep cannot mistake it for an execution's account.
+
+## Amendment (2026-09-23): the address is not probed bare
+
+**The check made a bare connection first, and a gated address failed it.** Stage one opened an
+anonymous session — no bearer, no sign-in — to separate "your server is down" from "your identity
+is wrong" before any account existed. A server that authenticates in middleware refuses
+`initialize` itself without a credential, so against one of those (Stays, behind a
+`Missing bearer token` gate) the check reported `unreachable`, "nothing was created and nothing
+was tried", for an address that was up and doing exactly what it should. The provision-url kit
+behind it was never called.
+
+**The probe answered a question that was already answered.** Connecting is creating (ADR-0040):
+the address had answered, through the user's own sign-in, when the target was made, and the
+endpoint check had proved the kit. The only thing left to find out was whether the address answers
+a *person*, and a session with no credential cannot find that out on a gated address at all.
+
+**So the account is made first, and the account is what opens the door.** For the ways in that
+hand back a credential — `provision-url`, `static`, `admin-mint` — the check provisions, connects
+with that credential, and reads the outcome from that connection; there is no anonymous session.
+An address that has gone down since it was connected is reported as `unreachable` from *that*
+connection, with the account named and taken back down, which is what the table above now says.
+The ways in that go through the tool list — `self-signup`, which has to find the sign-up tool, and
+`none`, for which the anonymous session *is* a person's session — still open one, and only they do.
+
+**A refusal of that anonymous session is `rejected`, not `unreachable`.** An HTTP answer is an
+address that is up. The SDK's transport error carries the status as `code` beside a message that
+quotes somebody else's body, and `httpStatusOf` in the runner reads the number rather than the
+words: a 401 or 403 to a session that offered no credential is the address asking for one, which
+with those two ways in nobody has to give, and the summary names both things that can mean. The
+mock target grew a `gateway` option — refuse `/mcp` without a bearer at the HTTP layer, before the
+handshake — so that shape is exercised offline.
+

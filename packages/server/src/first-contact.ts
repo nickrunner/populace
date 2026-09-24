@@ -12,10 +12,11 @@ import {
   type Identity,
   type IdentityProvider,
   type JsonValue,
+  type ProvisionResult,
   type StoredTarget,
   type TeardownDeps,
 } from "@populace/core";
-import { McpSession, looksLikeAuthRejection, type TargetTool } from "@populace/runner";
+import { McpSession, httpStatusOf, looksLikeAuthRejection, type TargetTool } from "@populace/runner";
 import { z } from "zod";
 
 /**
@@ -146,7 +147,7 @@ function handleOf(credential: Credential): string {
  * It is seeded from the CONFIGURATION rather than only from the credential, and it is seeded
  * before the first connection, because the leak that motivated this was neither: a gateway that
  * answers 401 with the Authorization header it received puts the target's own endpoint token into
- * an `unreachable` detail, before an account exists and before anything the provider knows about.
+ * a `rejected` detail, before an account exists and before anything the provider knows about.
  * That detail is then written onto the target row and rendered in the editor. So: configured
  * endpoint tokens, configured header values, the Firebase Web API key, the password the check
  * offers a sign-up tool, and the credential's bearer and redeemable once there is one.
@@ -178,8 +179,8 @@ export async function firstContact(target: StoredTarget, options: FirstContactOp
   const checkedAt = at.toISOString();
   // Built first, because building it can itself fail — a static pool file that is not there, an
   // admin SDK that is not installed — and because the STRATEGY it reports is the one that actually
-  // provisioned. The failure is held rather than thrown: an unreachable endpoint is the more
-  // fundamental problem and is still reported first when both are broken.
+  // provisioned. The failure is held rather than thrown so that a target nobody has finished
+  // (`undecided`, below) is answered in its own words rather than the provider's.
   let provider: IdentityProvider | null = null;
   let providerError: string | null = null;
   try {
@@ -241,35 +242,15 @@ export async function firstContact(target: StoredTarget, options: FirstContactOp
   // no agent can reach, so a check that used one would be answering a different question.
   const policy = effectiveToolPolicy(target.tools);
 
-  // ---- 1. can it be reached at all ----------------------------------------
-  // Before any account exists, so "your server is down" is never reported as "your identity
-  // configuration is wrong". This connection uses the endpoint's own token (a gateway token), not
-  // a person's — the same thing `checkTarget` does.
-  const anonymous = new McpSession(endpoint, undefined);
-  const started = Date.now();
-  try {
-    await anonymous.connect();
-  } catch (err) {
-    await anonymous.close();
-    return report({
-      outcome: "unreachable",
-      checkedAt,
-      strategy,
-      summary: `Could not reach ${endpoint.url}. Nothing was created and nothing was tried.`,
-      detail: (err instanceof Error ? err.message : String(err)),
-      handle: null,
-      tool: null,
-      latencyMs: null,
-      tornDown: false,
-      leftBehind: null,
-    });
-  }
-  const reachLatency = Date.now() - started;
-  const anonymousTools = anonymous.listTools();
-
-  // ---- 2. provision one identity ------------------------------------------
+  // ---- 1. provision one identity ------------------------------------------
+  // There is no anonymous probe of the address first. Connecting is creating (ADR-0040): the
+  // address answered when this target was made, so "is it up" is already known — and a server
+  // that gates `initialize` at the HTTP layer refuses a session carrying no credential at all,
+  // which a probe with none reported as "could not reach" for an address that was up and doing
+  // exactly what it should (ADR-0034 amendment). Whether the address answers a PERSON is what
+  // stage 3 finds out, with the credential this stage makes; an address that has gone down since
+  // is reported there, with the account named and taken back down.
   if (provider === null) {
-    await anonymous.close();
     return report({
       outcome: "provision-failed",
       checkedAt,
@@ -278,86 +259,144 @@ export async function firstContact(target: StoredTarget, options: FirstContactOp
       detail: providerError,
       handle: null,
       tool: null,
-      latencyMs: reachLatency,
+      latencyMs: null,
       tornDown: false,
       leftBehind: null,
     });
   }
   const ready: IdentityProvider = provider;
-  let credential: Credential | null;
+  let provisioned: ProvisionResult;
   try {
-    credential = await provisionOne(ready, probeAgent(at), anonymous, anonymousTools, policy, secrets);
+    provisioned = await ready.provision({ agent: probeAgent(at), runId: FIRST_CONTACT_TAG, tag: FIRST_CONTACT_TAG });
   } catch (err) {
-    await anonymous.close();
-    // The sign-up tool may already have answered before this failed — a `tokenPath` that points at
-    // nothing is the likeliest configuration mistake there is, and by then the account is on
-    // somebody's product. There is no credential to authenticate a teardown call with, so it
-    // cannot be removed; the one thing that must not happen is saying nothing was left behind.
-    const created = err instanceof ProvisionFailed ? err.created : null;
     return report({
       outcome: "provision-failed",
       checkedAt,
       strategy,
-      summary: err instanceof ProvisionFailed && err.summary !== null ? err.summary : provisionFailureSummary(strategy, created),
+      summary: provisionFailureSummary(strategy, null),
       detail: (err instanceof Error ? err.message : String(err)),
-      handle: created,
+      handle: null,
       tool: null,
-      latencyMs: reachLatency,
+      latencyMs: null,
       tornDown: false,
-      leftBehind: created === null ? null : { handle: created, why: "the sign-up tool made it before this failed, and no credential came back to authenticate a deletion with, so populace could not remove it — delete it by hand" },
+      leftBehind: null,
     });
   }
 
-  // ---- 2a. nobody needs an account here ------------------------------------
-  // The provider said there is no account and there will not be one (ADR-0038), so the session
-  // already open IS the session a person would have: whatever the address itself carries. Every
-  // sentence below about a handle, a teardown and what was left behind has nothing to answer, and
-  // "an account was made" would be a lie. What is left is the same vocabulary minus
-  // `provision-failed`, which cannot happen when nothing is provisioned.
-  if (credential === null) {
-    const candidate = readOnlyCandidate(anonymousTools, policy);
-    if (candidate.tool === null) {
+  let credential: Credential;
+  if (provisioned.kind === "credential") {
+    credential = provisioned.credential;
+  } else {
+    // ---- 2. the ways in that go through the tool list ------------------------
+    // Self-signup makes the account by calling the target's own sign-up tool, and "none" has no
+    // account at all — the session a person would have IS a session with whatever the address
+    // carries. Both need that session, and only they do.
+    const anonymous = new McpSession(endpoint, undefined);
+    const started = Date.now();
+    try {
+      await anonymous.connect();
+    } catch (err) {
       await anonymous.close();
+      const detail = (err instanceof Error ? err.message : String(err));
+      // An HTTP answer is an address that is up. A 401 or 403 to a session that offered no
+      // credential is the address asking for one — which, with these ways in, nobody has to give.
+      const status = err instanceof Error ? httpStatusOf(err) : null;
+      if (status === 401 || status === 403 || looksLikeAuthRejection(detail)) {
+        return report({
+          outcome: "rejected",
+          checkedAt,
+          strategy,
+          summary:
+            provisioned.kind === "none"
+              ? nobodyRefused(`${endpoint.url} refused a session anyway`)
+              : `Nobody has an account yet, and ${endpoint.url} refused a session without one — so nobody could sign up here. Either this address wants a credential of its own — which goes on the endpoint, where every person will use it — or accounts here are not made through a tool at all, and one of the other ways in is the answer.`,
+          detail,
+          handle: null,
+          tool: null,
+          latencyMs: null,
+          tornDown: false,
+          leftBehind: null,
+        });
+      }
       return report({
-        outcome: "connected-only",
+        outcome: "unreachable",
         checkedAt,
         strategy,
-        summary: `Nobody needs an account here, and ${endpoint.url} answered — but ${candidate.why}. The connection is verified; a call is not.`,
-        detail: null,
+        summary: `Could not reach ${endpoint.url}. Nothing was created and nothing was tried.`,
+        detail,
         handle: null,
         tool: null,
-        latencyMs: reachLatency,
+        latencyMs: null,
         tornDown: false,
         leftBehind: null,
       });
     }
-    const anonymousCall = await anonymous.call(candidate.tool.name, {});
-    await anonymous.close();
-    const tried = candidate.tool.name;
-    if (!anonymousCall.result.isError) {
+    const reachLatency = Date.now() - started;
+    const anonymousTools = anonymous.listTools();
+
+    // ---- 2a. nobody needs an account here ------------------------------------
+    // The provider said there is no account and there will not be one (ADR-0038), so the session
+    // just opened IS the session a person would have: whatever the address itself carries. Every
+    // sentence below about a handle, a teardown and what was left behind has nothing to answer,
+    // and "an account was made" would be a lie. What is left is the same vocabulary minus
+    // `provision-failed`, which cannot happen when nothing is provisioned.
+    if (provisioned.kind === "none") {
+      const candidate = readOnlyCandidate(anonymousTools, policy);
+      if (candidate.tool === null) {
+        await anonymous.close();
+        return report({
+          outcome: "connected-only",
+          checkedAt,
+          strategy,
+          summary: `Nobody needs an account here, and ${endpoint.url} answered — but ${candidate.why}. The connection is verified; a call is not.`,
+          detail: null,
+          handle: null,
+          tool: null,
+          latencyMs: reachLatency,
+          tornDown: false,
+          leftBehind: null,
+        });
+      }
+      const anonymousCall = await anonymous.call(candidate.tool.name, {});
+      await anonymous.close();
+      const tried = candidate.tool.name;
+      if (!anonymousCall.result.isError) {
+        return report({
+          outcome: "accepted",
+          checkedAt,
+          strategy,
+          summary: `Nobody needs an account here, and \`${tried}\` answered. Everyone a simulation sends will visit exactly as this did.`,
+          detail: null,
+          handle: null,
+          tool: tried,
+          latencyMs: anonymousCall.latencyMs,
+          tornDown: false,
+          leftBehind: null,
+        });
+      }
+      // The failure this branch exists to name, which has two causes and says both. Either the
+      // ADDRESS is gated and the token on the endpoint is missing or wrong — the gateway case — or
+      // this product does have users and "they don't need one" is the wrong answer. Nobody's
+      // account was refused either way, because nobody has one.
+      if (looksLikeAuthRejection(anonymousCall.result.text)) {
+        return report({
+          outcome: "rejected",
+          checkedAt,
+          strategy,
+          summary: nobodyRefused(`\`${tried}\` was refused anyway`),
+          detail: anonymousCall.result.text,
+          handle: null,
+          tool: tried,
+          latencyMs: anonymousCall.latencyMs,
+          tornDown: false,
+          leftBehind: null,
+        });
+      }
       return report({
-        outcome: "accepted",
+        outcome: "tool-failed",
         checkedAt,
         strategy,
-        summary: `Nobody needs an account here, and \`${tried}\` answered. Everyone a simulation sends will visit exactly as this did.`,
-        detail: null,
-        handle: null,
-        tool: tried,
-        latencyMs: anonymousCall.latencyMs,
-        tornDown: false,
-        leftBehind: null,
-      });
-    }
-    // The failure this branch exists to name, which has two causes and says both. Either the
-    // ADDRESS is gated and the token on the endpoint is missing or wrong — the gateway case — or
-    // this product does have users and "they don't need one" is the wrong answer. Nobody's
-    // account was refused either way, because nobody has one.
-    if (looksLikeAuthRejection(anonymousCall.result.text)) {
-      return report({
-        outcome: "rejected",
-        checkedAt,
-        strategy,
-        summary: `Nobody needs an account here, but \`${tried}\` was refused anyway. Either this address wants a credential of its own — which goes on the endpoint, where every person will use it — or this product does have users after all, and one of the other ways in is the answer.`,
+        summary: `Nobody needs an account here and the target ran the call — but \`${tried}\` answered with an error. Getting in is fine; that tool is not.`,
         detail: anonymousCall.result.text,
         handle: null,
         tool: tried,
@@ -366,21 +405,32 @@ export async function firstContact(target: StoredTarget, options: FirstContactOp
         leftBehind: null,
       });
     }
-    return report({
-      outcome: "tool-failed",
-      checkedAt,
-      strategy,
-      summary: `Nobody needs an account here and the target ran the call — but \`${tried}\` answered with an error. Getting in is fine; that tool is not.`,
-      detail: anonymousCall.result.text,
-      handle: null,
-      tool: tried,
-      latencyMs: anonymousCall.latencyMs,
-      tornDown: false,
-      leftBehind: null,
-    });
-  }
 
-  await anonymous.close();
+    // ---- 2b. sign up through the target's own tool ---------------------------
+    try {
+      credential = await signUpThrough(ready, provisioned, anonymous, anonymousTools, policy, secrets);
+    } catch (err) {
+      await anonymous.close();
+      // The sign-up tool may already have answered before this failed — a `tokenPath` that points
+      // at nothing is the likeliest configuration mistake there is, and by then the account is on
+      // somebody's product. There is no credential to authenticate a teardown call with, so it
+      // cannot be removed; the one thing that must not happen is saying nothing was left behind.
+      const created = err instanceof ProvisionFailed ? err.created : null;
+      return report({
+        outcome: "provision-failed",
+        checkedAt,
+        strategy,
+        summary: err instanceof ProvisionFailed && err.summary !== null ? err.summary : provisionFailureSummary(strategy, created),
+        detail: (err instanceof Error ? err.message : String(err)),
+        handle: created,
+        tool: null,
+        latencyMs: reachLatency,
+        tornDown: false,
+        leftBehind: created === null ? null : { handle: created, why: "the sign-up tool made it before this failed, and no credential came back to authenticate a deletion with, so populace could not remove it — delete it by hand" },
+      });
+    }
+    await anonymous.close();
+  }
 
   secrets.add(credential.bearerToken, credential.redeemable?.secret);
   const handle = handleOf(credential);
@@ -414,7 +464,7 @@ export async function firstContact(target: StoredTarget, options: FirstContactOp
       detail: null,
       handle,
       tool: null,
-      latencyMs: reachLatency,
+      latencyMs: null,
     });
   }
 
@@ -563,7 +613,16 @@ class ProvisionFailed extends Error {
 }
 
 /**
- * One identity, through whichever way in is configured.
+ * Nobody's account was refused, because nobody has one: the two things that can mean, said both.
+ * Either the ADDRESS is gated and the token on the endpoint is missing or wrong — the gateway case
+ * — or this product does have users and "they don't need one" is the wrong answer.
+ */
+function nobodyRefused(what: string): string {
+  return `Nobody needs an account here, but ${what}. Either this address wants a credential of its own — which goes on the endpoint, where every person will use it — or this product does have users after all, and one of the other ways in is the answer.`;
+}
+
+/**
+ * The account, made the way a person on their first visit makes one.
  *
  * A self-signup provider does not create the account itself — the AGENT does, by calling the
  * target's sign-up tool, and the runner captures what comes back (ADR-0012). So the check does
@@ -571,21 +630,14 @@ class ProvisionFailed extends Error {
  * provider suggested and hands the result to `capture`. That is the configuration being tested —
  * `signupTool` and `tokenPath` are the two fields most likely to be wrong.
  */
-async function provisionOne(
+async function signUpThrough(
   provider: IdentityProvider,
-  agent: Agent,
+  provisioned: Extract<ProvisionResult, { kind: "self-service" }>,
   session: McpSession,
   tools: readonly TargetTool[],
   policy: EffectiveToolPolicy,
   secrets: Secrets,
-): Promise<Credential | null> {
-  const provisioned = await provider.provision({ agent, runId: FIRST_CONTACT_TAG, tag: FIRST_CONTACT_TAG });
-  if (provisioned.kind === "credential") return provisioned.credential;
-  // No account, and there will not be one (ADR-0038). Null rather than a credential with nothing
-  // in it: a credential with no bearer means "an account was made and came back unusable", which
-  // is a failure, and this is the opposite — nothing was asked of anybody.
-  if (provisioned.kind === "none") return null;
-
+): Promise<Credential> {
   const { signupTool, suggested } = provisioned;
   if (!tools.some((tool) => tool.name === signupTool)) {
     throw new ProvisionFailed(`the target exposes no tool called ${signupTool}; the sign-up tool in the identity settings does not match its tool list`, null);
