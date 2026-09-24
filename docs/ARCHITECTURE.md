@@ -268,6 +268,9 @@ Local mode is a CLI daemon with an in-process tick loop and a SQLite store.
 Cloud mode (later) runs the same `runWake()` in a container with a Postgres
 store and an external scheduler. The `Store` and `Scheduler` interfaces are
 designed now; only SQLite and the in-process loop are implemented (ADR-0004).
+`docs/product/CLOUD-PLAN.md` is the plan for cloud mode, and its §2 is the
+list of what the control plane above the runner assumes today that a hosted
+product breaks.
 
 ## Model calls
 
