@@ -264,7 +264,23 @@ export const api = {
   runCohorts: (id: string) => get(routes.runCohorts(id), runCohorts),
   wakes: (id: string) => get(routes.runWakes(id), wakes),
   findings: (id: string, query = "") => get(`${routes.runFindings(id)}${query}`, findings),
+  /**
+   * One execution's digest, built from what is already in the store. Free, instant, and it calls
+   * nobody: safe to read on load, on a refetch, and on every `finding.filed` the stream carries.
+   */
   digest: (id: string) => get(routes.runDigest(id), DigestSchema),
+  /**
+   * The same digest with the judge run first, and **the one read in this file with effects**.
+   *
+   * `?verify=true` calls the model on every finding with no verdict yet AND replays each one's
+   * recorded tool calls against the live target as the person who filed it — `app.ts` calls it
+   * the single deliberate exception to "no route with effects behind a GET", off by default and
+   * named in the query string so it can never happen by accident. It is spelled as its own
+   * function for exactly that reason: `q.digest` must stay a plain read, or the project event
+   * stream invalidating `["digest", runId]` on a filed finding would quietly spend money and
+   * write to somebody's product. Only an explicit press may call this.
+   */
+  recheckAndDigest: (id: string) => get(`${routes.runDigest(id)}?verify=true`, DigestSchema),
   spend: (id: string) => get(routes.runSpend(id), SpendViewSchema),
   tools: (id: string) => get(routes.runTools(id), ToolUsageViewSchema),
   memory: (runId: string, participantId: string) => get(routes.participantMemory(runId, participantId), MemorySchema),

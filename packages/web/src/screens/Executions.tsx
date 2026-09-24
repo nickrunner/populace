@@ -76,6 +76,15 @@ const comparePath = (earlier: string, later: string): string =>
   `executions/compare?a=${encodeURIComponent(earlier)}&b=${encodeURIComponent(later)}`;
 
 /**
+ * One execution's own report. It is a link BESIDE the row rather than the row's destination: the
+ * row opens the comparison, which is what a reader of a list of executions usually wants, and a
+ * digest is the other question — *what did this one, on its own, turn up*. It is also the only
+ * answer this product has for an execution that was stopped halfway, which until now was
+ * `populace digest` at a terminal and nothing in the browser at all.
+ */
+const digestPath = (runId: string): string => `executions/${encodeURIComponent(runId)}/digest`;
+
+/**
  * Where a row goes, and where it does not.
  *
  * An execution has no page of its own — the thing a reader wants when they open one is it beside
@@ -143,6 +152,20 @@ export function ExecutionHistory({ results, limit }: { results: SimulationResult
       />
     );
 
+  /**
+   * What sits outside the row's link: its digest, and the way to delete it. Both go to
+   * `LedgerRow`'s `aside`, because a control or a second link inside an anchor is an element that
+   * navigates somewhere other than where it says.
+   */
+  const rowControls = (execution: (typeof newestFirst)[number]) => (
+    <Inline gap={3} align="center">
+      <Link size="ui" to={href(digestPath(execution.runId))}>
+        Digest
+      </Link>
+      {deleteControl(execution)}
+    </Inline>
+  );
+
   if (results.history.length === 0)
     return (
       <StateBlock kind="empty" what="this simulation's executions">
@@ -168,7 +191,7 @@ export function ExecutionHistory({ results, limit }: { results: SimulationResult
               execution={entry}
               current={entry.runId === runId}
               {...(to === undefined ? {} : { to })}
-              aside={deleteControl(entry)}
+              aside={rowControls(entry)}
             />
           );
         })}
@@ -227,6 +250,7 @@ export function ExecutionHistory({ results, limit }: { results: SimulationResult
  * to it, in order.
  */
 function OneLife({ entry }: { entry: Execution }) {
+  const { href } = useSimulation();
   const events = useQuery(q.runEvents(entry.runId));
   const moments = (events.data?.items ?? []).filter(isMoment);
   const pauses = moments.filter((event) => event.type === "run.status" && payloadText(event, "action") === "paused").length;
@@ -320,6 +344,18 @@ function OneLife({ entry }: { entry: Execution }) {
         ) : (
           <LiveActivityFeed events={feed} label="what has happened to it, newest first" />
         )}
+
+        {/*
+          A longitudinal execution is the one this simulation has, so there is no row to hang its
+          report off. It wants a digest for exactly the same reason an ephemeral one does — more
+          so, since pausing it is a normal thing to do and a paused execution digests like any
+          other.
+        */}
+        <Inline gap={4} wrap>
+          <Link size="ui" to={href(digestPath(entry.runId))}>
+            Digest what it has found so far
+          </Link>
+        </Inline>
       </Stack>
     </Card>
   );

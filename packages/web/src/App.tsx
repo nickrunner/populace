@@ -43,6 +43,7 @@ import { Gaps } from "./screens/Gaps.jsx";
 import { WhoLeft } from "./screens/WhoLeft.jsx";
 import { RunCohorts } from "./screens/RunCohorts.jsx";
 import { Executions } from "./screens/Executions.jsx";
+import { ExecutionDigest } from "./screens/ExecutionDigest.jsx";
 import { Compare } from "./screens/Compare.jsx";
 import { PersonAcrossProject, PersonInSimulation } from "./screens/Person.jsx";
 import { Visits } from "./screens/Visits.jsx";
@@ -304,6 +305,14 @@ function SimulationShell() {
         <Route path="coverage" element={<Gaps />} />
         <Route path="executions" element={<Executions />} />
         <Route path="executions/compare" element={<Compare />} />
+        {/*
+          One execution's digest, which until now only `populace digest` could produce. It names
+          its execution in the path rather than reading "the latest" out of context, because the
+          reason to want one is usually an execution that is NOT the latest — the one that was
+          stopped halfway. The screen reads it plainly; the verifier behind `?verify=true` is a
+          press on that screen and never a consequence of arriving at this address.
+        */}
+        <Route path="executions/:runId/digest" element={<ExecutionDigest />} />
         {/* Everything below reads ONE execution, so it needs one to exist. */}
         <Route path="live" element={<NeedsExecution runId={runId} title="Live">{(id) => <LiveRun runId={id} />}</NeedsExecution>} />
         <Route path="left" element={<NeedsExecution runId={runId} title="Who walked away">{(id) => <WhoLeft runId={id} />}</NeedsExecution>} />
