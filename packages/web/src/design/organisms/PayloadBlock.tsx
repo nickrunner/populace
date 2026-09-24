@@ -57,6 +57,12 @@ import { CopyButton } from "../molecules/CopyButton.js";
 const DEFAULT_MAX_LINES = 24;
 
 /**
+ * How tall the well may get in either state. One constant because the two states must agree: see
+ * the note at the render site for what happens when they do not.
+ */
+const WELL_MAX_HEIGHT = "60vh";
+
+/**
  * JSON in, JSON at 2-space out; anything else verbatim.
  *
  * `JSON.parse` is typed `any`, which ADR-0001 forbids, so the result goes straight into zod at
@@ -149,11 +155,24 @@ export const PayloadBlock = forwardRef<HTMLElement, PayloadBlockProps>(function 
         ) : null}
 
         {/*
-          Bounded only once it is expanded. Collapsed, the well is `fold` lines tall by
-          construction and a scroll region there would be a scrollbar over nothing; expanded, it
-          may be 300 lines and the page must not grow by all of them.
+          Both states are bounded by the SAME height, and that is the whole point.
+          
+          They were not. Collapsed was `fold` source lines with no height cap; expanded was every
+          line inside a `60vh` scroller. Those are two different units, and `pre` here wraps
+          (`whitespace-pre-wrap`), so a source line can be three rendered rows: 24 folded lines of
+          a prompt measured 756px against a 547px cap, and pressing "show all 195 lines" made the
+          well SHORTER. The reader asked for more and got less.
+          
+          Capping the collapsed well too makes expanding monotonic by construction — it can only
+          ever add scrollback, never take height away — whatever the text does when it wraps.
         */}
-        {expanded && overflows ? <ScrollArea maxHeight="60vh">{body}</ScrollArea> : body}
+        {expanded && overflows ? (
+          <ScrollArea maxHeight={WELL_MAX_HEIGHT}>{body}</ScrollArea>
+        ) : (
+          <div className="overflow-hidden" style={{ maxHeight: WELL_MAX_HEIGHT }}>
+            {body}
+          </div>
+        )}
       </div>
 
       {overflows ? (

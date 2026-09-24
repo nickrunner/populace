@@ -596,6 +596,29 @@ export const ClusterDetailViewSchema = ClusterCardViewSchema.extend({
   peopleHit: z.array(ParticipantSummaryViewSchema),
   peopleMissed: z.array(z.object({ cohortSlug: z.string(), name: z.string(), count: z.number().int().nonnegative() })),
   history: z.array(z.object({ runId: z.string(), seq: z.number().int().positive(), reports: z.number().int().nonnegative(), verdict: VerdictSchema.nullable() })),
+  /**
+   * The product the calls below were made against, in ITS owner's words, read off the frozen
+   * config of the execution that produced the evidence rather than off the target as it stands
+   * today. A target renamed or re-pointed last week must not re-label evidence filed before it.
+   *
+   * It is here for the fix prompt (`packages/web/src/screens/fix-prompt.ts`): the recipient of
+   * that text is a coding agent looking at somebody's source tree with no access to populace, and
+   * "the endpoint" and "what the product says it is" are how it works out which service the calls
+   * were made against. `headers` and any static bearer an endpoint carries are deliberately
+   * absent — a credential goes up and never comes back down (`DATA-MODEL.md` §4).
+   */
+  product: z.object({
+    name: z.string(),
+    description: z.string().nullable(),
+    endpoints: z.array(z.object({ name: z.string(), url: z.string() })),
+  }),
+  /**
+   * What the cohorts on this page had in common, in the words their people were actually given
+   * (`PopulationMember.context`). The persona's role says what kind of person was calling; the
+   * condition says what they had been told they were in the middle of, and without it a
+   * reproduction is a list of calls with no intent behind them.
+   */
+  conditions: z.array(z.object({ cohortSlug: z.string(), cohortName: z.string(), context: z.string() })),
 });
 export type ClusterDetailView = z.infer<typeof ClusterDetailViewSchema>;
 

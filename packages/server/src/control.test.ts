@@ -2060,6 +2060,21 @@ describe("the project and simulation screens name nobody", () => {
     expect(names).toContain(detail.quotes[0]!.name);
     expect(detail.peopleHit.length).toBeGreaterThan(0);
 
+    /**
+     * And the context a reader outside populace needs to act on it. The fix prompt
+     * (`packages/web/src/screens/fix-prompt.ts`) is pasted into a coding agent that is looking at
+     * the PRODUCT's source and has never heard of this store, so the product's own name and words,
+     * the endpoint the calls went to, and what the people making them had been told they were
+     * doing all have to cross the wire with the evidence.
+     */
+    expect(detail.product.name).toBe("Tasklet");
+    expect(detail.product.description).toContain("projects and tasks");
+    expect(detail.product.endpoints.map((e) => e.url)).toEqual([target.mcpUrl]);
+    // The endpoint's static bearer is not on it, and never is (`DATA-MODEL.md` §4).
+    expect(JSON.stringify(detail.product)).not.toContain("gateway-secret");
+    expect(detail.conditions.map((c) => c.cohortSlug)).toEqual(["casual-lister"]);
+    expect(detail.conditions[0]!.context.length).toBeGreaterThan(0);
+
     await h.close();
   });
 });

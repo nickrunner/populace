@@ -531,7 +531,20 @@ export class ProjectReadModel {
     const byAgent = new Map(agents.map((a) => [a.id, a]));
     const visitNumber = new Map(wakes.map((w) => [w.id, w.wakeNumber]));
     const identities = await this.read.identitiesOf(reportedIn.id, agents);
-    const memberName = new Map(context.members.map((m) => [m.cohort, m.cohortName]));
+    // The config the EVIDENCE ran under, not the latest one: for a signature the newest execution
+    // did not report, `reportedIn` is an older run, and describing its calls with today's target
+    // name and today's cohort briefs would attribute them to a setup that never made them.
+    const snapshot = reportedIn.configSnapshotId ? await this.store.getConfigSnapshot(reportedIn.configSnapshotId) : undefined;
+    const lanes = snapshot?.config.population.members ?? [];
+    const memberName = new Map([...context.members.map((m): [string, string] => [m.cohort, m.cohortName]), ...lanes.map((m): [string, string] => [m.cohort, m.cohortName])]);
+    const hitCohorts = new Set(mine.map((f) => byAgent.get(f.agentId)?.cohortSlug).filter((slug): slug is string => slug !== undefined));
+    // One row per cohort, not per lane. A cohort mixing three personas is three members sharing a
+    // slug and a context, and three identical briefs under one heading is noise.
+    const conditions = new Map<string, { cohortSlug: string; cohortName: string; context: string }>();
+    for (const lane of lanes) {
+      if (!hitCohorts.has(lane.cohort) || conditions.has(lane.cohort) || lane.context === "") continue;
+      conditions.set(lane.cohort, { cohortSlug: lane.cohort, cohortName: lane.cohortName, context: lane.context });
+    }
     const hitAgents = new Set(mine.map((f) => f.agentId));
     const missed = new Map<string, { cohortSlug: string; name: string; count: number }>();
     for (const agent of agents) {
@@ -569,6 +582,14 @@ export class ProjectReadModel {
         const reports = findings.filter((f) => f.runId === run.id && f.signature === signature);
         return { runId: run.id, seq: run.seq, reports: reports.length, verdict: reports.find((f) => f.verification !== null)?.verification?.verdict ?? null };
       }),
+      product: {
+        name: snapshot?.config.target.name ?? "",
+        description: snapshot?.config.target.description ?? null,
+        // Name and URL only. An endpoint also carries `headers` and may carry a static
+        // `bearerToken`, and neither has any business on the wire.
+        endpoints: (snapshot?.config.target.mcp ?? []).map((endpoint) => ({ name: endpoint.name, url: endpoint.url })),
+      },
+      conditions: [...conditions.values()],
     };
   }
 

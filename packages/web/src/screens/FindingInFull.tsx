@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import type { TriageInput } from "@populace/contract";
@@ -6,9 +7,11 @@ import { api, isMissing } from "../api.js";
 import { keys, q } from "../queries.js";
 import { useProject, useSimulation } from "../context.jsx";
 import { people, plural, stateOfCluster } from "../format.js";
+import { buildFixPrompt } from "./fix-prompt.js";
 import {
   Badge,
   Button,
+  CopyButton,
   Dot,
   EvidenceSteps,
   Heading,
@@ -18,6 +21,7 @@ import {
   Measure,
   Mono,
   PageHeader,
+  PayloadBlock,
   PersonQuoteCard,
   ReplayVerdict,
   Section,
@@ -73,6 +77,13 @@ import {
  * repair** (ADR-0028); the word "fixed" on this screen appears only inside `TriageForm`'s
  * decisions, where a human types it about their own product.
  *
+ * **The last section on the right is the way OUT of this screen** — the evidence written as a
+ * prompt for a coding agent working on the reader's own product. It is here and nowhere else
+ * because a prompt about one problem needs the whole of one problem: the reproduction call by
+ * call, the reach, the intent, the verdict. `buildFixPrompt` assembles it in `fix-prompt.ts`,
+ * where the redaction and the clipping are tested; this screen draws the string and says, in its
+ * own right and not only inside the string, how much of the transcript was altered on the way.
+ *
  * **Four sibling `<h2>`s become one `<h2>` per `Section`** with `<h3>`s beneath (§6, "Heading
  * order"), and the two divergent proportion markups become one `IncidenceBars`: a cohort nobody
  * in it hit reads `0/8` in the same column as the rest, rather than in a second list with its own
@@ -119,6 +130,13 @@ export function FindingInFull() {
 
   const crumbs: Crumb[] = [{ label: "Results", to: href() }];
   const card = cluster.data;
+
+  /**
+   * The prompt, assembled above the early return because hooks cannot be conditional — and
+   * memoised because it walks every stored tool result through the redactor twice and would
+   * otherwise do it on every keystroke in the triage note below.
+   */
+  const prompt = useMemo(() => (card === undefined ? null : buildFixPrompt(card)), [card]);
 
   if (card === undefined) {
     const state: StateKind = cluster.isPending
@@ -346,6 +364,49 @@ export function FindingInFull() {
               )}
             </Stack>
           </Section>
+
+          {prompt === null ? null : (
+            <Section
+              title="Hand it to a coding agent"
+              actions={<CopyButton text={prompt.text} label="Copy the prompt" />}
+            >
+              <Stack gap={4} align="stretch">
+                <Measure width="read">
+                  <Text as="p" size="read" tone="soft">
+                    Everything on this page, written for a coding agent working on your product
+                    rather than on this one: the calls in order with their arguments and their
+                    results, who was trying to do what, and — before any of it — that this is a
+                    simulated user&rsquo;s report and not a confirmed defect.
+                  </Text>
+                </Measure>
+
+                {/*
+                  In the payload well rather than in prose, because it is a payload: it is read to
+                  be checked and then copied whole. `copyable` is off because the well's own
+                  control only appears on hover, and the one affordance this section exists for
+                  cannot be the one nobody can see (DESIGN-SYSTEM §6).
+                */}
+                <PayloadBlock caption="The prompt" value={prompt.text} copyable={false} />
+
+                {/*
+                  Said on the screen as well as inside the prompt. Somebody about to paste this
+                  into a chat window is owed the sentence before they press, not after — this is
+                  the point where a bearer token would leave the product if the redactor had
+                  missed one.
+                */}
+                <Measure width="read">
+                  <Text as="p" size="meta" tone="muted">
+                    {prompt.redactions === 0
+                      ? "Nothing in it matched a credential shape, so nothing was removed."
+                      : `${plural(prompt.redactions, "value")} that looked like a credential ${prompt.redactions === 1 ? "was" : "were"} replaced with a marker before it left populace.`}
+                    {prompt.clips === 0
+                      ? ""
+                      : ` ${plural(prompt.clips, "result")} ${prompt.clips === 1 ? "was" : "were"} too long to include whole and ${prompt.clips === 1 ? "was" : "were"} cut from the middle, each marked where it was cut.`}
+                  </Text>
+                </Measure>
+              </Stack>
+            </Section>
+          )}
 
           <AcrossExecutions card={card} mode={simulation.mode} />
         </Stack>
