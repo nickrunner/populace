@@ -3,7 +3,7 @@ import { JsonValueSchema } from "@populace/contract";
 
 import { cn } from "../cn.js";
 import { surfaceBase } from "../variants.js";
-import { Badge, Inline, Link, ScrollArea, Text } from "../atoms/index.js";
+import { Badge, Inline, Link, Text } from "../atoms/index.js";
 // The molecule itself, not the barrel: `StateBlock` renders its failure through this organism
 // (§4.3 has one well, not three), and going through `molecules/index.js` would make that import a
 // module cycle. `CopyButton` depends on nothing above an atom.
@@ -28,8 +28,9 @@ import { CopyButton } from "../molecules/CopyButton.js";
  * **It wraps rather than stretching the page.** `whitespace-pre-wrap` plus `break-words` means a
  * 4,000-character single-line JSON body reflows inside its column instead of giving the page a
  * horizontal scrollbar, and `tab-size: 2` keeps an already-indented payload from marching off to
- * the right. Expanded, the well is a `ScrollArea`, so a 300-line body is bounded and scrollable
- * with a thumb drawn in our own tokens rather than pushing the rest of the screen below the fold.
+ * the right. Expanded, the well is UNBOUNDED and the page grows with it: a body worth expanding is
+ * one somebody wants to read, and a nested scroller makes them read it through a letterbox while
+ * two scrollbars argue about which one their wheel meant.
  *
  * **Pretty-printing is the organism's job, not the caller's** — the inventory is explicit. A
  * caller hands over whatever string it has: `JSON.stringify(call.arguments)` straight off the
@@ -55,12 +56,6 @@ import { CopyButton } from "../molecules/CopyButton.js";
 
 /** §4.3's default fold. Above this the well collapses and offers the rest. */
 const DEFAULT_MAX_LINES = 24;
-
-/**
- * How tall the well may get in either state. One constant because the two states must agree: see
- * the note at the render site for what happens when they do not.
- */
-const WELL_MAX_HEIGHT = "60vh";
 
 /**
  * JSON in, JSON at 2-space out; anything else verbatim.
@@ -155,24 +150,18 @@ export const PayloadBlock = forwardRef<HTMLElement, PayloadBlockProps>(function 
         ) : null}
 
         {/*
-          Both states are bounded by the SAME height, and that is the whole point.
-          
-          They were not. Collapsed was `fold` source lines with no height cap; expanded was every
-          line inside a `60vh` scroller. Those are two different units, and `pre` here wraps
-          (`whitespace-pre-wrap`), so a source line can be three rendered rows: 24 folded lines of
-          a prompt measured 756px against a 547px cap, and pressing "show all 195 lines" made the
-          well SHORTER. The reader asked for more and got less.
-          
-          Capping the collapsed well too makes expanding monotonic by construction — it can only
-          ever add scrollback, never take height away — whatever the text does when it wraps.
+          Expanded is UNBOUNDED, and the page grows with it.
+
+          This well used to fold by source lines and expand into a 60vh scroller. Those are two
+          different units, and `pre` wraps here — 24 folded lines of a prompt measured 756px
+          against a 547px cap, so "show all 195 lines" made the well SHORTER. Capping both at the
+          same height fixed the shrinking and left the real complaint: a 195-line prompt read
+          through a letterbox, with the page's scrollbar and the well's fighting each other.
+
+          So the fold stays (a long payload should not own the page by default) and expanding
+          simply stops bounding it. "Show all N lines" now means all N lines.
         */}
-        {expanded && overflows ? (
-          <ScrollArea maxHeight={WELL_MAX_HEIGHT}>{body}</ScrollArea>
-        ) : (
-          <div className="overflow-hidden" style={{ maxHeight: WELL_MAX_HEIGHT }}>
-            {body}
-          </div>
-        )}
+        {body}
       </div>
 
       {overflows ? (

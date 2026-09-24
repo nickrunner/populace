@@ -226,6 +226,30 @@ describe("reports pipeline against the mock target", () => {
     expect(byTitle.get("No way to delete a task")?.verdict).toBe("confirmed");
     expect(byTitle.get("No way to delete a task")?.reason).toContain("delete_task");
 
+    /*
+     * A sweep takes the accounts down; verification afterwards has nobody to replay AS.
+     *
+     * This used to be discovered at the door: the session carried no bearer, the target answered
+     * `401`, and every finding came back `inconclusive: could not connect` — which reads as broken
+     * auth. It also opened one doomed connection per finding. Marking the identities torn down and
+     * re-verifying is exactly the shape `autoSweep: true` leaves behind a second after a run ends.
+     */
+    const swept = await store.listFindings();
+    for (const f of swept) {
+      if (f.identityId) await store.markIdentityTornDown(f.identityId, new Date());
+      await store.saveFinding({ ...f, verification: null });
+    }
+    const afterSweep = await verifyPending({ store, config: cfg });
+    expect(afterSweep.every((f) => f.verification?.verdict === "inconclusive")).toBe(true);
+    const sweptReason = afterSweep.find((f) => f.identityId !== null)?.verification?.reason ?? "";
+    expect(sweptReason).toContain("nobody left to replay as");
+    expect(sweptReason).toContain("auto-sweep");
+    // The old symptom, which named the wrong thing, is gone.
+    expect(sweptReason).not.toContain("could not connect");
+    // And it never asked the target: a doomed call per finding is a cost somebody else pays.
+    for (const f of afterSweep) expect(f.verification?.replay ?? []).toHaveLength(0);
+    for (const f of swept) await store.saveFinding(f);
+
     const since = new Date(Date.now() - 3_600_000);
     const digest = await buildDigest({ store, config: cfg, since, until: new Date(Date.now() + 60_000) });
     expect(digest.totals.wakes).toBe(5);

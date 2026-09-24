@@ -73,6 +73,33 @@ export async function replayFinding(finding: Finding, deps: VerifierDeps): Promi
   const endpoint = deps.config.target.mcp.find((e) => e.name === finding.endpoint) ?? deps.config.target.mcp[0];
   if (!endpoint) return { steps: [], toolNames: [], identityUsed: null, error: "target has no MCP endpoint" };
   const identity = finding.identityId ? ((await deps.store.getIdentity(finding.identityId)) ?? null) : null;
+
+  /*
+   * A finding filed BY somebody has to be replayed AS them, and when that account is gone there is
+   * no experiment left to run — replaying as nobody asks a different question of the product.
+   *
+   * This is refused here rather than discovered at the door, because the door's answer is a lie.
+   * A swept account meant the session carried no bearer, so an OAuth-protected target replied
+   * `401 Missing bearer token` and every finding came back `inconclusive: could not connect` —
+   * which reads as broken auth and sent a reader looking at their sign-in. It also opened one
+   * doomed connection per finding against somebody's product: 31 of them, for a run whose
+   * accounts `autoSweep` had removed one second after it ended.
+   *
+   * A finding that names NO identity is a different case and still replays: on a target whose
+   * people have no accounts (ADR-0038), anonymous IS how the report was filed.
+   */
+  if (finding.identityId !== null && (identity === null || identity.tornDownAt !== null)) {
+    const swept = identity?.tornDownAt;
+    return {
+      steps: [],
+      toolNames: [],
+      identityUsed: null,
+      error: swept
+        ? `the account that filed this was removed from the target at ${swept}, so there is nobody left to replay as. A simulation with auto-sweep on takes its accounts down as soon as it finishes; verify before the sweep, or run it again with auto-sweep off.`
+        : `the account that filed this (${finding.identityId}) is no longer in this store, so there is nobody to replay as`,
+    };
+  }
+
   const usable = identity && identity.tornDownAt === null ? await renewed(identity, deps, now()) : null;
   const session = new McpSession(endpoint, usable?.credential.bearerToken);
   try {
