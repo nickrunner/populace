@@ -1397,7 +1397,7 @@ describe("executions of a simulation", () => {
       populationId: mine.populationId,
       targetId: mine.targetId,
       visitsPerPerson: 1,
-      cadence: CadenceSchema.parse({ every: "20ms" }),
+      cadence: CadenceSchema.parse({ every: "20ms", jitter: "0s" }),
       seed: "populace",
     });
     const started = (await json(await post(h.app, routes.simulationRuns(P, mine.id)))) as { runId: string };
@@ -1428,7 +1428,7 @@ describe("executions of a simulation", () => {
         populationId: first.populationId,
         targetId: second.id,
         visitsPerPerson: 1,
-        cadence: CadenceSchema.parse({ every: "20ms" }),
+        cadence: CadenceSchema.parse({ every: "20ms", jitter: "0s" }),
         seed: "populace",
       });
 
@@ -1864,7 +1864,12 @@ describe("two projects in one store", () => {
     const identity = { strategy: "self-signup" as const, signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", emailDomain: "populace.test" };
     const theirTarget = StoredTargetViewSchema.parse(await json(await post(h.app, routes.targets(id), { name: "Other target", mcp: [{ name: "default", url: target.mcpUrl }], identity })));
     await post(h.app, routes.personaStarters(id), { slug: "power-user", count: 1 });
-    const simulation = await json(await post(h.app, routes.simulations(id), { name: "Other trial", targetId: theirTarget.id, visitsPerPerson: 1 }));
+    // The cadence is explicit because the DEFAULT jitter is no longer zero: a run started here
+    // would otherwise wait up to half a minute for its first visit, which is right for a
+    // population and wrong for a test.
+    const simulation = await json(
+      await post(h.app, routes.simulations(id), { name: "Other trial", targetId: theirTarget.id, visitsPerPerson: 1, cadence: { every: "20ms", jitter: "0s" } }),
+    );
     return { id, simulationId: (simulation as { id: string }).id, targetId: theirTarget.id };
   };
 

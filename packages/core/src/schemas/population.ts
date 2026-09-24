@@ -7,9 +7,31 @@ import { ToolPolicySchema } from "./tool-policy.js";
 export const CadenceSchema = z.object({
   /** Time between wakes of one agent. */
   every: DurationSchema.prefault("10m"),
-  /** Random extra delay added to each wake, 0..jitter. */
-  jitter: DurationSchema.prefault("0s"),
-  /** Delay before the first wake after an agent is created. */
+  /**
+   * Random extra delay added to each wake, 0..jitter — including the FIRST one, which is what
+   * makes this the field that decides whether a population behaves like people or like a herd.
+   *
+   * It defaults to a tenth of the default interval rather than to zero, and zero is the wrong
+   * default for a reason worth writing down. Every agent in a run is armed in the same loop, so
+   * with no jitter they all carry the same `nextWakeAt` to the millisecond; `listDueAgents` then
+   * returns them oldest-first, ties broken by the index, which is agent id — and an agent id
+   * begins with its cohort slug. A population of six cohorts therefore ran one cohort at a time,
+   * in alphabetical order, and looked like a scheduler that could not interleave. It was a
+   * thundering herd being drained in whatever order the index happened to yield.
+   *
+   * `initialDelay` does NOT fix that: it shifts every agent by the same amount rather than
+   * spreading them, so the herd arrives late instead of arriving staggered.
+   *
+   * 30 seconds, matching what `populace init` has always written into its template — which is why
+   * a config-first user never saw this and a dashboard-first user always did. It spreads a
+   * population widely enough to interleave its cohorts while keeping the wait before the FIRST
+   * person shows up short, because jitter delays that one too.
+   */
+  jitter: DurationSchema.prefault("30s"),
+  /**
+   * Delay before the first wake after an agent is created. Zero by default on purpose — a first
+   * run should produce something to look at, and staggering is `jitter`'s job.
+   */
   initialDelay: DurationSchema.prefault("0s"),
 });
 export type Cadence = z.infer<typeof CadenceSchema>;
@@ -85,7 +107,8 @@ export const PopulationSchema = z.object({
   /** One entry per lane: a cohort mixing N personas contributes N members. */
   members: z.array(PopulationMemberSchema).min(1),
   /** From the simulation. */
-  cadence: CadenceSchema.prefault({ every: "10m", jitter: "0s", initialDelay: "0s" }),
+  /** From the simulation. Restating the field defaults here would be a second place to forget. */
+  cadence: CadenceSchema.prefault({}),
   /** From the simulation's `visitsPerPerson`. Null means the run has no arithmetic end. */
   maxWakes: z.number().int().positive().nullable().default(null),
   /** The simulation's seed: cadence jitter only. People are seeded from their cohort. */

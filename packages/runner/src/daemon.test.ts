@@ -27,7 +27,9 @@ function config(maxWakes: number): PopulaceConfig {
     daemon: { tick: "10ms", concurrency: 1 },
     population: {
       id: "test",
-      cadence: { every: "10ms" },
+      // `jitter` is explicit because the DEFAULT is no longer zero: a population is staggered on
+      // purpose now, and a scheduling test that inherited a minute of it would wait for one.
+      cadence: { every: "10ms", jitter: "0s" },
       maxWakes,
       members: [{ persona: { id: "quitter", name: "Quinn", role: "a hobbyist", backstory: "Impatient.", goals: ["keep a list"] } }],
     },
@@ -51,11 +53,11 @@ describe("LocalDaemon cadence", () => {
       daemon: { tick: "10ms", concurrency: 1 },
       population: {
         id: "everyone",
-        cadence: { every: "10ms" },
+        cadence: { every: "10ms", jitter: "0s" },
         maxWakes: 4,
         members: [
-          { cohort: "eager", cohortName: "Eager", persona, count: 1, cadence: { every: "10ms" } },
-          { cohort: "patient", cohortName: "Patient", persona, count: 1, cadence: { every: "6h" } },
+          { cohort: "eager", cohortName: "Eager", persona, count: 1, cadence: { every: "10ms", jitter: "0s" } },
+          { cohort: "patient", cohortName: "Patient", persona, count: 1, cadence: { every: "6h", jitter: "0s" } },
         ],
       },
     });
