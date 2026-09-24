@@ -2749,3 +2749,171 @@ describe("taking things out again", () => {
     await h.close();
   });
 });
+
+/**
+ * Connecting a target keeps it, and a secret is never shown before it is stored (ADR-0040).
+ *
+ * The bug this replays: everything on the connect screen lived in React state until Save, and the
+ * losses on a refresh were not equal. An address costs twenty seconds to retype. The provisioning
+ * secret costs the reader their own endpoint — it is made in the browser, shown once, and pasted
+ * into their app's environment, so after a refresh the app holds a credential populace has never
+ * seen and cannot reproduce, and the endpoint refuses populace forever for a reason nothing on
+ * screen can explain.
+ *
+ * What is exercised here is the SEQUENCE the screen performs, because that is where the behaviour
+ * lives: check, save, correct, save again, generate, store, finish. The screen's own wiring of
+ * that sequence is not renderable in this suite — the web package has no DOM test setup — so what
+ * these assert is that the server end of each step does what the screen needs it to.
+ */
+describe("connecting a target keeps it", () => {
+  const address = (url: string, bearerToken?: string): { name: string; url: string; bearerToken?: string }[] => [
+    { name: "default", url, ...(bearerToken === undefined ? {} : { bearerToken }) },
+  ];
+
+  it("stores a target the moment a check gets through, with nobody's answer to how people get in", async () => {
+    const h = await harness({ seed: false });
+    const check = TargetCheckSchema.parse(await json(await post(h.app, routes.targetsCheck(P), { mcp: address(target.mcpUrl) })));
+    expect(check.ok).toBe(true);
+
+    const saved = StoredTargetViewSchema.parse(
+      await json(await post(h.app, routes.targets(P), { name: check.server?.name ?? "the host", mcp: address(target.mcpUrl), identity: { strategy: "undecided" } })),
+    );
+    // Not `none`. `none` is an answer — this server has no users — and a target wearing it would
+    // be reported as ready to send a population to.
+    expect(saved.identity.strategy).toBe("undecided");
+
+    // And it survives the reload, which is the whole point.
+    const reread = StoredTargetViewSchema.parse(await json(await h.app.request(routes.target_(P, saved.id))));
+    expect(reread.identity.strategy).toBe("undecided");
+    expect(reread.mcp[0]?.url).toBe(target.mcpUrl);
+    expect((await h.store.getTarget(saved.id))?.identity.strategy).toBe("undecided");
+    await h.close();
+  });
+
+  it("corrects the row on a second check instead of leaving a second target behind", async () => {
+    const h = await harness({ seed: false });
+    // A typo first. Nothing is written for a check that did not get through, so the reader still
+    // has an empty project and an address to fix.
+    const missed = TargetCheckSchema.parse(await json(await post(h.app, routes.targetsCheck(P), { mcp: address("http://127.0.0.1:1/mcp") })));
+    expect(missed.ok).toBe(false);
+
+    // Then the real one, with a token on the address, and the row appears.
+    const first = StoredTargetViewSchema.parse(
+      await json(await post(h.app, routes.targets(P), { name: "Tasklet", mcp: address(target.mcpUrl, "gateway-secret"), identity: { strategy: "undecided" } })),
+    );
+    expect(first.mcp[0]?.authenticated).toBe(true);
+
+    // A second check names the row, because the form no longer holds the token it sent: a
+    // credential goes up and never comes back down, so the stored one has to be merged in here or
+    // a re-check would ask a gated address anonymously and report it dead.
+    const again = TargetCheckSchema.parse(await json(await post(h.app, routes.targetsCheck(P), { mcp: address(target.mcpUrl), target: first.id })));
+    expect(again.ok).toBe(true);
+
+    // And the save that follows it updates that row. One check, one target; two checks, still one.
+    const second = StoredTargetViewSchema.parse(
+      await json(await put(h.app, routes.target_(P, first.id), { name: "Tasklet", mcp: address(target.mcpUrl), identity: { strategy: "undecided" } })),
+    );
+    expect(second.id).toBe(first.id);
+    expect(second.mcp[0]?.authenticated).toBe(true);
+    expect(pageOf(StoredTargetViewSchema).parse(await json(await h.app.request(routes.targets(P)))).items).toHaveLength(1);
+    await h.close();
+  });
+
+  /**
+   * The rule the whole change exists for: never show somebody a secret you have not stored. The
+   * screen generates it, writes it here, and the reader pastes it into their own app — so by the
+   * time it is on screen this write has already happened.
+   */
+  it("keeps a provisioning secret written mid-flow, reports it as set, and never sends it back down", async () => {
+    const h = await harness({ seed: false });
+    const created = StoredTargetViewSchema.parse(
+      await json(await post(h.app, routes.targets(P), { name: "Tasklet", mcp: address(target.mcpUrl), identity: { strategy: "undecided" } })),
+    );
+
+    const generated = "zt8Q-not-a-real-secret-but-a-long-one";
+    const withSecret = StoredTargetViewSchema.parse(
+      await json(
+        await put(h.app, routes.target_(P, created.id), {
+          name: "Tasklet",
+          mcp: address(target.mcpUrl),
+          identity: { strategy: "provision-url", url: "https://dev.example.test/populace", secret: generated, emailDomain: "populace.test" },
+        }),
+      ),
+    );
+    expect(withSecret.identity).toMatchObject({ strategy: "provision-url", secretSet: true });
+    expect(JSON.stringify(withSecret)).not.toContain(generated);
+
+    // The reload the reader does. It comes back as `secretSet` and never as the value.
+    const reread = await h.app.request(routes.target_(P, created.id));
+    const text = await reread.clone().text();
+    expect(text).not.toContain(generated);
+    expect(StoredTargetViewSchema.parse(await json(reread)).identity).toMatchObject({ secretSet: true });
+    // And it really is kept, which is the difference between this and losing it.
+    const row = (await h.store.getTarget(created.id))!;
+    expect(row.identity.strategy === "provision-url" ? row.identity.secret : null).toBe(generated);
+
+    // A save that does not mention it leaves it alone — the same rule as a bearer token.
+    await put(h.app, routes.target_(P, created.id), {
+      name: "Tasklet renamed",
+      mcp: address(target.mcpUrl),
+      identity: { strategy: "provision-url", url: "https://dev.example.test/populace", emailDomain: "populace.test" },
+    });
+    const after = (await h.store.getTarget(created.id))!;
+    expect(after.identity.strategy === "provision-url" ? after.identity.secret : null).toBe(generated);
+    await h.close();
+  });
+
+  /** A user must never reach a run with an unconfigured target, and must be told which one. */
+  it("blocks preflight and refuses to start, naming the target and what is missing", async () => {
+    const h = await harness();
+    const targetId = pageOf(StoredTargetViewSchema).parse(await json(await h.app.request(routes.targets(P)))).items[0]!.id;
+    const seeded = (await h.store.getTarget(targetId))!;
+    await h.store.saveTarget({ ...seeded, identity: { strategy: "undecided" }, updatedAt: new Date().toISOString() });
+
+    const simulation = await ensureSimulation(h.store);
+    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    expect(view.blockers.join(" ")).toContain(seeded.name);
+    expect(view.blockers.join(" ")).toContain("how people get accounts");
+
+    // The press is refused too, rather than starting a job that dies four layers down.
+    const refused = await post(h.app, routes.simulationRuns(P, simulation.id), {});
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain(seeded.name);
+
+    // The project says it too, as something that stops an execution rather than something left to
+    // do — and it names the simulation, because that is what the reader is about to press.
+    const setup = SetupStatusSchema.parse(await json(await h.app.request(routes.projectSetup(P))));
+    expect(setup.ready).toBe(false);
+    expect(setup.blockers.join(" ")).toContain(seeded.name);
+    expect(setup.needs.some((need) => need.scope.kind === "target" && need.sentence.includes("how people get accounts"))).toBe(true);
+
+    // Answering it releases everything, which is the other half of a blocker being honest.
+    await put(h.app, routes.target_(P, targetId), {
+      name: seeded.name,
+      mcp: seeded.mcp.map((e) => ({ name: e.name, url: e.url })),
+      identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", emailDomain: "populace.test" },
+    });
+    const freed = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    expect(freed.blockers.join(" ")).not.toContain("how people get accounts");
+    await h.close();
+  });
+
+  /** First contact refuses rather than provisioning — there is nothing to provision with. */
+  it("refuses first contact on an unfinished target without touching the address", async () => {
+    const h = await harness();
+    const targetId = pageOf(StoredTargetViewSchema).parse(await json(await h.app.request(routes.targets(P)))).items[0]!.id;
+    const seeded = (await h.store.getTarget(targetId))!;
+    await h.store.saveTarget({ ...seeded, identity: { strategy: "undecided" }, updatedAt: new Date().toISOString() });
+
+    const result = FirstContactSchema.parse(await json(await post(h.app, routes.targetFirstContact(P, targetId))));
+    expect(result.outcome).toBe("provision-failed");
+    expect(result.strategy).toBe("undecided");
+    expect(result.summary).toContain(seeded.name);
+    expect(result.summary).toContain("how people get accounts");
+    // Nothing was made and nothing was left: the two sentences that must never be guessed at.
+    expect(result.handle).toBeNull();
+    expect(result.leftBehind).toBeNull();
+    expect(result.tornDown).toBe(false);
+    await h.close();
+  });
+});

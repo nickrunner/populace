@@ -139,6 +139,24 @@ export async function needsOf(store: Store, input: NeedsInput): Promise<Need[]> 
   // "a target has never been checked" and leaving the reader to find it.
 
   for (const target of targets) {
+    /*
+      Connected and not finished (ADR-0040). Connecting writes the target on the first successful
+      check, so this is a state a reader reaches by doing exactly what the screen told them to and
+      then stopping — which is why it is a sentence about one row rather than an error.
+
+      It is ADVISORY here and blocking below, and the split is the point. A project may hold
+      several targets (ADR-0035), and a half-answered dev endpoint must not stop an execution
+      against the qa one that is finished. What stops a run is a SIMULATION pointing at an
+      unfinished target, and that is a different sentence naming both.
+    */
+    if (target.identity.strategy === "undecided") {
+      needs.push({
+        blocking: false,
+        id: `target-unfinished:${target.id}`,
+        sentence: `${target.name} is connected, but nobody has said how people get accounts on it yet.`,
+        scope: { kind: "target", id: target.id },
+      });
+    }
     if (target.firstContact === null) {
       needs.push({
         blocking: false,
@@ -166,6 +184,18 @@ export async function needsOf(store: Store, input: NeedsInput): Promise<Need[]> 
         blocking: false,
         id: `simulation-target-gone:${simulation.id}`,
         sentence: `${simulation.name} points at a target that is no longer here.`,
+        scope: { kind: "simulation", id: simulation.id },
+      });
+    }
+    // The blocking half of the pair above. This one really does stop an execution — nothing can be
+    // provisioned through an unfinished target, so the run would die before its first visit — and
+    // it is scoped to the simulation because that is the thing the reader is about to press go on.
+    const aimedAt = targets.find((target) => target.id === simulation.targetId);
+    if (aimedAt?.identity.strategy === "undecided") {
+      needs.push({
+        blocking: true,
+        id: `simulation-target-unfinished:${simulation.id}`,
+        sentence: `${simulation.name} goes to ${aimedAt.name}, and nobody has said how people get accounts there. Answer that on the target and this can run.`,
         scope: { kind: "simulation", id: simulation.id },
       });
     }

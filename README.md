@@ -85,8 +85,10 @@ on a specific run. The example config lives in
 
 **Connecting is a browser flow.** Run `populace serve`, press *Connect a target*, and paste the
 address. If it answers `401`, populace signs you in to it; if it has no sign-up tool, the screen
-asks how the people should get accounts and hands you the code for the recommended answer. That
-path is written out in [docs/TARGET-SETUP.md](docs/TARGET-SETUP.md).
+asks how the people should get accounts and hands you the code for the recommended answer. The
+check that answers is also what creates the target, so the page survives a reload and any secret
+it generates for you is stored before it is shown. That path is written out in
+[docs/TARGET-SETUP.md](docs/TARGET-SETUP.md).
 
 Everything below is the same target described in `populace.yaml`, for a config-first setup:
 

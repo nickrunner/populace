@@ -4,8 +4,13 @@ import { z } from "zod";
  * `none` is a strategy with no identities: nobody is signed up, no row is written and there is
  * nothing to sweep (ADR-0038). It is here rather than modelled as an absent `identity` because
  * every row and every check that reports a strategy has to be able to report this one.
+ *
+ * `undecided` is the one that is not a way in at all (ADR-0040): a target that was connected and
+ * never finished. No identity row can ever carry it — nothing provisions through it — but a first
+ * contact refused for that reason still has to say which strategy it refused, and the word for
+ * "there isn't one yet" has to exist for it to say it.
  */
-export const IdentityStrategySchema = z.enum(["self-signup", "admin-mint", "static", "provision-url", "none"]);
+export const IdentityStrategySchema = z.enum(["self-signup", "admin-mint", "static", "provision-url", "none", "undecided"]);
 export type IdentityStrategy = z.infer<typeof IdentityStrategySchema>;
 
 /**

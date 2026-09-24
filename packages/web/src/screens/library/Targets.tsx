@@ -162,6 +162,14 @@ export function Targets() {
                 <Stack gap={1}>
                   <Inline gap={3} align="baseline" wrap>
                     <Text size="name">{target.name}</Text>
+                    {/*
+                      Connected and not finished (ADR-0040). Connecting writes the target the
+                      moment a check gets through, so a row that nobody answered the last question
+                      on is now an ordinary way to leave this screen — and it must not sit in this
+                      list looking like a target anybody can send people to. `warn` and not `bad`:
+                      nothing is broken, one question is open, and the row is the way to it.
+                    */}
+                    {target.identity.strategy === "undecided" ? <Chip tone="warn">Unfinished</Chip> : null}
                     {target.mcp.some((endpoint) => endpoint.authenticated) ? <Chip>Token stored</Chip> : null}
                     <Spacer />
                     <Text size="meta" tone="muted">
@@ -181,6 +189,15 @@ export function Targets() {
                       </Mono>
                     ))}
                   </Stack>
+
+                  {target.identity.strategy === "undecided" ? (
+                    <Measure width="read">
+                      <Text as="p" size="meta" tone="muted">
+                        Nobody has said how people get accounts here, so no simulation can go to it
+                        yet. Open it and answer that.
+                      </Text>
+                    </Measure>
+                  ) : null}
 
                   {target.description === null || target.description === "" ? null : (
                     <Measure width="read">

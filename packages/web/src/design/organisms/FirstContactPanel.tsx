@@ -81,10 +81,19 @@ export interface FirstContactPanelProps {
    * the address itself carries.
    */
   makesAnAccount?: boolean;
+  /**
+   * Why this cannot be run, when the reason is something other than "it has not been saved".
+   *
+   * An unfinished target (ADR-0040) is saved and still has nothing to make an account with,
+   * because nobody has said how accounts are made on it. Without this the control would sit at its
+   * bound telling the reader to save a target they have already saved, which is the one thing a
+   * bound must never do: it names what would release it (DESIGN-SYSTEM §6).
+   */
+  blocked?: string;
 }
 
 export const FirstContactPanel = forwardRef<HTMLElement, FirstContactPanelProps>(
-  function FirstContactPanel({ saved, result, running, error, onRun, makesAnAccount = true }, ref) {
+  function FirstContactPanel({ saved, result, running, error, onRun, makesAnAccount = true, blocked }, ref) {
     const facts: MetaFact[] = [];
     if (result !== null) {
       if (result.handle !== null) facts.push({ key: "account", node: `account ${result.handle}` });
@@ -108,8 +117,10 @@ export const FirstContactPanel = forwardRef<HTMLElement, FirstContactPanelProps>
       facts.push({ key: "when", node: <RelativeTime at={result.checkedAt} mode="ago" /> });
     }
 
+    /** One bound, two reasons, and the reason is always the one that is actually in the way. */
+    const bound = blocked ?? (saved ? null : "Save the target first — the check runs against what is stored.");
     const control = (
-      <Button variant="secondary" onClick={onRun} pending={running} atBound={!saved}>
+      <Button variant="secondary" onClick={onRun} pending={running} atBound={bound !== null}>
         {result === null ? "Try it for real" : "Try it again"}
       </Button>
     );
@@ -124,13 +135,7 @@ export const FirstContactPanel = forwardRef<HTMLElement, FirstContactPanelProps>
             <Badge tone={OUTCOME_TONES[result.outcome]}>{OUTCOME_WORDS[result.outcome]}</Badge>
           )}
           <Spacer />
-          {saved ? (
-            control
-          ) : (
-            <Tooltip content="Save the target first — the check runs against what is stored.">
-              {control}
-            </Tooltip>
-          )}
+          {bound === null ? control : <Tooltip content={bound}>{control}</Tooltip>}
         </Inline>
 
         <Measure width="read">
@@ -139,9 +144,9 @@ export const FirstContactPanel = forwardRef<HTMLElement, FirstContactPanelProps>
               ? "Makes one account the way you have set it up, calls one read-only tool with it, and removes the account again."
               : "Nobody needs an account here, so nobody is made: it connects with whatever the address itself carries and calls one read-only tool."}
             {" It calls no model, so it costs nothing —"}
-            {saved
+            {bound === null
               ? " and it is the only way to find out before an execution does."
-              : " save the target first."}
+              : ` ${bound.charAt(0).toLowerCase()}${bound.slice(1)}`}
           </Text>
         </Measure>
 

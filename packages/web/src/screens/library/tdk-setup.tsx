@@ -32,6 +32,13 @@ import {
  * type — puts it in the field and prints it in the snippet. It is shown plainly because it has to
  * be copied; it is the app's from the moment it is pasted, and rotating it is one line.
  *
+ * **It is never shown before it is stored** (ADR-0040). The reader pastes it into their own app's
+ * environment, so from that moment their endpoint accepts exactly one credential — and if the
+ * only copy populace had was in this component's state, a refresh took it away and left the app
+ * refusing populace forever for a reason nothing on screen could explain. A caller that can write
+ * it passes `onGenerated`, and the panel then holds the generation back until the provisioning
+ * address is there to store it against.
+ *
  * **The check is offered before Save.** `GET /` at the kit's mount point creates nobody and
  * registers nothing, which is precisely what ADR-0036's rule permits doing without a button
  * press being a write on somebody else's system — so the two fields most likely to be wrong can
@@ -58,6 +65,23 @@ const STACKS: readonly { value: Stack; label: string }[] = [
  * to sit on one line of an env file. `crypto.getRandomValues` is the one CSPRNG a browser has;
  * `Math.random` is not one and must never be reached for here, however throwaway the deployment.
  */
+/**
+ * A full address, not a prefix — because the secret is stored as part of a `provision-url`
+ * identity and the server holds that field to `z.url()`.
+ *
+ * Without this the generator fired on the first keystroke in the address field, wrote a secret
+ * against `h`, and the save came back 400 with the secret already printed on screen: the exact
+ * state this whole arrangement exists to prevent, arrived at by a different road.
+ */
+function isAddress(value: string): boolean {
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function newSecret(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -137,28 +161,50 @@ export interface TdkSetupProps {
   onSecret: (secret: string) => void;
   /** A saved target, so the check can use the stored secret the form has never been shown. */
   targetId: string | null;
+  /**
+   * "Store this now" (ADR-0040). Supplying it changes WHEN a secret is made: the panel holds the
+   * generation back until the address above is filled in, because the secret is stored as part of
+   * a `provision-url` identity and that identity has nowhere to live without a URL. The reader
+   * sees the code, then gives the address, then gets a secret that is already saved.
+   *
+   * Absent on the saved-target editor, where the reader is sitting in front of a Save button and
+   * the old order — secret first, address second — is the one that screen has always had.
+   */
+  onGenerated?: (secret: string) => void;
 }
 
-export function TdkSetup({ url, secret, secretSet, onSecret, targetId }: TdkSetupProps): ReactNode {
+export function TdkSetup({ url, secret, secretSet, onSecret, targetId, onGenerated }: TdkSetupProps): ReactNode {
   const { key } = useProject();
   const [stack, setStack] = useState<Stack>("express");
   const [found, setFound] = useState<ProvisioningCheck | null>(null);
   /** Named by the button at a bound, so the reason is reachable from the control (§6). */
   const reasonId = useId();
 
+  /** Whether the secret can be written the instant it is made. False means: do not make one. */
+  const storable = onGenerated === undefined || isAddress(url);
+
   /**
-   * One secret, made the moment this branch is open and empty.
+   * One secret, made the moment this branch is open, empty, and there is somewhere to keep it.
    *
    * Guarded on `secretSet` as well as on the value: a saved target's secret is never sent to the
    * browser, so an ungated generator would silently replace a working secret with a new one every
    * time somebody opened the editor — and the app would then refuse populace with no change
    * anybody made on purpose.
+   *
+   * Guarded on `storable` for the failure that is worse than either (ADR-0040). This panel prints
+   * the secret and tells the reader to paste it into their app's environment. If populace has not
+   * kept a copy by then, one refresh leaves the app holding a credential populace has never seen
+   * and cannot reproduce, and the endpoint refuses it forever for a reason nothing on screen can
+   * explain. So the caller that can store it says so, and until it can, none is made.
    */
   useEffect(() => {
-    if (secret === "" && !secretSet) onSecret(newSecret());
-    // Runs on the transitions that matter — this branch becoming visible, and the secret being
-    // cleared — and not on every keystroke elsewhere in the form.
-  }, [secret, secretSet, onSecret]);
+    if (secret !== "" || secretSet || !storable) return;
+    const made = newSecret();
+    onSecret(made);
+    onGenerated?.(made);
+    // Runs on the transitions that matter — this branch becoming visible, the address arriving,
+    // and the secret being cleared — and not on every keystroke elsewhere in the form.
+  }, [secret, secretSet, storable, onSecret, onGenerated]);
 
   const asking = useMutation({
     mutationFn: () => api.checkProvisioning(key, { url, ...(secret === "" ? {} : { secret }), ...(targetId === null ? {} : { target: targetId }) }),
@@ -203,9 +249,19 @@ export function TdkSetup({ url, secret, secretSet, onSecret, targetId }: TdkSetu
         </Text>
         {secretSet && secret === "" ? (
           <Text size="read-sm" tone="soft" as="p">
-            A secret is already stored for this target, so none has been made. Type a new one in
-            the field below to rotate it, and change <Code inProse>POPULACE_SECRET</Code> in your app to
-            match.
+            A secret is already stored for this target, so none has been made — and it cannot be
+            shown again, here or anywhere: it went up once and never comes back down. Type a new
+            one in the field below to rotate it, and change <Code inProse>POPULACE_SECRET</Code> in
+            your app to match. A new one replaces the stored one in both places or in neither.
+          </Text>
+        ) : secret === "" ? (
+          // No secret, because there is nowhere to keep one yet. Said plainly rather than left as
+          // an empty space: the reader is looking for the value the paste block promised.
+          <Text size="read-sm" tone="soft" as="p">
+            Fill in the provisioning address above — the whole thing, scheme and all — and populace
+            will make you a secret to go with it, store it, and print it here. None is made before
+            then, because a secret populace has shown you and not kept is one your app would accept
+            and populace could not.
           </Text>
         ) : (
           <Stack gap={2}>
@@ -214,6 +270,9 @@ export function TdkSetup({ url, secret, secretSet, onSecret, targetId }: TdkSetu
               populace made that secret and it is now yours. It is the whole authority populace has
               over that endpoint — it can make and remove throwaway accounts on the deployment you
               mounted the kit in, and nothing else. Rotate it by changing those two places.
+              {onGenerated === undefined
+                ? " It is stored when you save this target."
+                : " populace has already stored it, so a refresh will not lose it — but this is the only time it will be shown."}
             </Text>
           </Stack>
         )}

@@ -20,6 +20,13 @@ Connecting is settled and mostly automatic: if your MCP server refuses anonymous
 publishes OAuth metadata, press **Sign in** on the Connect screen and populace does the rest. If it
 is gated by a static token instead, there is a field for it beside the address.
 
+**Connecting is also what creates the target.** The moment **Check** gets an answer, populace saves
+what it has — the address, the token if you typed one, and a name — and the page's URL gains the
+target's id. Everything after that is configuration of something that exists, so you can close the
+tab, reload, or go and change something in your app and come back. Until you answer the last
+question the target is listed as **Unfinished**, no simulation will start against it, and every
+refusal says which target and what is missing. Save is then *Finish*, not *Create*.
+
 **This page is about the other one.**
 
 ---
@@ -280,8 +287,20 @@ backend: firebase({
 ### The secret
 
 populace generates one for you when you choose **My app makes them**, puts it in the form, and
-prints it in the snippet. Copy it into your app's environment as `POPULACE_SECRET`. It is yours
+prints it under the snippet. Copy it into your app's environment as `POPULACE_SECRET`. It is yours
 from that moment; rotate it by changing those two places.
+
+**Fill in the provisioning address first.** Nothing is generated before then, and that is
+deliberate: populace stores the secret the instant it makes one, and it has nowhere to store it
+until it knows which address it belongs to. The rule it is keeping is *never show somebody a secret
+you have not stored* — the moment you paste one into your app's environment, your endpoint accepts
+exactly that string, and a secret populace had shown you and not kept would leave your app refusing
+populace with nothing on either screen able to explain why.
+
+Once it is stored, **it is never shown again** — not on a reload, not on the target's own editor.
+A credential goes up and never comes back down; what you see afterwards is "a secret is stored".
+To change it, type a new one and change `POPULACE_SECRET` in your app to match: a new one replaces
+the stored one in both places or in neither.
 
 It is worth being precise about what it can do, because that is the argument for this way in. It is
 **dev-scoped, revocable and single-purpose**: it can do exactly what you wrote into `createPerson`
@@ -351,8 +370,10 @@ declaration can only subtract: claiming a capability with no hook behind it is i
 
 ## Then: one person through the front door
 
-Once the target is saved, press **Can anybody actually get in?**. It provisions one account through
-whatever way in you chose, makes one read-only call with it, and takes the account back down. It
+Once the target is **finished** — saved with an answer to how people get accounts — press **Can
+anybody actually get in?**. It provisions one account through whatever way in you chose, makes one
+read-only call with it, and takes the account back down. On a target that is still unfinished the
+button sits at its bound and says so, because there is nothing there to make an account with. It
 calls no model, so it costs nothing, and it is the difference between finding out now and finding
 out after forty people have been cast.
 

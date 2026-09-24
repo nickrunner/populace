@@ -1,14 +1,18 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
+import type { StoredTargetView, TargetInput } from "@populace/contract";
 import { api, type FirstContact, type SignInStatus, type TargetCheck } from "../../api.js";
 import { useProject } from "../../context.jsx";
 import { plural } from "../../format.js";
+import { q } from "../../queries.js";
 import {
   EMPTY_IDENTITY,
+  identityDraftFrom,
   identityDraftFromCheck,
   identityFrom,
+  identitySoFar,
   WaysIn,
   whatIdentityNeeds,
   whatIdentityWillNotDo,
@@ -61,11 +65,38 @@ import {
  * server, so it is a button and never a render (the same rule the rail and the dashboard band
  * keep). It costs no model spend, and the six outcome words are the product's most useful
  * sentence about a target, which is why it is offered here rather than left to be found.
+ *
+ * **Connecting IS creating, and the page survives a refresh** (ADR-0040). Everything here used to
+ * live in component state until Save, and a reload took all of it. The losses were not equal: an
+ * address costs twenty seconds to retype, and the provisioning secret costs the reader their own
+ * endpoint — it is generated in this browser, shown once, and pasted into their app's
+ * environment, so after a refresh the app holds a credential populace has never seen and cannot
+ * reproduce, and the endpoint refuses populace forever for a reason nothing on screen can
+ * explain. **Never show somebody a secret you have not stored.** So a check that gets through
+ * saves the target then and there, the id goes in the URL, a reload reads the row back, and the
+ * secret is written the moment it is made rather than at Save. Save becomes "finish", and until
+ * it is pressed the row honestly says `undecided`.
  */
+
+/**
+ * Which of this screen's three writes a save is. They differ only in what has to be SAID when one
+ * fails: a target that would not save and a secret that was shown and not stored are the same
+ * HTTP error and are not remotely the same news.
+ */
+type Keeping = "connected" | "secret" | "finish";
+
 export function ConnectTarget() {
   const { key, href } = useProject();
   const queries = useQueryClient();
   const navigate = useNavigate();
+  /**
+   * The target this page is about, in the URL, because the URL is the only part of a screen that
+   * survives a refresh (ADR-0040). Connecting writes a target now, and a reader who reloads has to
+   * come back to the row they made rather than to a blank form beside an app that is already
+   * holding a secret populace would no longer have.
+   */
+  const [params, setParams] = useSearchParams();
+  const openOn = params.get("t");
 
   const [url, setUrl] = useState("");
   /**
@@ -78,9 +109,12 @@ export function ConnectTarget() {
    * here now, beside the address it belongs to, and it goes up with both the check and the save.
    */
   const [bearer, setBearer] = useState("");
+  /** One is stored on the row and will never be sent back down, so the field says so and stays empty. */
+  const [bearerStored, setBearerStored] = useState(false);
   const [name, setName] = useState("");
   const [check, setCheck] = useState<TargetCheck | null>(null);
-  const [saved, setSaved] = useState<{ id: string; name: string } | null>(null);
+  /** The row, once there is one — written by the first check that got through, not by Save. */
+  const [saved, setSaved] = useState<StoredTargetView | null>(null);
   const [contact, setContact] = useState<FirstContact | null>(null);
   const [signedIn, setSignedIn] = useState<SignInStatus | null>(null);
   /**
@@ -95,18 +129,98 @@ export function ConnectTarget() {
   /** Named by the Save button while it is at a bound, so the reason is reachable from it. */
   const missingId = useId();
 
-  /** Ask the endpoint what it can do. Nothing is written; the address stays the reader's to fix. */
+  /**
+   * The row this page already made, read back after a reload.
+   *
+   * Everything comes back except the two credentials, which go up and never come down: the
+   * endpoint's bearer arrives as `authenticated` and the provisioning secret as `secretSet`. That
+   * asymmetry is the rule and it does not bend here — what the screen owes the reader instead is
+   * to say plainly that the stored secret cannot be shown again.
+   */
+  const reload = useQuery({ ...q.target(key, openOn ?? ""), enabled: openOn !== null });
+  /**
+   * The row this form has already been filled from. Without it the invalidation that follows every
+   * save would re-hydrate the form out from under whoever is typing in it.
+   */
+  const filled = useRef<string | null>(null);
+  useEffect(() => {
+    const row = reload.data;
+    if (!row || filled.current === row.id) return;
+    filled.current = row.id;
+    setSaved(row);
+    setUrl(row.mcp[0]?.url ?? "");
+    setBearerStored(row.mcp[0]?.authenticated ?? false);
+    setName(row.name);
+    setIdentity(identityDraftFrom(row.identity));
+    setContact(row.firstContact);
+  }, [reload.data]);
+
+  /**
+   * Every write this screen makes, which is three: the target the check creates, the provisioning
+   * secret the moment it is generated, and the answer the reader finishes with.
+   *
+   * One mutation and not three, because they differ only in what they carry — the address, the
+   * name and the token are the same fields in all three, and three copies of that body is three
+   * places for them to drift. `why` is what the failure message branches on: "populace could not
+   * store the secret it just showed you" and "it was not saved" are the same HTTP error and very
+   * different sentences.
+   */
+  const keep = useMutation({
+    mutationFn: (what: { identity: TargetInput["identity"]; name?: string; why: Keeping }) =>
+      api.saveTarget(key, saved?.id ?? null, {
+        name: (what.name ?? name).trim() || hostOf(url),
+        mcp: [{ name: "default", url, ...(bearer === "" ? {} : { bearerToken: bearer }) }],
+        identity: what.identity,
+      }),
+    onSuccess: async (target) => {
+      // Marked filled BEFORE the invalidation below, which refetches the very row this came from.
+      filled.current = target.id;
+      setSaved(target);
+      if (target.mcp[0]?.authenticated) setBearerStored(true);
+      if (openOn !== target.id) setParams({ t: target.id }, { replace: true });
+      await queries.invalidateQueries();
+    },
+  });
+
+  /**
+   * Ask the endpoint what it can do — and, when it answers, keep it.
+   *
+   * **A successful check IS the connection, so it is also the creation** (ADR-0040). The screen is
+   * called "Connect a target"; everything after this point — what to call it, how people get
+   * accounts — is configuration of something that now exists. What made this urgent was not the
+   * retyping: it is that the next thing the reader may do is generate a provisioning secret and
+   * paste it into their own app, and a secret populace has shown and not stored is a lock-out
+   * nothing on screen can explain. There has to be a row to store it on, and this is where it
+   * comes from.
+   *
+   * A check that did NOT get through still writes nothing. The address is the reader's to fix and
+   * there is no evidence yet that there is anything at the end of it.
+   */
   const ask = useMutation({
-    mutationFn: () => api.checkDraftTarget(key, { mcp: [{ name: "default", url, ...(bearer === "" ? {} : { bearerToken: bearer }) }] }),
+    mutationFn: () =>
+      api.checkDraftTarget(key, {
+        mcp: [{ name: "default", url, ...(bearer === "" ? {} : { bearerToken: bearer }) }],
+        // Which row's stored token to reuse, for a check after a reload: the form no longer holds
+        // the bearer it sent, because a credential never comes back down.
+        ...(saved === null ? {} : { target: saved.id }),
+      }),
     onSuccess: (result) => {
       setCheck(result);
       if (result.signIn) setSignedIn(result.signIn);
-      if (result.ok) setIdentity(identityDraftFromCheck(result.identity));
+      if (!result.ok) return;
+      // The guess fills an UNANSWERED question and never overwrites an answer. It used to replace
+      // the draft outright, which was harmless while the draft was thrown away on every reload and
+      // is not now: a second check would have reset a chosen way in — and the provisioning address
+      // beside a secret already stored — back to nothing.
+      const guessed = identity.strategy === "undecided" ? identityDraftFromCheck(result.identity) : identity;
+      if (guessed !== identity) setIdentity(guessed);
       // The server's own name for itself is the best default there is, and the host is the
       // honest fallback. Only ever a DEFAULT — the field below is the reader's.
-      if (result.ok && name === "") {
-        setName(result.server?.name || hostOf(url));
-      }
+      const called = name.trim() || result.server?.name || hostOf(url);
+      if (called !== name) setName(called);
+      // `identitySoFar`, not `identityFrom`: this write happens before the question is answered,
+      // and `undecided` is how the row says so honestly rather than being dressed as `none`.
+      keep.mutate({ identity: identitySoFar(guessed), name: called, why: "connected" });
     },
   });
 
@@ -158,27 +272,28 @@ export function ConnectTarget() {
   }, [waitingOn, key, url]);
 
   /**
-   * Save it. The identity strategy comes from the check rather than from a form: `signupTool`,
-   * `tokenPath`, `userIdPath` and `teardownTool` are all guesses made from the tool list, and a
-   * reader who has not seen that list cannot make them.
+   * The secret, written the moment populace makes it.
+   *
+   * This is the rule the whole change exists for: never show somebody a secret you have not
+   * stored. `TdkSetup` prints it in a block captioned "paste this into your app's environment", so
+   * the instant it is on screen the reader's app may be about to accept only that value — and the
+   * only copy populace had used to be a React state variable. It holds the generation back until
+   * this can succeed, which is why there is always an address and always a row by the time it
+   * fires.
    */
-  const save = useMutation({
-    mutationFn: async () => {
-      const chosen = identityFrom(identity);
-      // The button is disabled while this is null, so reaching it means the two disagreed —
-      // better to say which than to send a body the server will refuse in its own words.
-      if (chosen === null) throw new Error("choose how the people get in before saving this target");
-      return api.saveTarget(key, null, {
-        name: name.trim() || hostOf(url),
-        mcp: [{ name: "default", url, ...(bearer === "" ? {} : { bearerToken: bearer }) }],
-        identity: chosen,
-      });
-    },
-    onSuccess: async (target) => {
-      await queries.invalidateQueries();
-      setSaved({ id: target.id, name: target.name });
-    },
-  });
+  const rememberSecret = (secret: string): void => {
+    keep.mutate(
+      {
+        identity: { strategy: "provision-url", url: identity.provisionUrl, secret, emailDomain: identity.emailDomain || "populace.test" },
+        why: "secret",
+      },
+      {
+        onSuccess: () => {
+          setIdentity((d) => ({ ...d, provisionSecretSet: true }));
+        },
+      },
+    );
+  };
 
   const contacting = useMutation({
     mutationFn: () => api.firstContact(key, saved?.id ?? ""),
@@ -189,8 +304,15 @@ export function ConnectTarget() {
   });
 
   const result = check;
+  /** Something is on screen to configure: a check came back, or a row was read on the way in. */
+  const found = result !== null || saved !== null;
+  /** The last question has an answer and the row carries it. Until then the target is unfinished. */
+  const finished = saved !== null && saved.identity.strategy !== "undecided";
   /** What is keeping Save at a bound, in the reader's words, or null when nothing is. */
   const missing = name.trim() === "" ? "a name" : whatIdentityNeeds(identity);
+  /** Which write failed and with what, or null. Both halves, because both are needed to say it. */
+  const failure = keep.error;
+  const failedAt = keep.isError ? keep.variables?.why : undefined;
 
   return (
     <DocumentPage
@@ -221,7 +343,7 @@ export function ConnectTarget() {
 
             <SecretField
               label="A token this address needs"
-              stored={false}
+              stored={bearerStored}
               value={bearer}
               onChange={setBearer}
               hint="Only for an address behind a static token — a QA gateway, an internal proxy. Every person uses it. If it publishes an OAuth sign-in instead, leave this empty and press Check."
@@ -233,7 +355,7 @@ export function ConnectTarget() {
                 onClick={() => {
                   ask.mutate();
                 }}
-                pending={ask.isPending}
+                pending={ask.isPending || (keep.isPending && keep.variables?.why === "connected")}
                 disabled={ask.isPending || url === ""}
                 aria-describedby={ask.isError ? checkErrorId : undefined}
               >
@@ -244,7 +366,7 @@ export function ConnectTarget() {
             {ask.isError ? (
               <WhatWentWrong
                 id={checkErrorId}
-                says="Nothing was saved, and nobody has been sent anywhere."
+                says={saved === null ? "Nothing was saved, and nobody has been sent anywhere." : "Nobody has been sent anywhere, and nothing about the saved target changed."}
                 error={ask.error}
               />
             ) : null}
@@ -293,12 +415,31 @@ export function ConnectTarget() {
                 }}
               />
             ) : (
-              <WouldNotAnswer reached={result.reached} errors={result.errors} url={url} />
+              <WouldNotAnswer reached={result.reached} errors={result.errors} url={url} kept={saved !== null} />
             )}
+
+            {/*
+              Said here, under the check, because this is the moment it becomes true: the reader
+              has a row, and everything from here on is theirs whatever the browser does. It is
+              also the honest place to say that the target exists before it is finished — a
+              half-answered target shows up in the targets list saying so.
+            */}
+            {saved === null ? null : (
+              <Text size="read-sm" tone="soft" as="p">
+                Kept as {saved.name}. Reload this page and it will still be here — and so will the
+                provisioning secret below, if you make one.
+              </Text>
+            )}
+            {failure !== null && failedAt === "connected" ? (
+              <WhatWentWrong
+                says="It answered, but populace could not keep it. Nothing below has anywhere to be stored yet — press Check again."
+                error={failure}
+              />
+            ) : null}
           </Stack>
         </Section>
 
-        {result === null ? null : (
+        {!found ? null : (
           <Section title="What to call it">
             <Stack gap={4}>
               <Text size="read-sm" tone="soft" as="p">
@@ -324,7 +465,7 @@ export function ConnectTarget() {
           </Section>
         )}
 
-        {result === null ? null : (
+        {!found ? null : (
           <Section title="How will they get in?">
             <Stack gap={4}>
               <Text size="read-sm" tone="soft" as="p">
@@ -332,14 +473,28 @@ export function ConnectTarget() {
                 list. This is how the people a simulation sends get accounts of their{" "}
                 <em>own</em>, which is the whole point of sending them.
               </Text>
-              <WhatTheCheckLearned check={result} gated={bearer.trim() !== ""} />
+              {result === null ? null : <WhatTheCheckLearned check={result} gated={bearer.trim() !== "" || bearerStored} />}
               <Card>
                 <WaysIn
                   draft={identity}
                   onChange={(patch) => setIdentity((d) => ({ ...d, ...patch }))}
                   check={result}
+                  targetId={saved?.id ?? null}
+                  onSecretGenerated={rememberSecret}
                 />
               </Card>
+              {/*
+                The loudest failure on this screen, and the only one that is about a credential. If
+                the write of a generated secret failed, the reader is looking at a value populace
+                does not have — so the sentence tells them not to use it, rather than reporting a
+                save that did not happen.
+              */}
+              {failure !== null && failedAt === "secret" ? (
+                <WhatWentWrong
+                  says="populace made that secret and could NOT store it. Do not paste it into your app yet — if you do and this page is reloaded, your endpoint will accept a credential populace no longer has. Press Check again, or reload and start with a fresh one."
+                  error={failure}
+                />
+              ) : null}
               {whatIdentityWillNotDo(identity) === null ? null : (
                 <FieldWarning>{whatIdentityWillNotDo(identity)}</FieldWarning>
               )}
@@ -347,64 +502,74 @@ export function ConnectTarget() {
                 All of this can be changed later on the target itself.
               </Text>
 
-              {saved === null ? (
-                <Stack gap={2}>
-                  <Inline gap={3} align="center">
-                    {/*
-                      At a bound, not natively disabled (DESIGN-SYSTEM §6): the reason is a
-                      sentence right below and `aria-describedby` is what makes it reachable from
-                      the control rather than only findable by looking.
-                    */}
-                    <Button
-                      variant="primary"
-                      onClick={() => {
-                        save.mutate();
-                      }}
-                      pending={save.isPending}
-                      atBound={missing !== null}
-                      disabled={save.isPending}
-                      aria-describedby={missing === null ? undefined : missingId}
-                    >
-                      Save this target
-                    </Button>
-                  </Inline>
+              {/*
+                Always here, in every state, which it was not before. It used to vanish the moment
+                the target was saved — harmless while a reload emptied the form, and a trap now
+                that a reload brings back a finished target with every field editable: the reader
+                would have changed the way in and had nowhere to put it.
+              */}
+              <Stack gap={2}>
+                <Inline gap={3} align="center">
                   {/*
-                    Said here rather than sent to the server and rendered back as a schema error.
-                    A reader who never chose self-signup should not be told what is too small
-                    about `identity.signupTool`. The name counts too: a control at a bound names
-                    what would release it, and "nothing happens when I press it" is the failure
-                    that rule exists to prevent (DESIGN-SYSTEM §6).
+                    At a bound, not natively disabled (DESIGN-SYSTEM §6): the reason is a
+                    sentence right below and `aria-describedby` is what makes it reachable from
+                    the control rather than only findable by looking.
                   */}
-                  {missing === null ? null : (
-                    <Text size="read-sm" tone="soft" as="p" id={missingId}>
-                      It still needs {missing}.
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      const chosen = identityFrom(identity);
+                      // Unreachable while the button is at a bound, which swallows the press.
+                      // Kept so that a future caller cannot make this the site that writes an
+                      // `undecided` row while telling the reader it finished one.
+                      if (chosen === null) return;
+                      keep.mutate({ identity: chosen, why: "finish" });
+                    }}
+                    pending={keep.isPending && keep.variables?.why === "finish"}
+                    atBound={missing !== null}
+                    disabled={keep.isPending}
+                    aria-describedby={missing === null ? undefined : missingId}
+                  >
+                    {saved === null ? "Save this target" : finished ? "Save changes" : "Finish this target"}
+                  </Button>
+                  {finished ? (
+                    <Text size="read-sm" tone="soft">
+                      Finished, and saved as {saved.name}.
                     </Text>
-                  )}
-                  {/*
-                    A check that did not get through is no longer a wall. An address behind a
-                    static token, or one that is simply not up yet, is a target worth saving — the
-                    editor is where it gets fixed, and it is only reachable once it exists.
-                  */}
-                  {result.ok ? null : (
-                    <Text size="read-sm" tone="soft" as="p">
-                      Nothing has confirmed this address answers yet. Saving it anyway is fine —
-                      the check, and one person through the front door, are both offered again on
-                      the target itself.
-                    </Text>
-                  )}
-                </Stack>
-              ) : (
-                <Text size="read" as="p">
-                  Saved as {saved.name}.
-                </Text>
-              )}
+                  ) : null}
+                </Inline>
+                {/*
+                  Said here rather than sent to the server and rendered back as a schema error.
+                  A reader who never chose self-signup should not be told what is too small
+                  about `identity.signupTool`. The name counts too: a control at a bound names
+                  what would release it, and "nothing happens when I press it" is the failure
+                  that rule exists to prevent (DESIGN-SYSTEM §6).
+                */}
+                {missing === null ? null : (
+                  <Text size="read-sm" tone="soft" as="p" id={missingId}>
+                    It still needs {missing}.
+                  </Text>
+                )}
+                {/*
+                  A check that did not get through is no longer a wall. An address behind a
+                  static token, or one that is simply not up yet, is a target worth saving — the
+                  editor is where it gets fixed, and it is only reachable once it exists.
+                */}
+                {result !== null && !result.ok ? (
+                  <Text size="read-sm" tone="soft" as="p">
+                    Nothing has confirmed this address answers yet. Saving it anyway is fine —
+                    the check, and one person through the front door, are both offered again on
+                    the target itself.
+                  </Text>
+                ) : null}
+              </Stack>
 
-              {save.isError ? <WhatWentWrong says="It was not saved." error={save.error} /> : null}
+              {failure !== null && failedAt === "finish" ? <WhatWentWrong says="It was not saved." error={failure} /> : null}
             </Stack>
           </Section>
         )}
 
-        {saved === null ? null : (
+        {!finished ? null : (
           <Section title="Can anybody actually get in?">
             <Stack gap={4}>
               <Text size="read-sm" tone="soft" as="p">
@@ -491,12 +656,18 @@ function WouldNotAnswer({
   reached,
   errors,
   url,
+  kept,
 }: {
   reached: TargetCheck["reached"];
   errors: string[];
   url: string;
+  /** A row already exists, so "nothing was saved" would be false (ADR-0040). */
+  kept: boolean;
 }) {
   const says = reached?.says ?? null;
+  // The one clause that changes once connecting writes a target. Everything a failed check says
+  // about the ADDRESS is unchanged; what it must not go on claiming is that there is no row.
+  const wrote = kept ? "The target you already connected is untouched." : "Nothing was saved.";
   return (
     <Stack gap={2}>
       {reached?.kind === "not-mcp" ? (
@@ -515,7 +686,7 @@ function WouldNotAnswer({
             Nothing answered at {hostOf(url)}.
           </Text>
           <Text size="read-sm" tone="soft" as="p">
-            Either the address is wrong or the server is not running. Nothing was saved.
+            Either the address is wrong or the server is not running. {wrote}
           </Text>
         </>
       ) : (
@@ -525,7 +696,7 @@ function WouldNotAnswer({
           </Text>
           <Text size="read-sm" tone="soft" as="p">
             The address is right enough to reach something that speaks MCP, so this is the server
-            itself refusing. Its own words are below. Nothing was saved.
+            itself refusing. Its own words are below. {wrote}
           </Text>
         </>
       )}

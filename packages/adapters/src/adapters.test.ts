@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Agent, Credential, Identity, JsonValue, ProvisionResult, TeardownDeps } from "@populace/core";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { FirebaseAdminProvider, SelfSignupProvider, StaticIdentityProvider, type FetchLike, type FirebaseAuthLike } from "./index.js";
+import { FirebaseAdminProvider, identityProviderFor, SelfSignupProvider, StaticIdentityProvider, type FetchLike, type FirebaseAuthLike } from "./index.js";
 
 const agent: Agent = {
   id: "pop/casual#1",
@@ -548,5 +548,26 @@ describe("FirebaseAdminProvider", () => {
     expect(listed[0]?.credential.userId).toBe("uid_1");
     await provider.teardown(listed[0]!);
     expect(await provider.listByTag(ctx.tag, deps)).toHaveLength(0);
+  });
+});
+
+/**
+ * A target that was connected and never finished (ADR-0040).
+ *
+ * `undecided` is a member of `IdentityConfigSchema` so that a half-built target can be stored
+ * honestly, and it is the one member no provider answers. It is worth a test of its own because
+ * the shape of the mistake it prevents is a silent one: had it been mapped to `NoAccountsProvider`
+ * to keep the switch total, a population would have been sent at somebody's product connecting as
+ * nobody, and every wake would have reported the product's own auth wall as a finding.
+ */
+describe("a way in nobody has chosen", () => {
+  it("refuses to build a provider, and says which half of the target is missing", () => {
+    expect(() => identityProviderFor({ strategy: "undecided" })).toThrow(/not finished/i);
+    expect(() => identityProviderFor({ strategy: "undecided" })).toThrow(/how people get accounts/i);
+  });
+
+  it("still builds every way in that IS an answer", () => {
+    expect(identityProviderFor({ strategy: "none" }).strategy).toBe("none");
+    expect(identityProviderFor({ strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", emailDomain: "populace.test" }).strategy).toBe("self-signup");
   });
 });

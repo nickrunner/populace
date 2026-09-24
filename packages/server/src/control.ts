@@ -18,6 +18,7 @@ import {
   StartExecutionBodySchema,
   StopRunBodySchema,
   SweepBodySchema,
+  TargetCheckBodySchema,
   TargetInputSchema,
   TriageInputSchema,
   routes,
@@ -389,13 +390,23 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.json(targetView(target), 201);
   });
 
-  /** A draft target the wizard has not saved yet. Declared before `/targets/:t`. */
+  /**
+   * A draft target the wizard has not saved yet. Declared before `/targets/:t`.
+   *
+   * `target` names a row to merge the endpoints against, and it is what makes a SECOND check work
+   * (ADR-0040). Connecting now writes the target on the first successful check, so by the time the
+   * reader corrects a typo and presses Check again there is a row holding the bearer they typed —
+   * and a bearer goes up and never comes back down, so the form no longer has it to send. Without
+   * this the re-check would go at a gated address with no token and report it as dead, which is
+   * the opposite of what changed.
+   */
   app.post(routes.targetsCheck(":p"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const body = await parseBody(c, TargetInputSchema.pick({ mcp: true }).extend({ identity: TargetInputSchema.shape.identity.optional() }));
+    const body = await parseBody(c, TargetCheckBodySchema);
     if (!body.ok) return body.response;
-    return c.json(await checkTarget(mergeEndpoints(body.value.mcp, []), body.value.identity, await asTheUser(c, s.project.id)));
+    const known = body.value.target === undefined ? undefined : owned(await deps.store.getTarget(body.value.target), s.project.id);
+    return c.json(await checkTarget(mergeEndpoints(body.value.mcp, known?.mcp ?? []), body.value.identity, await asTheUser(c, s.project.id)));
   });
 
   app.get(routes.target_(":p", ":t"), async (c) => {
@@ -1533,6 +1544,12 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     // is detectable without touching anything: nobody sent here could make an account, so every
     // wake would end auth-failed. First contact reports it too, but only once somebody has run
     // one, and this costs nothing to say up front.
+    // A target that was connected and never finished (ADR-0040). It is the cheapest blocker on
+    // this page — no address is asked anything, the row itself says so — and it is the one that
+    // must never be advisory: `identityProviderFor` refuses an unfinished target, so a run started
+    // past it dies before its first visit with a message from four layers down.
+    if (config.identity.strategy === "undecided")
+      blockers.push(`Nobody has said how people get accounts on ${resolved.value.target.name}. Open the target and answer that — until then there is no account for anybody sent there to use.`);
     if (config.identity.strategy === "self-signup" && !isToolPermitted(config.identity.signupTool, targetOnly))
       blockers.push(`The target's own tool policy blocks ${config.identity.signupTool}, which is the tool an account is made with — nobody sent here could sign up.`);
     const exposed = view.tools ?? [];
@@ -1596,6 +1613,14 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     }
     if (simulation.requireFreshTarget && resolved.value.config.target.reset.kind === "none") {
       return fail(c, "conflict", `${simulation.name} insists on a fresh target, and ${resolved.value.target.name} declares no reset`);
+    }
+    // Refused here, at the request, and not left to the job (ADR-0040). `identityProviderFor`
+    // throws on an unfinished target, so without this the press starts a job, the job fails, and
+    // the reader is shown a failed execution for a question they were never asked. A target
+    // connected and left half-answered is a normal state now — the connect screen writes one on
+    // purpose — so the way out of it has to be a sentence naming the target, not a stack trace.
+    if (resolved.value.config.identity.strategy === "undecided") {
+      return fail(c, "conflict", `nobody has said how people get accounts on ${resolved.value.target.name}; answer that on the target before sending anybody there`);
     }
     const label = body.value.label?.trim() || `${resolved.value.target.name} · ${new Date().toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}`;
 

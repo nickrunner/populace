@@ -39,6 +39,7 @@ import {
   type SimulationInput,
   type StartExecutionBody,
   type TriageInput,
+  type TargetCheckBody,
   type TargetInput,
   DigestSchema,
   ErrorBodySchema,
@@ -167,7 +168,12 @@ export const api = {
   removeTarget: (p: string, id: string) => send("DELETE", routes.target_(p, id), undefined, nothing),
   /** Opens a connection to the target. POST because that is a side effect on someone else's server. */
   checkTarget: (p: string, id: string) => send("POST", routes.targetCheck(p, id), undefined, TargetCheckSchema),
-  checkDraftTarget: (p: string, body: { mcp: TargetInput["mcp"] }) => send("POST", routes.targetsCheck(p), body, TargetCheckSchema),
+  /**
+   * The same question against an address nobody has saved — or against one this screen saved a
+   * moment ago, which is what `target` names (ADR-0040). A stored bearer token never comes back
+   * down to the browser, so a re-check after a reload has to say which row's token to reuse.
+   */
+  checkDraftTarget: (p: string, body: TargetCheckBody) => send("POST", routes.targetsCheck(p), body, TargetCheckSchema),
   promises: (p: string, id: string) => get(routes.targetPromises(p, id), TargetPromisesSchema),
   /**
    * One person through the front door: an account is provisioned, one read-only tool is called and

@@ -466,6 +466,12 @@ export function Target() {
               <Card>
                 <FirstContactPanel
                   saved={existing !== undefined}
+                  // Saved and still unanswerable (ADR-0040): nothing provisions through an
+                  // unfinished target, so the check would report `provision-failed` about a
+                  // question this very panel's neighbour is asking.
+                  {...(draft.strategy === "undecided"
+                    ? { blocked: "Say how people get accounts above — there is nothing to make one with yet." }
+                    : {})}
                   makesAnAccount={draft.strategy !== "none"}
                   result={contact ?? existing?.firstContact ?? null}
                   running={firstContact.isPending}

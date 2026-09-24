@@ -16,6 +16,7 @@ import {
   SimulationModeSchema,
   StaticIdentityConfigSchema,
   ToolPolicySchema,
+  UndecidedIdentityConfigSchema,
   VerifierConfigSchema,
   VerifierOverrideSchema,
 } from "@populace/core/isomorphic";
@@ -62,6 +63,9 @@ export const IdentityConfigViewSchema = z.discriminatedUnion("strategy", [
   // Nobody needs an account here (ADR-0038). It carries no fields, so there is nothing to hide
   // on the way down and nothing to keep on the way up: it is the core schema, both directions.
   NoAccountsConfigSchema,
+  // Nobody has said yet (ADR-0040). A connected-but-unfinished target says so on the wire rather
+  // than being dressed as `none`, which is a real answer and would read as ready to run.
+  UndecidedIdentityConfigSchema,
 ]);
 export type IdentityConfigView = z.infer<typeof IdentityConfigViewSchema>;
 
@@ -76,6 +80,7 @@ export const IdentityConfigInputSchema = z.discriminatedUnion("strategy", [
   FirebaseAdminConfigSchema.extend({ apiKey: z.string().optional() }),
   ProvisionUrlConfigSchema.extend({ secret: z.string().optional() }),
   NoAccountsConfigSchema,
+  UndecidedIdentityConfigSchema,
 ]);
 export type IdentityConfigInput = z.infer<typeof IdentityConfigInputSchema>;
 
@@ -94,6 +99,21 @@ export const TargetInputSchema = z.object({
   tools: ToolPolicySchema.optional(),
 });
 export type TargetInput = z.infer<typeof TargetInputSchema>;
+
+/**
+ * Asking an address what it can do, before — or after — there is a row for it.
+ *
+ * `target` names a row whose stored endpoints this body is merged against, and it is what makes a
+ * SECOND check work once connecting writes the target (ADR-0040): a bearer token goes up and never
+ * comes back down, so a form that has been reloaded no longer holds the one it sent, and a re-check
+ * without this would ask a gated address anonymously and report it dead. Absent on the first check,
+ * when there is no row yet.
+ */
+export const TargetCheckBodySchema = TargetInputSchema.pick({ mcp: true }).extend({
+  identity: TargetInputSchema.shape.identity.optional(),
+  target: z.string().optional(),
+});
+export type TargetCheckBody = z.infer<typeof TargetCheckBodySchema>;
 
 export const StoredTargetViewSchema = z.object({
   id: z.string(),

@@ -115,10 +115,34 @@ export const NoAccountsConfigSchema = z.object({
   strategy: z.literal("none"),
 });
 
-export const IdentityConfigSchema = z.discriminatedUnion("strategy", [SelfSignupConfigSchema, StaticIdentityConfigSchema, FirebaseAdminConfigSchema, ProvisionUrlConfigSchema, NoAccountsConfigSchema]);
+/**
+ * Nobody has said yet, and the target is not finished (ADR-0040).
+ *
+ * It is the one member of this union that is not an answer. It exists because connecting a target
+ * now WRITES one — a successful check saves the address, the token and a name straight away, so
+ * that a reader who refreshes the page still has the endpoint they found and, far more
+ * importantly, the provisioning secret populace generated and showed them. Until that save
+ * existed, the browser held the only copy of a credential the reader had already pasted into
+ * their own app, and a refresh locked them out of their own endpoint with nothing on screen able
+ * to explain why.
+ *
+ * It is deliberately NOT `none`. `none` is a real answer — this server has no users — and a
+ * half-configured target recorded as `none` would send a population at a product whose accounts
+ * nobody had been asked about, and would be reported as ready to run.
+ *
+ * Nothing can be provisioned through it. `identityProviderFor` refuses it, first contact refuses
+ * it, preflight blocks a run on it and the targets list shows the target as unfinished. Every one
+ * of those refusals names what is missing.
+ */
+export const UndecidedIdentityConfigSchema = z.object({
+  strategy: z.literal("undecided"),
+});
+
+export const IdentityConfigSchema = z.discriminatedUnion("strategy", [SelfSignupConfigSchema, StaticIdentityConfigSchema, FirebaseAdminConfigSchema, ProvisionUrlConfigSchema, NoAccountsConfigSchema, UndecidedIdentityConfigSchema]);
 export type IdentityConfig = z.infer<typeof IdentityConfigSchema>;
 export type SelfSignupConfig = z.infer<typeof SelfSignupConfigSchema>;
 export type StaticIdentityConfig = z.infer<typeof StaticIdentityConfigSchema>;
 export type FirebaseAdminConfig = z.infer<typeof FirebaseAdminConfigSchema>;
 export type ProvisionUrlConfig = z.infer<typeof ProvisionUrlConfigSchema>;
 export type NoAccountsConfig = z.infer<typeof NoAccountsConfigSchema>;
+export type UndecidedIdentityConfig = z.infer<typeof UndecidedIdentityConfigSchema>;

@@ -147,6 +147,10 @@ export function identityDraftFromCheck(guess: TargetCheck["identity"]): Identity
  * A `switch`, not an if/else chain: the chain's final `else` silently produced an admin-mint
  * config for any strategy it did not know about, so a new way in would have compiled and quietly
  * sent the wrong one.
+ *
+ * `undecided` is null and stays null, even though the wire will now carry it (ADR-0040). This
+ * function answers "what has the reader ANSWERED", which is what the Save button is gated on; the
+ * partial write a successful check makes is a different question and `identitySoFar` below is it.
  */
 export function identityFrom(draft: IdentityDraft): TargetInput["identity"] | null {
   switch (draft.strategy) {
@@ -187,6 +191,24 @@ export function identityFrom(draft: IdentityDraft): TargetInput["identity"] | nu
         ...(draft.exchangeUrl ? { exchangeUrl: draft.exchangeUrl } : {}),
       };
   }
+}
+
+/**
+ * The same draft, as something that can be STORED right now (ADR-0040).
+ *
+ * Connecting a target writes it: a check that got through saves the address, the token and a name
+ * before the reader has said how people get accounts, and a secret generated for the TDK is
+ * written the moment it is made rather than at Save. Both writes need an identity block, and the
+ * honest one for a question nobody has answered is `undecided` — not `none`, which is a real
+ * answer meaning this server has no users and would carry a half-built target into a run reading
+ * as ready.
+ *
+ * So: the answer when there is one, and "nobody has said yet" when there is not. It never
+ * downgrades an answer to a draft — `identityFrom` returns null only for `undecided` itself and
+ * for nothing else, so a half-typed provisioning address still goes up as `provision-url`.
+ */
+export function identitySoFar(draft: IdentityDraft): TargetInput["identity"] {
+  return identityFrom(draft) ?? { strategy: "undecided" };
 }
 
 /**
@@ -252,6 +274,19 @@ export interface WaysInProps {
   check?: TargetCheck | null;
   /** A saved target, so the TDK check can use a secret the form has never been shown. */
   targetId?: string | null;
+  /**
+   * "populace has just made a secret, store it now" (ADR-0040).
+   *
+   * Separate from `onChange` because it is a different event: `onChange` carries every keystroke
+   * in the secret field, and this fires once, for the value populace generated and is about to
+   * print in a paste block. A caller that supplies it is promising to write that value somewhere
+   * durable before the reader can act on it — and the panel then holds the generation back until
+   * there is something to write it to, because a product that shows a secret it has not stored has
+   * invented a way for its user to be locked out of their own endpoint.
+   *
+   * Absent on the saved-target editor, where Save is the write and the row already has one.
+   */
+  onSecretGenerated?: (secret: string) => void;
 }
 
 /**
@@ -265,7 +300,7 @@ export interface WaysInProps {
  * last and it is inert with the reason attached, because a radio the reader was just told is
  * impossible should not be pressable.
  */
-export function WaysIn({ draft, onChange, check = null, targetId = null }: WaysInProps): ReactNode {
+export function WaysIn({ draft, onChange, check = null, targetId = null, onSecretGenerated }: WaysInProps): ReactNode {
   const signupTool = check?.identity.signupTool ?? null;
   // Only ever said on the strength of a check that got through. A check that failed learned
   // nothing about the tool list, and "nobody can sign up here" is not a thing to say about a
@@ -306,10 +341,10 @@ export function WaysIn({ draft, onChange, check = null, targetId = null }: WaysI
       onChange={(strategy) => {
         onChange({ strategy });
       }}
-      branches={answers.map((way) => ({ ...way, fields: identityFields(way.value, draft, onChange, targetId) }))}
+      branches={answers.map((way) => ({ ...way, fields: identityFields(way.value, draft, onChange, targetId, onSecretGenerated) }))}
       folded={{
         label: "Other ways",
-        branches: ESCAPE_HATCHES.map((way) => ({ ...way, fields: identityFields(way.value, draft, onChange, targetId) })),
+        branches: ESCAPE_HATCHES.map((way) => ({ ...way, fields: identityFields(way.value, draft, onChange, targetId, onSecretGenerated) })),
       }}
     />
   );
@@ -366,6 +401,7 @@ function identityFields(
   draft: IdentityDraft,
   onChange: (patch: Partial<IdentityDraft>) => void,
   targetId: string | null,
+  onSecretGenerated?: (secret: string) => void,
 ): ReactNode {
   switch (strategy) {
     case "none":
@@ -404,6 +440,7 @@ function identityFields(
             secretSet={draft.provisionSecretSet}
             onSecret={(secret) => onChange({ provisionSecret: secret })}
             targetId={targetId}
+            {...(onSecretGenerated ? { onGenerated: onSecretGenerated } : {})}
           />
           <Field
             label="Email domain"

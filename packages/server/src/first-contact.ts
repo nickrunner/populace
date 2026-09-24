@@ -196,6 +196,28 @@ export async function firstContact(target: StoredTarget, options: FirstContactOp
     return { outcome: "unreachable", checkedAt, strategy, summary: "This target has no MCP address, so there was nothing to contact.", detail: null, handle: null, tool: null, latencyMs: null, tornDown: false, leftBehind: null };
   }
 
+  // Not finished, so there is nothing to find out (ADR-0040). Refused BEFORE the connection rather
+  // than after it: the question this check answers is "can a person get an account and use it",
+  // and on a target nobody has said how accounts are made on, the answer cannot be reached by
+  // opening a session — it can only be reached by finishing the target. Connecting first would
+  // spend a round trip on somebody else's server to arrive at the same sentence, and a green
+  // "reached it" alongside a red result is the sort of half-answer this vocabulary exists to
+  // avoid.
+  if (target.identity.strategy === "undecided") {
+    return {
+      outcome: "provision-failed",
+      checkedAt,
+      strategy: "undecided",
+      summary: `${target.name} is connected, but nobody has said how people get accounts on it — so there is no account to make and nothing was tried. Answer that on the target, then run this again.`,
+      detail: null,
+      handle: null,
+      tool: null,
+      latencyMs: null,
+      tornDown: false,
+      leftBehind: null,
+    };
+  }
+
   // Seeded before anything is connected, so that even the first failure — whose detail is a
   // stranger's HTTP body — cannot carry a configured token out to the target row and the screen.
   const secrets = new Secrets();
@@ -511,6 +533,11 @@ function provisionFailureSummary(strategy: FirstContact["strategy"], created: st
       // fields and no dependencies it cannot. Written out rather than defaulted, because the
       // `switch` being exhaustive is what names every site the next strategy has to visit.
       return "Nobody needs an account here, so nothing was provisioned and nothing was left behind.";
+    case "undecided":
+      // Unreachable from here — `firstContact` refuses an unfinished target above, with a sentence
+      // that can name it. Written out anyway for the same reason `none` is: the exhaustive switch
+      // is the list of places the next strategy has to visit.
+      return "Nobody has said how people get accounts on this target, so nothing was provisioned and nothing was left behind.";
   }
 }
 

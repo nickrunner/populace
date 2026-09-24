@@ -1,6 +1,6 @@
 import { TargetInputSchema } from "@populace/contract";
 import { describe, expect, it } from "vitest";
-import { EMPTY_IDENTITY, identityDraftFromCheck, identityFrom, whatIdentityNeeds, whatIdentityWillNotDo, type IdentityDraft } from "./ways-in.js";
+import { EMPTY_IDENTITY, identityDraftFrom, identityDraftFromCheck, identityFrom, identitySoFar, whatIdentityNeeds, whatIdentityWillNotDo, type IdentityDraft } from "./ways-in.js";
 
 /**
  * How the PEOPLE get in, as the two screens that ask compute it.
@@ -131,5 +131,55 @@ describe("what gets sent", () => {
     const wandered: IdentityDraft = { ...typed, strategy: "admin-mint" };
     const returned: IdentityDraft = { ...wandered, strategy: "self-signup" };
     expect(returned.signupTool).toBe("sign_up");
+  });
+});
+
+/**
+ * What the connect screen stores before the reader has answered anything (ADR-0040).
+ *
+ * The screen writes the target the moment a check gets through, which is well before the way in
+ * is chosen — and the write needs an identity block. The interesting property is a NEGATIVE one:
+ * it must never be `none`, which is a real answer meaning this server has no users, and would
+ * leave a half-built target reading as ready to send a population to.
+ */
+describe("what can be stored before the question is answered", () => {
+  it("stores the absence of an answer as an absence, never as 'no accounts here'", () => {
+    const stored = identitySoFar(EMPTY_IDENTITY);
+    expect(stored).toEqual({ strategy: "undecided" });
+    expect(stored.strategy).not.toBe("none");
+    // And the server takes it, which is the whole reason it is in the union.
+    expect(accepts(stored)).toBe(true);
+  });
+
+  it("never downgrades an answer the reader has given", () => {
+    for (const draft of [
+      { ...EMPTY_IDENTITY, strategy: "none" as const },
+      { ...EMPTY_IDENTITY, strategy: "self-signup" as const, signupTool: "sign_up" },
+      { ...EMPTY_IDENTITY, strategy: "provision-url" as const, provisionUrl: "https://dev.example.test/populace", provisionSecret: "s3cret" },
+    ]) {
+      expect(identitySoFar(draft)).toEqual(identityFrom(draft));
+      expect(identitySoFar(draft).strategy).not.toBe("undecided");
+    }
+  });
+
+  /**
+   * A half-typed provisioning branch still goes up as `provision-url`, secret and all. That is the
+   * case the whole change exists for: the secret is written the moment it is generated, and at
+   * that moment nothing else on the branch has been finished.
+   */
+  it("stores a provisioning secret while the rest of that branch is still being filled in", () => {
+    const mid: IdentityDraft = { ...EMPTY_IDENTITY, strategy: "provision-url", provisionUrl: "https://dev.example.test/populace", provisionSecret: "just-generated" };
+    expect(identitySoFar(mid)).toMatchObject({ strategy: "provision-url", secret: "just-generated" });
+    // Storable, and still not FINISHED: nothing here says the reader has pressed anything.
+    expect(whatIdentityNeeds(mid)).toBeNull();
+    expect(whatIdentityNeeds({ ...EMPTY_IDENTITY, strategy: "provision-url", provisionSecret: "just-generated" })).toBe("the address your app answers provisioning on");
+  });
+
+  /** A stored target comes back as a draft, unfinished and all, or a reload would lose the row. */
+  it("reads an unfinished target back into a form with nothing chosen", () => {
+    const draft = identityDraftFrom({ strategy: "undecided" });
+    expect(draft.strategy).toBe("undecided");
+    expect(identityFrom(draft)).toBeNull();
+    expect(whatIdentityNeeds(draft)).toBe("an answer to how people get accounts");
   });
 });

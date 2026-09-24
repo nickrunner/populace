@@ -43,3 +43,4 @@ One record per fixed decision from the kickoff brief, plus the routine calls mad
 | [0037](0037-the-app-makes-its-own-people.md) | The app makes its own people, behind an endpoint it owns (`@populace/tdk`) |
 | [0038](0038-a-way-in-for-a-target-with-no-accounts.md) | A way in for a target with no accounts, and three answers instead of four peers |
 | [0039](0039-a-cohort-is-a-shared-condition-and-a-mix.md) | A cohort is a shared condition and a mix of personas; the population says how many |
+| [0040](0040-connecting-is-creating.md) | Connecting a target creates it, and a secret is never shown before it is stored |
