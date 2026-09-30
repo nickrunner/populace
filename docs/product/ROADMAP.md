@@ -302,6 +302,13 @@ Postgres behind `Store`, an external scheduler behind `Scheduler`, hosted runner
 existing jobs table, accounts and tenancy in `server`, secrets out of the config rows. The runner
 is untouched; if it is not, something earlier went wrong.
 
+That sentence is the seam the runner sees, and it is not the whole job. [`CLOUD-PLAN.md`](CLOUD-PLAN.md)
+is this rung written out: what the control plane above the runner assumes today that a hosted
+product breaks (jobs as closures, a run's truth in a `Map`, a read-then-write claim, a global
+stop, plaintext secrets, unguarded egress), the shape on GCP, how people visit from a worker
+pool, tenancy and billing, and the phases — the first of which is local hardening that pays for
+itself before any cloud exists.
+
 ### The gate that is not a rung: the migration trigger
 
 The store has no migration framework and `migrations.ts` was deleted. A schema change drops every
@@ -355,6 +362,9 @@ before cloud, or longitudinal simulations stay a supervised activity until R5.
 — process management, restarts, log rotation — for a product that is still local-first, and R5
 solves it properly. But this is a real limitation against the pitch and should be a deliberate
 choice rather than an accident of sequencing.
+
+*Answered by the cloud plan:* unattended running is the worker pool (`CLOUD-PLAN.md` §4, §6),
+not a local service. A hosted org's longitudinal simulation runs because workers run.
 
 ## 9. What happens next
 
