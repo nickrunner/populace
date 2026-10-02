@@ -5,37 +5,40 @@ export { ProjectReadModel, type ProjectReadModelOptions } from "./project-read-m
 export { targetView } from "./target.js";
 export {
   ConfigIncomplete,
-  DEFAULT_POPULATION_SLUG,
   DEFAULT_SIMULATION_SLUG,
   DEFAULT_COHORT_CONTEXT,
-  cohortsOf,
+  SENDS_NOBODY,
   cohortsOfPopulation,
   createSimulation,
-  ensurePersonaCohort,
   ensureProject,
-  ensurePopulation,
   ensureSettings,
   ensureSimulation,
   frozenConfigForRun,
   liveConfigForRun,
+  materialise,
+  planSettings,
   redactConfig,
+  resolveDraft,
   resolveSimulationConfig,
   seedProjectFromConfig,
-  setPopulationMember,
+  settingsOf,
   simulationPlanOf,
   snapshotConfig,
   withLiveSecrets,
   type ProcessConfig,
+  type ResolvedDraft,
   type ResolvedSimulation,
   type SimulationDraft,
   type SimulationPlan,
+  type StudyDraft,
+  type StudyOverrides,
 } from "./config-store.js";
-export { ensureRoster, headcountOf, lanesOf, rosterProfiles, sizeIn, sizeOfCohort, RosterIncomplete, type Lane } from "./cohort-store.js";
+export { dealFor, draftPerson, ensureRoster, ensureRosterFor, laneSizes, peopleSentBy, rosterProfiles, RosterIncomplete, type Deal, type Lane } from "./cohort-store.js";
 export { resetTarget, type TargetResetOutcome } from "./target-reset.js";
 export { EventHub, RecordingStore } from "./events.js";
 export { JobRunner } from "./jobs.js";
 export { RunController, type StartRunOptions } from "./runs.js";
-export { estimateRun, plannedVisits, DEFAULT_COST_PER_WAKE_USD } from "./estimate.js";
+export { estimateRun, plannedVisits, toEstimateView, zeroEstimate, DEFAULT_COST_PER_WAKE_USD, type LaneEstimate, type RunEstimate, type ZeroEstimateInput } from "./estimate.js";
 export { checkTarget, checkPromises, guessIdentity } from "./target-check.js";
 export { sweepRun, type SweepOptions, type SweepResult } from "./sweep.js";
 export { STARTER_PERSONAS, starterBySlug, type StarterPersona } from "./starters.js";

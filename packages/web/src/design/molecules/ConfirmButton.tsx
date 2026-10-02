@@ -7,7 +7,7 @@ import { Button, Heading, Inline, Spacer, Stack, Text } from "../atoms/index.js"
 
 /**
  * ConfirmButton — ATOMIC-INVENTORY §2, molecule 31. Radix `AlertDialog`. New; 4 sites, all of
- * them destructive: sweep the accounts an execution made, delete a project, delete a simulation,
+ * them destructive: sweep the accounts an execution made, delete a project, delete a study,
  * re-cast a population.
  *
  * **Why the dialog exists at all.** DESIGN-SYSTEM §1.2's `danger` button is deliberately *not* a

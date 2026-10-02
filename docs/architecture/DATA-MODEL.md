@@ -10,9 +10,13 @@ several were written before the tables they describe were built, and their miles
 
 ## 1. What exists
 
-Nineteen tables plus a key-value `control` table, each storing a zod-validated JSON blob with a few
-columns lifted out for indexing (ADR-0011). Everything populace knows is in the database: YAML is an
-import, not the entry point (ADR-0025).
+Twenty-three tables plus a key-value `control` table (the schema shape, the kill switch, the serve
+lock and the `size_backfill` marker of ADR-0041), each storing a zod-validated JSON blob with a few
+columns lifted out for indexing (ADR-0011). Two of the twenty-three are named in the prose here
+rather than given rows of their own — `cohort_personas`, the mix join, and `sign_in_grants`, keyed
+`(project, url)` (ADR-0036) — so count the `CREATE TABLE` statements in
+`packages/store-sqlite/src/index.ts` rather than the rows below if the number matters. Everything
+populace knows is in the database: YAML is an import, not the entry point (ADR-0025).
 
 **Authored — what a person edits.**
 
@@ -23,9 +27,19 @@ import, not the entry point (ADR-0025).
 | `personas` | `id` | `project_id`, `slug` (unique per project), `origin`, `updated_at` |
 | `cohorts` | `id` | `project_id`, `slug` (unique per project), `updated_at` — the mix is in `cohort_personas(cohort_id, persona_id)` |
 | `people` | `(project_id, id)` | `cohort_id`, `cohort_slug`, `persona_id`, `lane_slug`, `ordinal`, `archived_at` |
-| `populations` | `id` | `project_id`, `slug` (unique per project), `updated_at` |
-| `simulations` | `id` | `project_id`, `slug` (unique per project), `population_id`, `target_id`, `mode`, `archived` |
+| `populations` | `id` | `project_id`, `slug` (unique per project), `updated_at` — members carry a `weight`, never a size |
+| `simulations` | `id` | `project_id`, `slug` (unique per project), `population_id`, `target_id`, `mode`, `archived` — the **study** (ADR-0042); `size` and `brief` are in the blob |
 | `settings` | `project_id` | — |
+| `github_connections` | `project_id` | `repo`, `updated_at` — the repository this project files into, and **your** token to it (ADR-0044) |
+| `filed_issues` | `(project_id, provider, repo, number)` | `filed_at` — the filing ledger: one row per issue populace opened, holding **every** member signature the cluster behind it contained, plus a sighting per report window that reported it, every absence already announced on it, and `supersededBy` (ADR-0044 §2, §8) |
+
+Both of those were added without bumping `SCHEMA_SHAPE`, and both are in this layer for reasons
+worth knowing. `github_connections` is its own table because a credential gets its own row, so
+nothing that assembles a config, a snapshot or a view can reach it by walking a blob it was already
+holding (ADR-0040) — the same reason `sign_in_grants` is one. `filed_issues` is here although no
+human types it, because what it is scoped to is a **project**: an issue number outlives the cluster,
+the run and the study that reported it, so `deleteRun` must not take it and a sweep must not either.
+`deleteProject` takes both.
 
 **Frozen — resolved once, immutable thereafter (ADR-0024).**
 
@@ -62,15 +76,18 @@ Four of those keys are the whole of a design decision and are worth reading twic
   runs; key by run as well.**
 - **`memories` is keyed `(run_id, agent_id)`**, which is what makes a clean slate free: a new run id
   is a new key and there is nothing to clear (ADR-0030).
-- **`people` is keyed `(project_id, id)`** where the id is `cohortSlug#ordinal`. A person is durable
-  and belongs to a cohort, not to an execution; the same person appears in every execution that
-  sends their cohort (ADR-0031).
+- **`people` is keyed `(project_id, id)`** where the id is `cohortSlug.personaSlug#ordinal`. A person
+  is durable and belongs to a cohort's lane, not to a study or an execution; every study that sends
+  the cohort meets the first N of each lane, where N is that study's size dealt (ADR-0031,
+  ADR-0041).
 - **`triage` is keyed `(project_id, signature)`**, so a human's judgement survives a re-execution
   that produces entirely new finding rows (ADR-0028).
 
-Three things are still deliberately not stored: **digests and clusters**, computed per request;
-**a cross-run "issue" entity**, which signature plus triage covers; and **rollup counters**, because
-cached totals on `runs` are enough at local scale (§12).
+Two things are still deliberately not stored: **digests and clusters**, computed per request; and
+**rollup counters**, because cached totals on `runs` are enough at local scale (§12). A third used
+to be on this list — a cross-run "issue" entity — and `filed_issues` is now half of one: it holds an
+issue's identity, the signatures it was filed for, and populace's own record of what it has seen and
+already said about the problem — and nothing the tracker knows (§12).
 
 ## 2. The four layers
 
@@ -184,10 +201,10 @@ Person     { projectId, id: `${cohortSlug}.${personaSlug}#${ordinal}`, cohortId,
              personaId, personaSlug, laneSlug, ordinal, name, details, handle,
              overrides: { patience?, budgetUsd?, traits },
              generatedBy: "seeded" | "model" | "authored", archivedAt?, updatedAt }
-Population { id, projectId, slug, name, members: { cohortId, size }[], createdAt, updatedAt }
-Simulation { id, projectId, slug, name, description, populationId, targetId,
-             mode: "ephemeral" | "longitudinal", visitsPerPerson: number | null,
-             cadence, seed, autoSweep, requireFreshTarget, archived, createdAt, updatedAt }
+Population { id, projectId, slug, name, members: { cohortId, weight }[], createdAt, updatedAt }
+Simulation { id, projectId, slug, name, description, brief, populationId, targetId,   // the study
+             mode: "ephemeral" | "longitudinal", size, visitsPerPerson: number | null,
+             cadence, seed, autoSweep, requireFreshTarget, overrides, archived, createdAt, updatedAt }
 Settings   { projectId, model: ModelConfig, guardrails: Guardrails,
              verifier: VerifierConfig, daemon: DaemonConfig, cadence, seed, maxWakes }
 Triage     { projectId, signature, state, note, externalRef, titleAtTriage, updatedAt }
@@ -195,46 +212,54 @@ Triage     { projectId, signature, state, note, externalRef, titleAtTriage, upda
 
 Five things to get right here:
 
-**Slugs stay stable, and they are the URL.** A target, persona, cohort, population and simulation
+**Slugs stay stable, and they are the URL.** A target, persona, cohort, population and study
 each carry an immutable `slug`, unique within the project, separate from the mutable display name
 and from the surrogate row id. Agent ids are built from slugs, so renaming a persona in the editor
 must never change one — and the URL space is spelled in slugs, so a rename must not break a
 bookmark either.
 
-**The URL space, as ADR-0035 left it.** The library segments are bare plurals, and the singular
-paths they moved off redirect rather than 404, because those addresses have been in a URL bar:
+**The URL space, as ADR-0043 left it.** Every authored noun has a list page and one builder page
+serving both `new` and an id; the library segments are bare plurals; and the paths that moved —
+`library/target`, `library/people`, and every `/s/…` address (ADR-0042) — redirect rather than 404,
+because those addresses have been in a URL bar:
 
 ```
-/p/:proj                            the project dashboard
-/p/:proj/library/targets            the targets          (was library/target)
-/p/:proj/library/targets/new        connect one — its own flow, not a branch of the editor
-/p/:proj/library/targets/:t         one saved target
-/p/:proj/library/personas           /:x            unchanged
-/p/:proj/library/cohorts            /:cohortSlug   (was library/people)
-/p/:proj/library/populations        /:pop          new: the casts, and composing one
-/p/:proj/s/new                      pick a target and a population, and go
-/p/:proj/s/:sim                     its results, and eight screens under it
-/p/:proj/s/:sim/settings            what the simulation IS — name, pairing, mode
-/p/:proj/people/:personId           one person, across every simulation
+/p/:proj                                          the studies dashboard (the project home)
+/p/:proj/studies/new                              the study builder: what, where, who (and how many), how
+/p/:proj/studies/:study                           its results, and the screens under it
+/p/:proj/studies/:study/people                    the people this study sends, in deal order
+/p/:proj/studies/:study/executions/:runId/cohorts one execution's cohorts, as it ran them
+/p/:proj/library/targets        /new   /:t        connect one — ADR-0040's flow, the one builder that saves early
+/p/:proj/library/personas       /new   /:x        one builder for creating and editing
+/p/:proj/library/cohorts        /new   /:c
+/p/:proj/library/populations    /new   /:pop
+/p/:proj/people/:personId                         one person, across every study (read-only)
+/p/:proj/s/…                                      redirects to /studies/…
 ```
 
-`library/targets/new` sits before `library/targets/:t` in the route table so that `new` is a verb
-rather than a target id. A target is still addressed by row id here, not by slug — the slug column
-exists and `StoredTargetView` does not carry it, which is the one place this table is aspirational
-rather than descriptive.
+`new` sits before `:id` in every route table so that it is a verb rather than an id, and the server
+reserves the slug `new` for every one of these nouns for the same reason. A target is still
+addressed by row id here, not by slug — the slug column exists and `StoredTargetView` does not carry
+it, which is the one place this table is aspirational rather than descriptive.
 
-**The population owns the headcount; the cohort owns the seed and the people** (ADR-0039). A
-population member's `size` is the only number that decides how many people go — there is no
-`scale` and a cohort has no size — and it is apportioned across the cohort's mix by highest
-averages, one lane per persona. The seed decides which traits, patience and budget each ordinal in
-a lane is sampled with. Putting the seed on the population or the simulation would re-cast the
+**The study owns the headcount; the cohort owns the seed and the people** (ADR-0041). A study's
+`size` is the only number that decides how many people go — there is no `scale`, a cohort has no
+size and neither has a population — and `dealStudy` apportions it across the population's member
+weights and then across each cohort's mix by highest averages, one lane per persona, ties to the
+earlier entry, so that growing a study re-deals nobody. A study may also carry a `brief`, one text
+every person it sends hears after their cohort's context. The seed decides which traits, patience and budget each ordinal in
+a lane is sampled with. Putting the seed on the population or the study would re-cast the
 same people every time they were run, which destroys comparison across executions (ADR-0029).
 
 **A person is a row, not a derivation.** Names are stable because they are stored, not because the
 generator is deterministic: `ensureRoster` fills empty slots only and never overwrites, a shrink
 archives rather than deletes, and changing the seed renames nobody (ADR-0031). The roster is sized
-at the largest size any population gives the cohort, so a cohort in two casts is one roster and
-the smaller cast meets a prefix of each lane.
+at the largest count any live study gives the lane — a study that is not archived, or is archived
+but still has an execution running or paused — so a cohort in two studies is one roster and the
+smaller study meets a prefix of each lane. **No GET writes a person**: resolution reads the roster
+and fills a missing ordinal in memory, and the rows are written by creating, editing or archiving
+a study, editing a population or a cohort, starting an execution, the study's people jobs and the
+YAML import (ADR-0041).
 
 **Deletes refuse, except at the project boundary.** A row another authored row points at cannot be
 deleted: `deleteTarget`, `deletePersona`, `deleteCohort` and `deletePopulation` throw
@@ -248,23 +273,35 @@ memories, identities, wakes, their trace events, findings and the event log. A d
 touched the tables with a `project_id` column would leave the rest keyed to a run id nothing could
 resolve — invisible in every screen and counted by every `COUNT(*)`.
 
-A simulation is the one thing ARCHIVED rather than deleted by default, because its executions are
-history worth keeping under a name; deleting it with them is an explicit ask.
+A study is the one thing ARCHIVED rather than deleted by default, because its executions are
+history worth keeping under a name; deleting it with them is an explicit ask. The rules, in one
+table, because five screens say these sentences and must agree with the server (ADR-0043 §7):
+
+| Noun | Default act | Refused while… |
+| --- | --- | --- |
+| Persona | delete | a cohort's mix names it |
+| Cohort | delete | a population holds it — the 409 names them; nothing is stripped out on the reader's behalf |
+| Population | delete | a study names it — the 409 names them; there is no "last" or "default" population to protect |
+| Target | delete | a study points at it |
+| Study | **archive**; deleting its executions is opted into | — |
+| Person | never deleted; archived by the roster rule and restored when a study sends them again | — |
+| Project | cascade, in one transaction | — |
 
 **Cohorts and populations reference; snapshots inline.** `Population.members[].cohortId` and
 `Cohort.mix[].personaId` are references, so one cohort can be in two populations and one persona
-in two cohorts' mixes. The snapshot inlines one member per LANE — the full `PersonaSpec`, the
-cohort's `context`, overlay and policy, *and the roster*: `member.people[]` with each person's id,
-name, details, handle and hand-set overrides — because the frozen layer must not depend on a row
+in two cohorts' mixes. The snapshot inlines one member per LANE at the count the study's size deals it — the full
+`PersonaSpec`, the cohort's `context`, overlay and policy, the study's `size` and `brief`, *and the
+roster*: `member.people[]` with each person's id, name, details, handle and hand-set overrides —
+because the frozen layer must not depend on a row
 that can later change. That is what lets a three-month-old execution still render the right names after
 its cohort has been re-cast.
 
 **The shapes are the existing schemas.** `PersonaSpec`, `Cadence`, `McpEndpoint`, `IdentityConfig`,
 `Guardrails`, `ModelConfig`, `VerifierConfig` are zod schemas in `packages/core/src/schemas/` and
 the tables store those objects unchanged. Resolution to a `PopulaceConfig` is assembly, not
-translation — and it is **per simulation**, not per project: `resolveSimulationConfig` reads that
-simulation's population, its target and its plan, layered over the project's settings (ADR-0025
-amendment).
+translation — and it is **per study**, not per project, and **read-only**: `resolveSimulationConfig`
+reads that study's population, its target and its plan, deals its size, and layers the result over
+the project's settings without writing a row (ADR-0025 amendments).
 
 ## 6. Evidence stays as it is
 
@@ -355,7 +392,8 @@ subscriber's filter, and `listEvents` filters with `run_id = ?`, which excludes 
 event about a run written with a null `runId` is invisible to the screen that run owns. A null
 `runId` means the event is genuinely not about a run.
 
-`projectId` and `simulationId` are not the emitter's job. An emitter deep inside a wake knows its
+`projectId` and `simulationId` — `studyId` on the wire's `EventView`, translated as the event leaves
+(ADR-0042) — are not the emitter's job. An emitter deep inside a wake knows its
 wake and its run and has no business knowing which project the run is filed under, so
 `RecordingStore.scoped()` fills both from the run row (and fills `runId` itself from the wake when
 only the wake is known), caching per run because a run's project never changes. That is what lets
@@ -422,6 +460,11 @@ this section always stated:
 - **Snapshots are versioned, never migrated.** A snapshot records the `PopulaceConfig` version it
   was written with (`version: 2`) and is read through the schema of that version.
 
+One forward step already exists outside this regime, and it is the shape the runner will formalise:
+a `size_backfill` marker in `control` guards a one-time raw-JSON fill of every legacy study's `size`
+from its population's summed member sizes, so `SCHEMA_SHAPE` was not bumped for ADR-0041 and no
+database was dropped. It is deleted when the framework arrives.
+
 Until the trigger fires, the cost of being wrong is exactly one warned rebuild of a developer's own
 store, which is why the decision is affordable — and why the sentence "authored rows are expendable"
 has an expiry date rather than a rationale.
@@ -429,7 +472,7 @@ has an expiry date rather than a rationale.
 ## 12. What this model deliberately does not have
 
 - **No determinism subsystem.** No virtual clock, no seeded id source, no pinned model sampling, no
-  forced concurrency of one, no jitter removal. Two executions of one ephemeral simulation disagree
+  forced concurrency of one, no jitter removal. Two executions of one ephemeral study disagree
   by design, and everything that compares executions compares signatures (ADR-0030).
 - **No semantic signature.** `sig1` is a hash of kind, primary tool and sorted title tokens, and the
   measured consequence is in ADR-0028's amendment: identical or punctuation-varied wording recurs
@@ -440,18 +483,32 @@ has an expiry date rather than a rationale.
 - **No cross-project anything.** A persona cannot be shared between projects; copy it. Signatures
   roll up within a project. Projects are scoping, not tenancy: one SQLite file, one `serve` lock, no
   authentication before M5.
-- **No per-person authoring beyond a name and a detail line.** A person cannot carry their own
-  goals, tool policy or budget. The moment they do, the persona stops being a template and the
-  cohort stops meaning anything (ADR-0031).
-- **No cross-run "issue" entity.** Cluster signature plus triage covers what the compare and Known
-  screens need. A first-class Issue that outlives clusters is a product decision nobody has made.
+- **No per-person authoring beyond a name, a detail line and the sampled dimensions.** A person
+  cannot carry their own goals, tool policy or errands. The moment they do, the persona stops being
+  a template and the cohort stops meaning anything (ADR-0031). A study says one thing to all of its
+  people through `brief`; a `(study, person)` override table is deliberately not built (ADR-0041).
+- ~~**No cross-run "issue" entity.** Cluster signature plus triage covers what the compare and Known
+  screens need. A first-class Issue that outlives clusters is a product decision nobody has made.~~
+  **Amended 2026-09-30 (ADR-0044): filing issues made that decision.** `filed_issues` holds an
+  issue's `(repo, number, url)` and every member signature the cluster behind it contained, and an
+  issue number does outlive the cluster, the signature, the run and the study — which is the whole
+  point of it, since the ledger is what stops the same problem being filed twice. It also holds
+  populace's own history of the problem — `seenIn`, one sighting per report window that reported it,
+  and `quietNotices`, every absence populace has announced on the issue, keyed `(studyId, since)` so
+  an absence is said once per piece of news rather than once per window (ADR-0044 §8, ADR-0045).
+  That is a record of what populace observed and said, not a mirror of the issue. What is still
+  deliberately absent is narrower and is the part worth defending: populace stores **no issue state
+  and no issue body**. It does not know whether an issue is open or closed except by asking at the
+  moment it publishes, nothing in the dashboard says "closed", and `FiledIssueView` is a link and a
+  number on purpose. populace is not the system of record for anything in somebody's tracker, and a
+  synced mirror of one is still a product decision nobody has made.
 - **No persisted digests or clusters, and no rollup tables.** Clusters are computed in memory per
-  request. At one project with a handful of simulations that is fine; at thirty simulations of
+  request. At one project with a handful of studies that is fine; at thirty studies of
   thirty executions it is not, and the answer then is a rollup table built on evidence rather than
   speculated about now.
-- **No scheduled or unattended runs.** A longitudinal simulation is started by hand, and "runs
+- **No scheduled or unattended runs.** A longitudinal study is started by hand, and "runs
   forever" means "runs as long as `serve` does". `serve --resume` re-arms executions a previous
   process left paused; there is no cron, no daemonisation and no wake-on-boot.
-- **No YAML export for the new layers.** `populace.yaml` can create cohorts and simulations on first
-  open; it is an import, not a sync, and a cohort cast in the browser is not in anybody's repository
+- **No YAML export for the new layers.** `populace.yaml` can create cohorts and studies on first
+  open, turning the file's counts into weights and a study size; it is an import, not a sync, and a cohort cast in the browser is not in anybody's repository
   yet (ADR-0018 amendment).

@@ -15,7 +15,7 @@ import {
 } from "../../design/index.js";
 
 /**
- * The ways in — how the PEOPLE a simulation sends get accounts of their own.
+ * The ways in — how the PEOPLE a study sends get accounts of their own.
  *
  * Not to be confused with your own sign-in to the address (ADR-0036), which is how populace reads
  * a tool list and is one human's credential. This is the other half: forty strangers, forty

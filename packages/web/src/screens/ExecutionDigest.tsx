@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link as RouterLink, useParams } from "react-router-dom";
 import { ApiError, api, isMissing, type Digest } from "../api.js";
 import { keys, q } from "../queries.js";
-import { useProject, useSimulation } from "../context.jsx";
+import { useProject, useStudy } from "../context.jsx";
 import { lasted, plural, usd } from "../format.js";
 import {
   Button,
@@ -73,19 +73,19 @@ import {
  * **Nothing here says anything about another execution.** A digest is one window and cannot see
  * whether a problem is new, back or gone (ADR-0028) — `cardOfCluster` is where that restraint
  * lives, and the rows link to the problem's own page, which CAN say, because it reads the
- * simulation's whole history.
+ * study's whole history.
  */
 export function ExecutionDigest() {
   const { runId = "" } = useParams();
   const { key } = useProject();
-  const { key: sim, href } = useSimulation();
+  const { key: studyKey, href } = useStudy();
   const queries = useQueryClient();
 
   const digest = useQuery({ ...q.digest(runId), enabled: runId !== "" });
   // Already warm from the results and executions screens. It is read here for the one thing a
   // digest does not carry: the execution NUMBER a reader recognises, and the status that decides
   // what the window note says.
-  const results = useQuery(q.results(key, sim));
+  const results = useQuery(q.results(key, studyKey));
   const entry = results.data?.history.find((row) => row.runId === runId);
 
   /**
@@ -238,7 +238,7 @@ export function ExecutionDigest() {
       }
       empty={
         <StateBlock kind="empty" what="that execution">
-          That execution is not in this simulation&rsquo;s history. <Link to={href("executions")}>Open the executions</Link> and
+          That execution is not in this study&rsquo;s history. <Link to={href("executions")}>Open the executions</Link> and
           pick one that is.
         </StateBlock>
       }
@@ -284,7 +284,7 @@ export function ExecutionDigest() {
               <Measure width="read">
                 <Text as="p" size="read-sm" tone="soft">
                   One row is one problem, worst first. Open one to read its evidence and everything
-                  this simulation knows about it.
+                  this study knows about it.
                 </Text>
               </Measure>
 

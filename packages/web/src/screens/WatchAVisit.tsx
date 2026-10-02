@@ -6,7 +6,7 @@ import type { JsonValue, ToolCallRecord } from "@populace/contract";
 import { api, isMissing } from "../api.js";
 import type { Finding, Participant, TraceEvent } from "../api.js";
 import { keys, q, WATCHING } from "../queries.js";
-import { useSimulation } from "../context.jsx";
+import { useStudy } from "../context.jsx";
 import { clock, ms, plural, wakeOutcome } from "../format.js";
 import {
   Button,
@@ -170,6 +170,10 @@ const KINDS: Record<TraceEvent["type"], TranscriptKind> = {
   "tool.call": "tool.call",
   "reporter.call": "reporter.call",
   guardrail: "guardrail",
+  // The product changing what it offers mid-visit is the runner speaking about the run, like a
+  // note: it is not a step the person took and it files nothing, so it takes the quiet ink rather
+  // than a kind of its own in the inventory.
+  tools: "note",
   identity: "identity",
   finding: "finding",
   note: "note",
@@ -242,6 +246,17 @@ function stepFor(
       };
     case "note":
       return { ...base, title: "A note on the record", sub: event.text };
+    case "tools": {
+      // What the APP's list did, which is not always what this person can reach: a tool their tool
+      // policy withholds is added here and never offered to them.
+      const moved = [...event.added.map((name) => `+${name}`), ...event.removed.map((name) => `-${name}`)];
+      return {
+        ...base,
+        title: "The app's tools changed",
+        sub: moved.length > 0 ? moved.join(", ") : "the app said its tools changed; no tool was added or removed",
+        meta: event.endpoint,
+      };
+    }
     case "wake.end":
       return {
         ...base,
@@ -319,30 +334,30 @@ function Detail({
 }
 
 export function WatchAVisit() {
-  const { wakeId } = useParams();
-  const id = wakeId ?? "";
+  const { visitId } = useParams();
+  const id = visitId ?? "";
   const [selected, setSelected] = useState<string | null>(null);
 
-  const { href } = useSimulation();
+  const { href } = useStudy();
   // A visit still going only says so once. Until it ends, the trace is asked for again at watching
   // rate — the common way into this screen is a person who is "here now" on the live screen, and
   // what they were showing was a frozen snapshot until the reader reloaded the page.
-  const wake = useQuery({ ...q.wake(id), refetchInterval: (query) => (query.state.data?.status === "running" ? WATCHING : false) });
-  const running = wake.data?.status === "running";
+  const visit = useQuery({ ...q.wake(id), refetchInterval: (query) => (query.state.data?.status === "running" ? WATCHING : false) });
+  const running = visit.data?.status === "running";
   const trace = useQuery({ ...q.trace(id), refetchInterval: running ? WATCHING : false });
-  // THE WAKE'S OWN RUN, not the simulation's latest. A problem the latest execution did not report
-  // opens onto the execution that did, and agent ids are deterministic across executions — so the
+  // THE VISIT'S OWN RUN, not the study's latest. A problem the latest execution did not report
+  // opens onto the execution that did, and participant ids are deterministic across executions — so the
   // memory panel read from the shell's run answered with somebody's notes from a DIFFERENT one,
   // and the citations came back empty because that run's findings were not in this one's.
-  const runId = wake.data?.runId ?? "";
-  // The person, not the persona: a wake row knows which persona it ran, and two cohorts may share
+  const runId = visit.data?.runId ?? "";
+  // The person, not the persona: a visit row knows which persona it ran, and two cohorts may share
   // one. The name at the top of a visit is the name of whoever made it (Decision A).
   const participants = useQuery({ ...q.participants(runId), enabled: runId !== "" });
   const findings = useQuery({ ...q.findings(runId), enabled: runId !== "" });
   const memory = useQuery({
-    queryKey: keys.memory(runId, wake.data?.agentId ?? ""),
-    queryFn: () => api.memory(runId, wake.data?.agentId ?? ""),
-    enabled: wake.data !== undefined,
+    queryKey: keys.memory(runId, visit.data?.agentId ?? ""),
+    queryFn: () => api.memory(runId, visit.data?.agentId ?? ""),
+    enabled: visit.data !== undefined,
   });
 
   /**
@@ -353,7 +368,7 @@ export function WatchAVisit() {
     setSelected(next);
   }, []);
 
-  const wakeData = wake.data;
+  const visitData = visit.data;
   const traceData = trace.data;
   const events = useMemo(() => traceData?.items ?? [], [traceData]);
   const mine = useMemo(
@@ -378,15 +393,15 @@ export function WatchAVisit() {
    */
   const steps = useMemo(() => {
     const severities = new Map(mine.map((finding) => [finding.id, finding.severity]));
-    const number = wakeData?.wakeNumber ?? 0;
+    const number = visitData?.wakeNumber ?? 0;
     return events.map((event) => stepFor(event, number, (findingId) => severities.get(findingId)));
-  }, [events, mine, wakeData]);
+  }, [events, mine, visitData]);
 
   const crumbs: Crumb[] = [{ label: "Visits", to: href("visits") }];
 
-  if (wakeData === undefined || traceData === undefined) {
-    const state: StateKind = wake.isError
-      ? isMissing(wake.error)
+  if (visitData === undefined || traceData === undefined) {
+    const state: StateKind = visit.isError
+      ? isMissing(visit.error)
         ? "gone"
         : "failed"
       : trace.isError
@@ -420,11 +435,11 @@ export function WatchAVisit() {
           </StateBlock>
         }
         error={
-          <StateBlock kind="failed" what="this visit" error={wake.error ?? trace.error}>
+          <StateBlock kind="failed" what="this visit" error={visit.error ?? trace.error}>
             <Button
               variant="secondary"
               onClick={() => {
-                void wake.refetch();
+                void visit.refetch();
                 void trace.refetch();
               }}
             >
@@ -436,8 +451,8 @@ export function WatchAVisit() {
     );
   }
 
-  const person = personFor(participants.data?.items ?? [], wakeData.agentId);
-  const name = person?.name ?? wakeData.personaName;
+  const person = personFor(participants.data?.items ?? [], visitData.agentId);
+  const name = person?.name ?? visitData.personaName;
   // The first call to the app, so the pane is never empty on arrival.
   const fallback = steps.find((step) => step.kind === "tool.call") ?? steps[0];
   const current = steps.find((step) => step.id === selected) ?? fallback;
@@ -453,22 +468,22 @@ export function WatchAVisit() {
 
   // What they walked back in remembering: the thing nothing else in this category can show.
   const carried = [...(memory.data?.waitingOn ?? []), ...(memory.data?.annoyances ?? [])].filter(
-    (entry) => entry.wake < wakeData.wakeNumber,
+    (entry) => entry.wake < visitData.wakeNumber,
   );
 
   const facts: MetaFact[] = [
     { key: "cohort", node: person === undefined ? null : (person.cohortName || person.cohortSlug) },
-    { key: "outcome", node: wakeOutcome(wakeData.status) },
-    { key: "turns", node: plural(wakeData.turns, "turn") },
-    { key: "cost", node: <Money usd={wakeData.costUsd} precision={4} /> },
-    { key: "id", node: <Mono size="ref">{wakeData.id}</Mono> },
+    { key: "outcome", node: wakeOutcome(visitData.status) },
+    { key: "turns", node: plural(visitData.turns, "turn") },
+    { key: "cost", node: <Money usd={visitData.costUsd} precision={4} /> },
+    { key: "id", node: <Mono size="ref">{visitData.id}</Mono> },
   ];
 
   return (
     <SplitPage
       header={
         <PageHeader
-          title={`${name}, visit ${String(wakeData.wakeNumber)}`}
+          title={`${name}, visit ${String(visitData.wakeNumber)}`}
           crumbs={[
             ...crumbs,
             ...(person === undefined
@@ -477,11 +492,11 @@ export function WatchAVisit() {
                   {
                     label: person.name,
                     to: href(
-                      `people/${encodeURIComponent(person.id)}?execution=${encodeURIComponent(wakeData.runId)}`,
+                      `people/${encodeURIComponent(person.id)}?execution=${encodeURIComponent(visitData.runId)}`,
                     ),
                   },
                 ]),
-            { label: `Visit ${String(wakeData.wakeNumber)}` },
+            { label: `Visit ${String(visitData.wakeNumber)}` },
           ]}
           meta={facts}
           status={running ? <Chip tone="live">live</Chip> : undefined}

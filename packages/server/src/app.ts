@@ -4,7 +4,7 @@ import type { Finding, PopulaceConfig, TraceEvent } from "@populace/core";
 import { buildDigest, verifyPending } from "@populace/reports";
 import { Hono } from "hono";
 import { frozenConfigForRun } from "./config-store.js";
-import { mountControl } from "./control.js";
+import { judgeRefusal, mountControl } from "./control.js";
 import type { ServerDeps } from "./deps.js";
 import { fail, page, parseQuery } from "./http.js";
 import { ProjectReadModel } from "./project-read-model.js";
@@ -34,15 +34,16 @@ export function createApp(deps: ServerDeps): Hono {
 
   /**
    * `GET /target` is gone. It answered "the target" for a process that assumed one project with
-   * one target; a target is now named by the simulation that goes to it, and read under
+   * one target; a target is now named by the study that goes to it, and read under
    * `/projects/:p/targets` (SPEC §6.1).
    */
   app.get(`${API_BASE}/runs`, async (c) => {
     const q = parseQuery(c, RunListQuerySchema);
     if (!q.ok) return q.response;
-    // Filtered IN SQL: the rows carry their project and simulation, so a project's runs are a
-    // query rather than every run in the database loaded and thrown away.
-    const runs = await read.listRuns({ ...(q.value.project === undefined ? {} : { projectId: q.value.project }), ...(q.value.simulation === undefined ? {} : { simulationId: q.value.simulation }) });
+    // Filtered IN SQL: the rows carry their project and study, so a project's runs are a query
+    // rather than every run in the database loaded and thrown away. The query parameter says
+    // `study`; the row's column keeps its own name (ADR-0032, ADR-0042).
+    const runs = await read.listRuns({ ...(q.value.project === undefined ? {} : { projectId: q.value.project }), ...(q.value.study === undefined ? {} : { simulationId: q.value.study }) });
     return c.json(page(runs, q.value.cursor, q.value.limit));
   });
 
@@ -105,7 +106,7 @@ export function createApp(deps: ServerDeps): Hono {
     if (config) return c.json(await read.toolUsage(runId, await targetView(config)));
     const frozen = await describeRun(runId);
     const toolsError = frozen
-      ? "this run's target cannot be reached with what is stored now, so its tool list could not be read; check the simulation it ran"
+      ? "this run's target cannot be reached with what is stored now, so its tool list could not be read; check the study it ran"
       : "no target is set up";
     return c.json(await read.toolUsage(runId, { name: frozen?.target.name ?? "", endpoints: [], webBaseUrl: null, description: null, identityStrategy: "", tools: null, toolsError }));
   });
@@ -152,15 +153,27 @@ export function createApp(deps: ServerDeps): Hono {
     const config = await describeRun(runId);
     if (!config) return fail(c, "conflict", "this run has no config to read it by; connect a target first");
     if (q.value.verify) {
-      if (config.verifier.judge === "model" && !deps.verifier) {
-        return fail(c, "unavailable", "the model judge needs an API key; set ANTHROPIC_API_KEY or configure verifier.judge: heuristic");
-      }
+      // Both judges that need a credential refuse here, by one rule (`judgeRefusal`). The typed
+      // judge used to reach `verifyFinding` with no client and throw once per finding, which came
+      // back as a 500 with no sentence in it — the same shape the model judge's refusal exists to
+      // avoid.
+      const refusal = judgeRefusal(config.verifier.judge, { model: deps.verifier !== undefined, typesafe: deps.typesafe !== undefined });
+      if (refusal !== null) return fail(c, "unavailable", refusal);
       // Re-checking a finding means calling the target as the person who filed it, so it takes the
       // live credentials and refuses out loud without them. A replay that cannot authenticate
       // would file a page of `not-reproduced` verdicts nobody could account for.
       const live = await connectAsRun(runId);
-      if (!live) return fail(c, "conflict", "this run's target cannot be reached with what is stored now, so its findings cannot be re-checked; check the simulation it ran");
-      await verifyPending({ store: deps.store, config: live, identityProvider: identityProviderFor(live.identity), ...(deps.verifier ? { provider: deps.verifier } : {}) }, { runIds: [runId] });
+      if (!live) return fail(c, "conflict", "this run's target cannot be reached with what is stored now, so its findings cannot be re-checked; check the study it ran");
+      await verifyPending(
+        {
+          store: deps.store,
+          config: live,
+          identityProvider: identityProviderFor(live.identity),
+          ...(deps.verifier ? { provider: deps.verifier } : {}),
+          ...(deps.typesafe ? { typesafe: deps.typesafe } : {}),
+        },
+        { runIds: [runId] },
+      );
     }
     // The digest window is the run, not a clock window: a run is the unit the dashboard shows.
     const since = run.startedAt ? new Date(run.startedAt) : new Date(0);

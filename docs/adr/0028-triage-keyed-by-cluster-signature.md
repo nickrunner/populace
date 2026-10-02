@@ -57,3 +57,44 @@ Loosening the hash — keying on the tool alone, say — would trade one wrong a
 two unrelated problems on one tool would merge, and a human's triage would land on the wrong thing.
 A semantic signature (an embedding, or a judge asked "is this the same problem?") is a later ADR and
 is the only thing that actually moves this number.
+
+## Amendment (2026-09-30): the key moves, so the match is an intersection — and populace writes a reference of its own
+
+Two things changed when a problem became something populace files into somebody's issue tracker
+(ADR-0044). Neither changes the key this record decided; both change how it is looked up, and one
+adds a writer this record assumed did not exist.
+
+**A triage row is matched by signature-set intersection, not on the representative.** This record
+keys triage on `(projectId, signature)` and that is unchanged — the row is still one signature and
+a human's judgement about it. What was wrong was the *lookup*. A card asked for its triage row by
+`ClusterCardView.signature`, which is the **representative** of a clustering, and
+`pickRepresentative` (`packages/reports/src/cluster.ts`) sorts on **verdict score first**. Verdicts
+are written by the digest, after the run. So the representative moves inside a single execution,
+with nobody having reworded anything, and a card looked up by it read **"not triaged" in precisely
+the case the row exists for**: the problem whose key flipped after somebody had already declined it.
+
+`cardOf` now intersects the cluster's **member** signatures — the per-finding hashes this record
+defined, computed once at file time and never recomputed — against the triage rows, through one
+`oldestMatching` shared with the filing ledger, and takes the oldest match. The rolled-up
+project-wide triage list still looks up by its own key, because a rolled-up signature is not a
+cluster and has no member set to intersect.
+
+**populace may now write an external reference itself, and it does not touch `externalRef`.** This
+record's decision names *"an external reference"* among the human state it stores, and that field
+stays exactly what it was: whatever a person typed on the triage form, which may be a Jira key, a
+pull request or a sentence. populace's own record of an outbound write it made lives in a separate
+ledger (`filed_issues`) and reaches a screen as `TriageView.filedIssue` and
+`ClusterCardView.filedIssue`, beside `externalRef` and never inside it. A form that treated them as
+one field would let a reader's typing erase the link to an issue that exists.
+
+Filing writes **no triage row at all**, which is why `filedIssue` is on the card as well as on
+`triage`: manufacturing a judgement nobody typed would make the finding page say a human settled
+this minutes ago, and hand `drifted` a `titleAtTriage` no human stood behind. For a problem filed
+and never ruled on, `triage` is null and the card is the only place that can say "#41".
+
+**The 0% number in the amendment above is now load-bearing outside this record.** It is what bounds
+the dedupe in ADR-0044 §4: the filing ledger and the hidden marker in each issue body are both keyed
+on the same hash, so a complaint reworded from scratch gets its own issue, and neither defence can
+see through it. That is stated there as the limit rather than dressed up as idempotency, and the
+backstop is a human reading an "already filed" column. Nothing here improves the number; a semantic
+signature is still the only thing that does.

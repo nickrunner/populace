@@ -20,23 +20,22 @@ import { TargetStatus, type TargetStatusView } from "./TargetStatus.js";
  * `NavItem`, so every row has a focus ring and an `aria-current="page"` it does not have today,
  * and every group is a named `role="group"` rather than a stray line of text above some links.
  *
- * **Three runs of items, and the middle one is conditional.** The project's own screens; then the
- * simulation-scoped run, which appears only while the URL is inside a simulation; then "Set up".
- * The simulation's run opens on the two questions a reader has about it — what came back, and
- * what the next one would cost — so "Before you send them" sits directly under "Results" rather
- * than at the foot of the group with the machinery.
+ * **Three runs of items, and the middle one is conditional.** The project's own screens — the
+ * studies dashboard, which is the project's index; then the study-scoped run, which appears only
+ * while the URL is inside a study; then the Library and Settings. The study's run opens on the
+ * two questions a reader has about it — what came back, and what the next one would cost — so
+ * "Before you send them" sits directly under "Results" rather than at the foot of the group with
+ * the machinery.
  *
- * Two rows inside those runs are themselves conditional and the reasons are load-bearing:
- *
- *  - *"Seen in more than one"* counts signatures seen in **more than one simulation**, which for
- *    the common shape — one project, one simulation — is permanently nought while the product has
- *    found a dozen problems. It is labelled for what it counts and it appears only once there is
- *    a second simulation for something to be seen in.
- *  - *Populations* stays implicit and unnamed until a second one exists: a population is a
- *    concept with no payoff while there is one of them.
+ * **Nothing is gated on a count** (ADR-0043). The Library's four rows are always there: a
+ * project with no cohorts still has a Cohorts page, and the page — not the rail — is where an
+ * empty library says what to do about it. The one conditional row left is *"Seen in more than
+ * one"*, which counts signatures seen in **more than one study** and is nought by construction
+ * until there is a second study for something to be seen in; it is labelled for what it counts
+ * and it appears at the second study.
  *
  * **Nothing here promises a repeatable outcome** (§7.3), and every label is in the product's own
- * vocabulary (§7.2): project, simulation, population, cohort, person, visit, execution, finding.
+ * vocabulary (§7.2): project, study, population, cohort, person, visit, execution, finding.
  * Where a contract field still carries the store's internal name for a session, that name is
  * translated once, in `visitsIn` below, and never written anywhere a reader — or a reader of this
  * file — meets it (ADR-0032, §7.2).
@@ -153,7 +152,7 @@ export interface SidebarProps {
    * passes nothing and nothing happens.
    */
   onNavigate?: () => void;
-  /** The project this rail belongs to: its counts, its simulations, its spend, its kill switch. */
+  /** The project this rail belongs to: its counts, its studies, its spend, its kill switch. */
   project: ProjectOverviewView;
   /** Every project the switcher offers, the current one included. */
   projects: readonly ProjectSummaryView[];
@@ -169,15 +168,20 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
   { collapsed = false, onNavigate, project, projects, href, target, targetCount },
   ref,
 ) {
-  const inSimulation = useMatch("/p/:proj/s/:sim/*");
-  const simulationKey = inSimulation?.params.sim ?? null;
-  const simulation = project.simulations.find((s) => s.slug === simulationKey || s.id === simulationKey);
+  /*
+    `studies/new` is the builder, not a study: the pattern matches it with `study === "new"` and
+    an empty splat, and the server reserves that slug so no study can ever be called it. Treating
+    it as no study is what keeps the per-study group off the screen while one is being made.
+  */
+  const inStudy = useMatch("/p/:proj/studies/:study/*");
+  const studyKey = inStudy?.params.study ?? null;
+  const study = studyKey === null || studyKey === "new" ? undefined : project.studies.find((s) => s.slug === studyKey || s.id === studyKey);
 
   const spent = project.spentTodayUsd;
   const ceiling = project.dailyCeilingUsd;
   const running = project.runningRunIds.length > 0;
-  const base = simulation === undefined ? null : `${href()}/s/${encodeURIComponent(simulation.slug)}`;
-  const live = simulation?.status === "running" || simulation?.status === "paused";
+  const base = study === undefined ? null : `${href()}/studies/${encodeURIComponent(study.slug)}`;
+  const live = study?.status === "running" || study?.status === "paused";
 
   const targetStatus: TargetStatusView = {
     name: target?.name ?? null,
@@ -232,19 +236,23 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
       <nav aria-label="This project" className="flex-1 px-1 pb-6">
         <Stack gap={6}>
           <NavGroup>
-            <NavItem to={href()} label="Simulations" count={project.counts.simulations} end />
-            {project.simulations.length > 1 ? (
+            {/*
+              The studies dashboard is the project's index, so this row is `end`: it lights on
+              the index and on nothing under it, and `/studies` on its own redirects there.
+            */}
+            <NavItem to={href()} label="Studies" count={project.counts.studies} end />
+            {project.studies.length > 1 ? (
               <SectionJump
                 to={href()}
                 hash="problems"
                 label="Seen in more than one"
-                count={project.crossSimulation.length}
+                count={project.crossStudy.length}
               />
             ) : null}
           </NavGroup>
 
-          {base !== null && simulation !== undefined ? (
-            <NavGroup label={simulation.name}>
+          {base !== null && study !== undefined ? (
+            <NavGroup label={study.name}>
               <NavItem to={base} label="Results" end />
               {/*
                 The screen that saves the reader money, promoted out of a footnote (§6.3 row 13).
@@ -252,7 +260,7 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
                 meant the one page that says what an execution will cost — before anything is
                 spent — could be read only by somebody already halfway through starting one. It
                 is unconditional, because "what would this cost" is a question a reader is
-                entitled to ask of a simulation that has run ten times as much as of one that has
+                entitled to ask of a study that has run ten times as much as of one that has
                 never run, and the page itself spends nothing to answer it.
               */}
               <NavItem to={`${base}/preflight`} label="Before you send them" />
@@ -260,31 +268,29 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
               <NavItem to={`${base}/coverage`} label="Coverage gaps" />
               <NavItem to={`${base}/left`} label="Who walked away" />
               {/*
-                The headcount is who is CONFIGURED to go; the screen behind it reads one
-                execution. Before there is one, a number beside a page that says nobody has been
-                sent is two answers to the same question.
+                The people this study sends, and the figure is the study's SIZE (ADR-0041): the one
+                headcount there is, set on the study and dealt across its population. It is shown
+                always — before a first execution too — because it is what the study is configured
+                to send, and that is a fact about the study rather than about any execution of it.
               */}
-              <NavItem
-                to={`${base}/population`}
-                label="Population"
-                {...(simulation.latest === null ? {} : { count: simulation.population.people })}
-              />
+              <NavItem to={`${base}/people`} label="People" count={study.size} />
               <NavItem
                 to={`${base}/executions`}
-                label={simulation.mode === "longitudinal" ? "Its life so far" : "Executions"}
-                count={simulation.latest?.seq}
+                label={study.mode === "longitudinal" ? "Its life so far" : "Executions"}
+                count={study.latest?.seq}
               />
               <NavItem
                 to={`${base}/visits`}
                 label="Visits"
-                count={visitsIn(simulation.latest?.totals)}
+                count={visitsIn(study.latest?.totals)}
               />
               {/*
-                What this simulation IS, as opposed to what came back from it. Last in the run
-                because it is the one item here you visit to CHANGE something rather than to read
-                something, and because a simulation's own settings are not where a reader starts.
+                What this study IS, as opposed to what came back from it: the builder, in edit
+                mode (ADR-0043). Last in the run because it is the one item here you visit to
+                CHANGE something rather than to read something, and because a study's own
+                definition is not where a reader starts.
               */}
-              <NavItem to={`${base}/settings`} label="This simulation" />
+              <NavItem to={`${base}/edit`} label="This study" />
             </NavGroup>
           ) : null}
 
@@ -292,13 +298,18 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
             **Library**, not "Set up". "Set up" names a sequence you finish, which is exactly the
             wrong idea for four durable things you come back and add to — a project grows a qa
             target in month three — and it is most of why this run read as an unordered pile of
-            peers. "Library" is already the product's own word for these screens: `Targets`'s
-            empty state and `NewSimulation` both say "in the library first". It is a nav group
-            label rather than an entity, so §7.1's closed vocabulary is not in play.
+            peers. "Library" is already the product's own word for these screens. It is a nav
+            group label rather than an entity, so §7.1's closed vocabulary is not in play.
 
             The ORDER is the mental model, stated in the cheapest possible way: the addresses the
             product answers on, the kinds of person, the groups cut from those kinds, the casts
             made of those groups. Settings is not one of them and sits under a rule.
+
+            **No row is gated on a count** (ADR-0043). Populations used to appear at the first
+            cohort, on the reasoning that a population is a concept with no payoff until there is
+            something to put in it — and a reader who had made a persona and could not find where
+            cohorts and populations were made was the confusion this pass exists to fix. Every
+            row is there from the first screen; an empty page says what it is for.
           */}
           <NavGroup label="Library">
             {/*
@@ -315,27 +326,12 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
             {/*
               "Cohorts", and the count is the COHORT count. It was "The people" trailing
               `counts.people`, which at least agreed with itself — but the screen behind it
-              creates and resizes cohorts, and `people/:personId` one level up already means an
-              individual. Relabelling without moving the figure would have left a label and a
-              trailing fact disagreeing, which §7.4 forbids outright.
+              creates cohorts, and `people/:personId` one level up already means an individual.
+              Relabelling without moving the figure would have left a label and a trailing fact
+              disagreeing, which §7.4 forbids outright.
             */}
             <NavItem to={href("library/cohorts")} label="Cohorts" count={project.counts.cohorts} />
-            {/*
-              Populations appears at the FIRST cohort.
-
-              It used to wait for the second, on the reasoning that with one cohort every cast is
-              the same cast. That stopped being true when the headcount moved onto the population
-              (ADR-0039): a population is now "which cohorts go, and how many of each", and the
-              number is set there and nowhere else — so the moment there is one cohort there is a
-              number to set, and the row that leads to it has to be on screen.
-            */}
-            {project.counts.cohorts > 0 || project.counts.populations > 1 ? (
-              <NavItem
-                to={href("library/populations")}
-                label="Populations"
-                count={project.counts.populations}
-              />
-            ) : null}
+            <NavItem to={href("library/populations")} label="Populations" count={project.counts.populations} />
           </NavGroup>
 
           <NavGroup>

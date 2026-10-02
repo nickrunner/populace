@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ToolUsageView } from "../api.js";
 import { q } from "../queries.js";
-import { useProject, useSimulation } from "../context.jsx";
+import { useProject, useStudy } from "../context.jsx";
 import { plural } from "../format.js";
 import {
   Button,
@@ -68,8 +68,8 @@ type Tool = ToolUsageView["items"][number];
  */
 export function Gaps() {
   const { key, href: projectHref } = useProject();
-  const { key: sim, href } = useSimulation();
-  const results = useQuery(q.results(key, sim));
+  const { key: studyKey, href } = useStudy();
+  const results = useQuery(q.results(key, studyKey));
 
   const data = results.data;
 
@@ -145,8 +145,14 @@ export function Gaps() {
       sentence: true,
       cell: (tool) => (
         <Text size="read-sm" tone="soft">
+          {/*
+            It names what was observed, not why. Destructive tools go through by default
+            (ADR-0013 amendment), so "nobody was allowed to try it" would now be wrong for most
+            targets — and this view carries no policy to tell the two apart. "Nobody reached for
+            it" is true whether the policy stopped the call or nobody made one.
+          */}
           {tool.destructive
-            ? "destructive, so nobody was allowed to try it"
+            ? "destructive, and nobody reached for it"
             : "never discovered, never asked for"}
         </Text>
       ),

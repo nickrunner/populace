@@ -1,12 +1,12 @@
 import { createContext, useContext, type ReactNode } from "react";
-import type { ProjectOverview, SimulationSummary } from "./api.js";
+import type { ProjectOverview, StudySummary } from "./api.js";
 
 /**
- * The project and the simulation are read from the URL and put in context, not threaded through
+ * The project and the study are read from the URL and put in context, not threaded through
  * every screen as props. `App.tsx` used to hand `runId` down to nine screens, which is why every
  * one of them had to know a run existed before it could render a heading — and why the run id was
- * in the URL at all. The simulation is what a user bookmarks; which execution it last ran is a
- * detail of the page (SPEC §7.3).
+ * in the URL at all. The study is what a user bookmarks; which execution it last ran is a detail
+ * of the page (SPEC §7.3).
  */
 
 export interface ProjectScope {
@@ -29,26 +29,32 @@ export function useProject(): ProjectScope {
   return scope;
 }
 
-export interface SimulationScope {
+/**
+ * A study, as the screens under `/p/:proj/studies/:study` read it (ADR-0042). The word is the
+ * user's: the row underneath is still a `Simulation` and every store method still says so, but
+ * nothing that reaches a screen from here does.
+ */
+export interface StudyScope {
+  /** The URL segment, exactly as written: the study's slug or its id. */
   key: string;
-  simulation: SimulationSummary;
-  /** `/p/my-app/s/smoke`, or with a path under it. */
+  study: StudySummary;
+  /** `/p/my-app/studies/smoke`, or with a path under it. */
   href: (path?: string) => string;
   /**
-   * The execution the run-scoped screens read. Null before the simulation has ever been run,
-   * which is the common case and not an error: it is what the zero state is for.
+   * The execution the run-scoped screens read. Null before the study has ever been run, which
+   * is the common case and not an error: it is what the zero state is for.
    */
   runId: string | null;
 }
 
-const Simulation = createContext<SimulationScope | null>(null);
+const Study = createContext<StudyScope | null>(null);
 
-export function SimulationProvider({ value, children }: { value: SimulationScope; children: ReactNode }) {
-  return <Simulation.Provider value={value}>{children}</Simulation.Provider>;
+export function StudyProvider({ value, children }: { value: StudyScope; children: ReactNode }) {
+  return <Study.Provider value={value}>{children}</Study.Provider>;
 }
 
-export function useSimulation(): SimulationScope {
-  const scope = useContext(Simulation);
-  if (scope === null) throw new Error("this screen is outside a simulation");
+export function useStudy(): StudyScope {
+  const scope = useContext(Study);
+  if (scope === null) throw new Error("this screen is outside a study");
   return scope;
 }

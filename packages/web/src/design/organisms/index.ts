@@ -221,8 +221,8 @@ export type { JobProgressProps } from "./JobProgress.js";
  *
  * It is the one thing in `design/` that owns its own mutations; the note in the module says why.
  */
-export { SimulationActions } from "./SimulationActions.js";
-export type { SimulationActionsProps } from "./SimulationActions.js";
+export { StudyActions } from "./StudyActions.js";
+export type { StudyActionsProps } from "./StudyActions.js";
 
 /**
  * WhatWentWrong — added by the port review (S4.26). A failed mutation, said in the product's
@@ -250,11 +250,27 @@ export { ConnectionStatusBar } from "./ConnectionStatusBar.js";
 export type { ConnectionStatusBarProps } from "./ConnectionStatusBar.js";
 
 export { FirstContactPanel, OUTCOME_WORDS, OUTCOME_TONES } from "./FirstContactPanel.js";
-// The pairings grid — targets down, populations across. Named for what a cell IS, because
-// "coverage" already means tool coverage one click down (`Gaps`).
-export { PairingsGrid } from "./PairingsGrid.js";
-export type { PairingsGridProps, PairingAxis } from "./PairingsGrid.js";
 export type { FirstContactPanelProps } from "./FirstContactPanel.js";
 
 export { SamplePreview } from "./SamplePreview.js";
 export type { SamplePreviewProps } from "./SamplePreview.js";
+
+/**
+ * WeightedMixEditor — the builders' ratio control (ADR-0041, ATOMIC-INVENTORY §3 row 36). A
+ * cohort is personas with weights and a population is cohorts with weights, and this is the one
+ * place either ratio is balanced: an authoritative `NumberInput` of parts, a `Slider` for coarse
+ * adjustment, a `Meter` as the share mark — never a `Capsule`, whose length would claim a
+ * headcount nothing here has — and a percentage column rounded by largest remainder so it sums
+ * to 100. It imports nothing from core: the counts a size would produce are the screen's to
+ * compute (`dealStudy`) and hand in as `previewCounts`.
+ *
+ * `sharePercents` and `shownWeight` travel with it for the same reason `rosterScale` travels
+ * with `RosterLattice`: they are the one spelling of how a weight is shown, and a screen that
+ * rounded its own column would put two percentages on one row.
+ */
+export { WeightedMixEditor, sharePercents, shownWeight } from "./WeightedMixEditor.js";
+export type {
+  WeightedMixEditorProps,
+  WeightedMixEntry,
+  WeightedMixOption,
+} from "./WeightedMixEditor.js";

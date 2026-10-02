@@ -21,10 +21,14 @@ Pointing populace at your own product for the first time is
 be, which to pick, the fifteen lines the recommended one asks for, and what to
 check when it does not answer.
 
+Getting what it finds into your issue tracker is
+[docs/ISSUE-FILING.md](docs/ISSUE-FILING.md): which GitHub token to cut and where,
+what ends up in the issue, and what filing by itself will spend.
+
 Two credentials are involved and they are not the same thing. **Yours**, to connect and look: an
 MCP server that answers `401` is signed in to with OAuth — discovery, dynamic registration and
 PKCE, in a browser, refreshed while it is held ([ADR-0036](docs/adr/0036-signing-in-to-a-target.md)).
-**Theirs**, one per person, to run: the people a simulation sends are strangers with accounts of
+**Theirs**, one per person, to run: the people a study sends are strangers with accounts of
 their own, which is what `identity` on the target decides
 ([ADR-0037](docs/adr/0037-the-app-makes-its-own-people.md)). A sign-in is never used to drive a
 population; that would send forty people in wearing the owner's face.
@@ -60,7 +64,7 @@ pnpm populace sweep
 ```
 
 `populace serve` opens the dashboard, which is the other way in: point it at an MCP
-endpoint, pick who visits, say how many of each, and press go. Everything below has
+endpoint, compose who visits, give a study a size, and press go. Everything below has
 a screen there.
 
 `populace run --continue-from <run id>` starts a new run that inherits the previous
@@ -71,7 +75,7 @@ digests can be compared (ADR-0020).
 
 `populace status` shows agents, wakes, findings and spend; `populace kill`
 engages a global kill switch that stops every wake at its next step
-(`populace kill --release` lifts it); `populace scale 2` doubles every cohort.
+(`populace kill --release` lifts it); `populace scale 2` doubles every count in the file.
 
 The digest for the mock target should list the four planted defects documented
 in [packages/mock-target/README.md](packages/mock-target/README.md): three bugs
@@ -115,10 +119,12 @@ Everything below is the same target described in `populace.yaml`, for a config-f
     service account that can mint a token for any uid on the project, including an admin's.
 - `cohorts[]`: a shared condition and a mix of personas — a slug, a `context` sentence every
   member carries, a `mix` of personas with weights, and optional `traits`, `seed`, `cadence` and
-  `maxWakes` overrides. The **population** says how many people there are and apportions them
-  across the cohorts' lanes.
-- `population`: composition and nothing else — a name and the cohorts in it.
-- `simulations[]`: a population against a target, in one of two modes.
+  `maxWakes` overrides. In the file each cohort's persona carries a count, which the CLI daemon
+  runs directly; on import the counts become weights, and the **study** says how many people there
+  are (ADR-0041).
+- `population`: a name and the cohorts in it, each weighted by its counts on import.
+- `simulations[]` — also read as `studies[]`: a **study**, the population against a target,
+  in one of two modes, with a `size` if it should differ from the cohorts' counts summed.
   `visitsPerPerson: 4` is **ephemeral** — a clean slate every time it is run, bounded,
   ending on its own when the last person hits the cap. `visitsPerPerson: null` is
   **longitudinal** — memory, accounts and visit counts accumulate, and it runs until
@@ -141,8 +147,9 @@ Then `populace validate` and `populace wake <persona>`.
 | `packages/store-sqlite` | Store on `node:sqlite` |
 | `packages/reports` | Verifier (replay + judge), clustering, Markdown digest, exporter plugin interface |
 | `packages/contract` | The wire: route table and zod schemas shared by the server and the browser, where the product's words are translated onto the code's rows (ADR-0032) |
+| `packages/fix-prompt` | One problem written out for a reader with no populace access — the reproduction, the reach, the intent, the verdict, credentials redacted. The dashboard's copy button and a filed GitHub issue's body are the same function (ADR-0044) |
 | `packages/server` | The HTTP API, the job queue, the run controller and the event log |
-| `packages/web` | The dashboard: connecting a target, composing a population, watching a run, reading a digest |
+| `packages/web` | The dashboard: connecting a target, building personas, cohorts, populations and studies, watching a run, reading a digest |
 | `packages/cli` | `populace init | validate | wake | run | scale | digest | sweep | kill | status | serve` |
 | `packages/tdk` | **Published as [`@populace/tdk`](packages/tdk/README.md).** The app-side half: mount it in your own product and a population can make accounts there. Depends on nothing else in this repository, because it installs into somebody else's server |
 | `packages/mock-target` | Tasklet, the reference app with an MCP server, self-signup and planted defects |
@@ -162,13 +169,14 @@ digest, sweep) is exercised without an API key. Live model runs need
 
 ## Vocabulary
 
-The product says project, target, persona, cohort, person, population, simulation,
+The product says project, target, persona, cohort, person, population, study,
 execution and visit. The code says Target, IdentityProvider, Persona, Cohort, Person,
 Population, Simulation, Run, Agent, Wake, Trace, Finding, Digest, Runner, Scheduler,
-Store — an `Agent` is a participant and a `Wake` is a visit, translated at the HTTP
-contract and nowhere else (ADR-0032). Definitions in
+Store — an `Agent` is a participant, a `Wake` is a visit and a `Simulation` is a study,
+translated at the HTTP contract and nowhere else (ADR-0032, ADR-0042). Definitions in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#vocabulary); the entity model is
-[ADR-0029](docs/adr/0029-project-simulation-population-cohort-person.md).
+[ADR-0029](docs/adr/0029-project-simulation-population-cohort-person.md), and the study's
+size is [ADR-0041](docs/adr/0041-size-belongs-to-the-study.md).
 
 ## License
 

@@ -14,8 +14,8 @@ import { VisuallyHidden } from "./VisuallyHidden.js";
  * inside a ring, which is the same grammar the roster lattice uses for "this one is here".
  * Full radius, because circles belong to people and states (§5.2).
  *
- * The group is a real `<fieldset>` with a `<legend>`, which is what the two bare radios on
- * NewSimulation have no group semantics for today. Radix supplies roving tabindex, arrow-key
+ * The group is a real `<fieldset>` with a `<legend>`, which the two bare mode radios on the
+ * old new-study page never had. Radix supplies roving tabindex, arrow-key
  * movement and the wrap-around, so the group is one tab stop rather than N.
  *
  * **`legendHidden` is how a group lives inside a `Field`.** The inventory's signature says the

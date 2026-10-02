@@ -6,7 +6,29 @@ import { z } from "zod";
  * has to be able to show progress and survive a reload. In M5 this same table is the queue hosted
  * workers pull from.
  */
-export const JobKindSchema = z.enum(["run.start", "run.continue", "run.round", "run.resume", "digest", "target.check", "sweep", "people.generate", "target.reset"]);
+/**
+ * `issues.publish` and `issues.cycle` run the same pass and are deliberately two kinds.
+ *
+ * `issues.publish` is what a person's press enqueues — one problem, or "File all" over the results
+ * screen. `issues.cycle` is the automatic report cycle, and its successful end is the one thing
+ * that CLOSES a report window (`packages/server/src/report-windows.ts`): "populace has reported on
+ * everything up to here" is a claim the cycle makes and a button press does not. Under one shared
+ * kind a manual press moved that boundary, and the next publish told every issue in somebody's
+ * repository that its problem had gone quiet.
+ */
+export const JobKindSchema = z.enum([
+  "run.start",
+  "run.continue",
+  "run.round",
+  "run.resume",
+  "digest",
+  "target.check",
+  "sweep",
+  "people.generate",
+  "target.reset",
+  "issues.publish",
+  "issues.cycle",
+]);
 export type JobKind = z.infer<typeof JobKindSchema>;
 
 export const JobStatusSchema = z.enum(["queued", "running", "succeeded", "failed", "cancelled"]);

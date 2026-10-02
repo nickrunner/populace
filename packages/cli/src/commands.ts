@@ -1,9 +1,9 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { identityProviderFor } from "@populace/adapters";
-import { EffortSchema, ModelConfigSchema, effectiveToolPolicy, expandPopulation, isToolPermitted, parseDuration, tagForRun, type Agent } from "@populace/core";
+import { EffortSchema, ModelConfigSchema, VerifierConfigSchema, effectiveToolPolicy, expandPopulation, isToolPermitted, parseDuration, tagForRun, type Agent } from "@populace/core";
 import { AnthropicProvider, LocalDaemon, McpSession, runWake, type ModelProvider, type WakeResult } from "@populace/runner";
-import { buildDigest, exporterNamed, renderDigestMarkdown, verifyPending } from "@populace/reports";
+import { buildDigest, createTypesafeClient, exporterNamed, renderDigestMarkdown, verifyPending, type TypesafeClient } from "@populace/reports";
 import { isCollection, parseDocument } from "yaml";
 import { DEFAULT_STORE_PATH, loadConfig, loadConfigIfPresent, storePath } from "./config.js";
 import { SqliteStore } from "@populace/store-sqlite";
@@ -46,8 +46,14 @@ export async function validate(options: GlobalOptions & { connect?: boolean }): 
   lines.push(`model: ${config.model.model} effort=${config.model.effort} fallbacks=${config.model.fallbacks ? "on" : "off"}`);
   const agents = expandPopulation(config.population, "run_0_000000", config.simulation.id);
   lines.push(
-    `simulation ${config.simulation.slug}: ${config.simulation.mode}${config.simulation.visitsPerPerson === null ? " (no visit cap; it runs until you stop it)" : `, ${config.simulation.visitsPerPerson} visit(s) each`}`,
+    `study ${config.simulation.slug}: ${config.simulation.mode}${config.simulation.visitsPerPerson === null ? " (no visit cap; it runs until you stop it)" : `, ${config.simulation.visitsPerPerson} visit(s) each`}, ${config.simulation.size} people`,
   );
+  // The daemon runs the cohorts' counts and the import honours a plan's `size` (ADR-0041), so a
+  // file where the two disagree runs one number here and another in the dashboard. Not an error —
+  // both are what the file asked for — but the user should hear it before starting either.
+  for (const plan of loaded.simulations) {
+    if (plan.size !== undefined && plan.size !== config.simulation.size) lines.push(`  WARNING study ${plan.slug} says size ${plan.size}, but its cohorts add up to ${config.simulation.size}; the CLI runs the cohorts' counts and the import uses the study's size`);
+  }
   lines.push(`population ${config.population.id}: ${config.population.members.length} cohort(s) -> ${agents.length} agent(s), cadence every ${config.population.cadence.every / 1000}s`);
   for (const { agent } of agents) lines.push(`  - ${agent.id} (${agent.name}, ${agent.persona.role}, patience ${agent.persona.patience}, budget $${agent.persona.budgetUsd})`);
   // "Every person gets their own account" is a property of the whole cast, so it is checked where
@@ -218,14 +224,37 @@ export async function digest(options: DigestOptions): Promise<{ markdown: string
   const ctx = openContext(options);
   try {
     const config = ctx.loaded.config;
-    if (options.judge) config.verifier.judge = options.judge === "model" ? "model" : "heuristic";
+    // Parsed against the schema's own enum rather than folded to one of two values. `--judge` used
+    // to read as `model` or, for literally anything else, `heuristic` — so `--judge typesafe` ran
+    // the heuristic judge and said nothing, and a typo did the same. A flag that silently runs a
+    // different judge than the one named answers a different question than the one asked.
+    if (options.judge !== undefined) {
+      const chosen = VerifierConfigSchema.shape.judge.safeParse(options.judge);
+      if (!chosen.success) throw new Error(`--judge takes model, heuristic or typesafe; got ${options.judge}`);
+      config.verifier.judge = chosen.data;
+    }
+    // The typed judge's key, read here and nowhere in `@populace/reports`: a client is a thing that
+    // can be asked a question, not a credential to pass around. Absent is the honest state and the
+    // refusal below is where it is reported, one sentence rather than one throw per finding.
+    const typesafeKey = process.env.TYPESAFE_API_KEY;
+    const typesafe: TypesafeClient | undefined = typesafeKey ? createTypesafeClient({ apiKey: typesafeKey }) : undefined;
+    if (options.verify !== false && config.verifier.judge === "typesafe" && typesafe === undefined) {
+      throw new Error("the typed judge needs its own API key; set TYPESAFE_API_KEY, or pass --judge heuristic, or --no-verify");
+    }
     const now = new Date();
     const since = new Date(now.getTime() - parseDuration(options.since ?? "24h"));
     const until = options.until ? new Date(now.getTime() - parseDuration(options.until)) : new Date(now.getTime() + 60_000);
     const runIds = options.allRuns ? undefined : [ctx.runId];
     if (options.verify !== false) {
       const verified = await verifyPending(
-        { store: ctx.store, config, identityProvider: ctx.identityProvider, ...(config.verifier.judge === "model" ? { provider: ctx.provider() } : {}), log: (line) => ctx.log(line) },
+        {
+          store: ctx.store,
+          config,
+          identityProvider: ctx.identityProvider,
+          ...(config.verifier.judge === "model" ? { provider: ctx.provider() } : {}),
+          ...(typesafe ? { typesafe } : {}),
+          log: (line) => ctx.log(line),
+        },
         { ...(runIds ? { runIds } : {}), since, until },
       );
       ctx.log(`verified ${verified.length} finding(s) with the ${config.verifier.judge} judge`);

@@ -123,7 +123,7 @@ const MODE_COPY: Record<
   ephemeral: {
     label: "Ephemeral — a clean slate",
     sentence:
-      "Nothing is carried. Every person gets the same fixed number of visits, and then the simulation ends.",
+      "Nothing is carried. Every person gets the same fixed number of visits, and then the study ends.",
     carries: false,
   },
 };

@@ -239,13 +239,26 @@ describe("reports pipeline against the mock target", () => {
       if (f.identityId) await store.markIdentityTornDown(f.identityId, new Date());
       await store.saveFinding({ ...f, verification: null });
     }
-    const afterSweep = await verifyPending({ store, config: cfg });
+    const log: string[] = [];
+    const afterSweep = await verifyPending({ store, config: cfg, log: (line) => log.push(line) });
     expect(afterSweep.every((f) => f.verification?.verdict === "inconclusive")).toBe(true);
     const sweptReason = afterSweep.find((f) => f.identityId !== null)?.verification?.reason ?? "";
     expect(sweptReason).toContain("nobody left to replay as");
-    expect(sweptReason).toContain("auto-sweep");
     // The old symptom, which named the wrong thing, is gone.
     expect(sweptReason).not.toContain("could not connect");
+    /*
+     * The reason is read beside the verdict on the finding page, so it says what happened to the
+     * account and nothing else. It used to carry the operator's next move — the setting to change,
+     * how to re-run — and the product's own word for a study is not one of these four.
+     */
+    for (const banned of ["agent", "wake", "simulation", "lane", "auto-sweep"]) {
+      expect(sweptReason.toLowerCase()).not.toContain(banned);
+    }
+    // The guidance is not lost, it is addressed to the one reader it means anything to.
+    const guidance = log.find((line) => line.includes("auto-sweep")) ?? "";
+    expect(guidance).toContain("removes its accounts");
+    expect(guidance).toContain("study");
+    expect(guidance.toLowerCase()).not.toContain("simulation");
     // And it never asked the target: a doomed call per finding is a cost somebody else pays.
     for (const f of afterSweep) expect(f.verification?.replay ?? []).toHaveLength(0);
     for (const f of swept) await store.saveFinding(f);

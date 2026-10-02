@@ -15,8 +15,11 @@ export type Verdict = z.infer<typeof VerdictSchema>;
 export const VerificationSchema = z.object({
   verdict: VerdictSchema,
   reason: z.string(),
-  /** Which judge produced the verdict. */
-  judge: z.enum(["model", "heuristic"]),
+  /**
+   * Which judge produced the verdict. A JSON-blob field, so adding a value costs no column and old
+   * rows keep the one they were written with.
+   */
+  judge: z.enum(["model", "heuristic", "typesafe"]),
   /** The replayed steps with fresh results, aligned by index with the finding's reproduction steps. */
   replay: z.array(ToolCallRecordSchema),
   verifiedAt: z.iso.datetime(),

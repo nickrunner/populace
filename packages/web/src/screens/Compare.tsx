@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import type { ClusterCard } from "../api.js";
 import { q } from "../queries.js";
-import { useProject, useSimulation } from "../context.jsx";
+import { useProject, useStudy } from "../context.jsx";
 import { plural } from "../format.js";
 import {
   Button,
@@ -72,17 +72,17 @@ const SEVERITY_RANK = {
 
 export function Compare() {
   const { key } = useProject();
-  const { key: sim, href } = useSimulation();
+  const { key: studyKey, href } = useStudy();
   const [params] = useSearchParams();
   // The two executions being compared come from the query string and from nowhere else: the
   // picker below holds a choice, and pressing it navigates. That is what keeps the screen from
   // fetching a comparison of an execution with itself while somebody is halfway through choosing.
   const a = params.get("a") ?? "";
   const b = params.get("b") ?? "";
-  const compare = useQuery(q.compare(key, sim, a, b));
+  const compare = useQuery(q.compare(key, studyKey, a, b));
   // Already in the cache from the results screen; it is read here to turn a run id into the
   // execution number a reader recognises, which `RunSummary` does not carry.
-  const results = useQuery(q.results(key, sim));
+  const results = useQuery(q.results(key, studyKey));
 
   const history = [...(results.data?.history ?? [])].sort((x, y) => y.seq - x.seq);
 
@@ -123,8 +123,12 @@ export function Compare() {
       ? "Compare two executions"
       : `Execution ${earlier.seq} against execution ${later.seq}`;
 
-  // Every problem either execution reported, worst first. The three readings are the instrument's
-  // above; this is the index a reader opens one from.
+  // Every problem either execution reported, worst first — for the LEDGER only. The instrument
+  // above gets the server's three lists unflattened, because which of them a problem is in is a
+  // fact only the server holds: `compare()` partitions by run id, and a card's `seenIn` counts
+  // report windows rather than executions (ADR-0045), so a reader of this screen cannot put the
+  // pile back into three piles. Flattening for the ledger is safe — it is one list by definition,
+  // and it sorts rather than classifies.
   const clusters: ClusterCard[] =
     data === undefined
       ? []
@@ -194,14 +198,14 @@ export function Compare() {
       empty={
         chosen ? (
           <StateBlock kind="empty" what="this comparison">
-            Those two executions are not in this simulation&rsquo;s history.{" "}
+            Those two executions are not in this study&rsquo;s history.{" "}
             <Link to={href("executions")}>Open the executions</Link> and pick two that are.
           </StateBlock>
         ) : (
           <StateBlock kind="empty" what="this comparison">
             {history.length > 1
               ? "Pick an earlier execution and a later one above, and they will be put side by side here."
-              : "This simulation has only been run once, so there is nothing to put beside anything."}{" "}
+              : "This study has only been run once, so there is nothing to put beside anything."}{" "}
             <Link to={href("executions")}>Open the executions</Link>.
           </StateBlock>
         )
@@ -209,7 +213,13 @@ export function Compare() {
     >
       {earlier === undefined || later === undefined || data === undefined ? null : (
         <Stack gap={8} align="stretch">
-          <ExecutionCompare a={earlier} b={later} clusters={clusters} />
+          <ExecutionCompare
+            a={earlier}
+            b={later}
+            persisting={data.persisting}
+            fixed={data.fixed}
+            appeared={data.appeared}
+          />
 
           {data.castIdentical || data.notes.length > 0 ? (
             <Measure width="read" as="div">

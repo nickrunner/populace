@@ -279,8 +279,8 @@ describe("why a re-check did not happen", () => {
     expect(words).toContain("verifier.judge");
   });
 
-  it("names the unreachable target, and sends the reader to the simulation that ran it", () => {
-    expect(whyRecheckFailed(409)).toContain("check the simulation it ran");
+  it("names the unreachable target, and sends the reader to the study that ran it", () => {
+    expect(whyRecheckFailed(409)).toContain("check the study it ran");
   });
 
   it("promises the stored findings are untouched, whatever refused", () => {

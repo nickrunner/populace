@@ -86,7 +86,7 @@ export function verdictOfCluster(cluster: DigestCluster): Verdict | null {
 /**
  * A digest cluster as `ClusterRow` reads one.
  *
- * The row is `SimulationResults`' row and this screen does not get a second one; what it gets is
+ * The row is `StudyResults`' row and this screen does not get a second one; what it gets is
  * a translation, because the results screen's `ClusterCardView` is assembled by the server from a
  * project's whole history and a digest knows only its own window.
  *
@@ -100,10 +100,12 @@ export function verdictOfCluster(cluster: DigestCluster): Verdict | null {
  *  - **`cohorts` is emptied** for the same reason. Nothing on this screen draws incidence bars,
  *    and handing on a per-cohort denominator that is really a numerator is a trap for whoever
  *    draws them next.
- *  - **`state` is `open` and `seenIn` is this execution and only this execution.** A digest is one
- *    execution's window; it cannot see whether a problem is new, back, or absent from a later
- *    run, and `new`/`regressed`/`fixed` all claim exactly that. `open` claims nothing beyond
- *    "reported here", which is all the window supports.
+ *  - **`state` is `open`, and both `seenIn` and `seenInWindows` are this execution and only this
+ *    execution.** A digest is one execution's window; it cannot see whether a problem is new,
+ *    back, or absent from a later run, and `new`/`regressed`/`fixed` all claim exactly that.
+ *    `open` claims nothing beyond "reported here", which is all the window supports. The two lists
+ *    are the same one entry because here the two scopes really are one stretch, which is exactly
+ *    what the results screen's card cannot assume (`ClusterCardView`).
  */
 export function cardOfCluster(cluster: DigestCluster, options: { seq: number; peopleTotal: number }): ClusterCardView {
   const filedAt = cluster.findings.map((finding) => finding.createdAt).sort();
@@ -120,11 +122,26 @@ export function cardOfCluster(cluster: DigestCluster, options: { seq: number; pe
     peopleTotal: Math.max(options.peopleTotal, cluster.personIds.length),
     reports: cluster.findings.length,
     cohorts: [],
+    // True by construction: a digest holds the problems its own window reported, so there is no
+    // absence card in one to carry.
+    inLatest: true,
     state: "open",
     seenIn: [options.seq],
+    // One window, because a digest IS one: it is rendered for a single execution and holds the
+    // problems that execution reported, so the stretch this card is about and the execution it is
+    // about are the same stretch. Saying so is what tells a row that a sentence naming an execution
+    // is true here — the two lists agree in length, as they do for any one-window-per-execution
+    // study — where on the results screen they can disagree and the row has to stop naming one.
+    // If a digest is ever rendered per report cycle, this is the line that has to learn the cycle's
+    // own ordinal rather than borrow its execution's.
+    seenInWindows: [options.seq],
     firstSeenAt: filedAt[0] ?? null,
     lastSeenAt: filedAt.at(-1) ?? null,
     triage: null,
+    // The filing ledger is a project's row, not a digest's: a digest is a rendered window and
+    // knows nothing about what populace has opened anywhere. Saying "not filed" is the only thing
+    // this translation can say, and the results screen is where the real answer lives.
+    filedIssue: null,
   };
 }
 
@@ -228,7 +245,7 @@ export function whyRecheckFailed(status: number): string {
   if (status === 503)
     return "Nothing was re-checked. The model judge needs an API key and populace has not got one: set ANTHROPIC_API_KEY where it runs, or set verifier.judge to heuristic, then press this again. Every finding below is exactly as it was.";
   if (status === 409)
-    return "Nothing was re-checked. Replaying a finding means calling the target again as the person who filed it, and this execution's target cannot be reached with what is stored now — check the simulation it ran. Every finding below is exactly as it was.";
+    return "Nothing was re-checked. Replaying a finding means calling the target again as the person who filed it, and this execution's target cannot be reached with what is stored now — check the study it ran. Every finding below is exactly as it was.";
   if (status === 404) return "Nothing was re-checked. This execution is not there any more.";
   return "Nothing was re-checked. Every finding below is exactly as it was.";
 }

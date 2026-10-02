@@ -79,8 +79,13 @@ export async function startMockTarget(options: MockTargetOptions = {}): Promise<
       const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : undefined;
       if (options.gateway && !token) return send(res, 401, JSON.stringify({ error: "Missing bearer token" }));
       const auth: AuthInfo | undefined = token ? { token, clientId: "populace", scopes: [] } : undefined;
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-      const mcp = buildMcpServer(app);
+      // SSE rather than a single JSON body, and that is load-bearing: a stateless server has no
+      // standalone stream to notify on, so a notification a handler sends — `upgrade_plan` says
+      // `notifications/tools/list_changed` — can only reach the client on the response stream of
+      // the call that sent it. In JSON-response mode the transport drops it and only the result
+      // arrives, which is the one shape that would make the mid-visit refresh untestable here.
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: false });
+      const mcp = buildMcpServer(app, token);
       await mcp.connect(transport);
       const bodyText = req.method === "POST" ? await readBody(req) : "";
       // eslint-disable-next-line no-restricted-syntax -- JSON-RPC body is validated by the MCP transport.

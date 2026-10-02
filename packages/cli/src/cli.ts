@@ -92,7 +92,9 @@ program
   .option("--since <duration>", "window start, relative to now", "24h")
   .option("--until <duration>", "window end, relative to now (default: now)")
   .option("--no-verify", "skip verification")
-  .option("--judge <kind>", "model | heuristic (default from config)")
+  // `typesafe` needs TYPESAFE_API_KEY and refuses out loud without one; `model` needs
+  // ANTHROPIC_API_KEY. Anything else is refused by name rather than folded to the heuristic judge.
+  .option("--judge <kind>", "model | heuristic | typesafe (default from config)")
   .option("--exporter <name>", "markdown-file", "markdown-file")
   .option("--out <dir>", "output directory (default: digestDir from config)")
   .option("--stdout", "print the Markdown instead of writing a file")

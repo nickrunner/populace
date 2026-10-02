@@ -20,8 +20,12 @@ export const ToolPolicySchema = z.object({
   allow: z.array(z.string()).default([]),
   /** Glob patterns. Always wins over allow. */
   deny: z.array(z.string()).default([]),
-  /** What to do with tools annotated `destructiveHint: true`. */
-  destructive: DestructiveSettingSchema.default("confirm"),
+  /**
+   * What to do with tools annotated `destructiveHint: true`. Defaults to `allow`: the environment
+   * a study runs against is assumed disposable, and a target that is not says so itself
+   * (ADR-0013 amendment).
+   */
+  destructive: DestructiveSettingSchema.default("allow"),
 });
 export type ToolPolicy = z.infer<typeof ToolPolicySchema>;
 

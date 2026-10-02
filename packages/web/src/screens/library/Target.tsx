@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, type FirstContact, type StoredTarget, type TargetCheck } from "../../api.js";
-import { q } from "../../queries.js";
+import { keys, q } from "../../queries.js";
 import { useProject } from "../../context.jsx";
 import { EMPTY_IDENTITY, identityDraftFrom, identityFrom, WaysIn, whatIdentityNeeds, whatIdentityWillNotDo, type IdentityDraft } from "./ways-in.js";
 import type { TargetInput } from "@populace/contract";
@@ -62,7 +62,7 @@ const EMPTY: Draft = {
   mcp: [{ name: "default", url: "", bearerToken: "", authenticated: false }],
   webBaseUrl: "",
   description: "",
-  tools: { allow: [], deny: [], destructive: "confirm" },
+  tools: { allow: [], deny: [], destructive: "allow" },
 };
 
 function draftFrom(target: StoredTarget): Draft {
@@ -150,7 +150,8 @@ export function Target() {
     setLoaded(true);
   }, [loaded, targets.isSuccess, existing]);
 
-  const usedBy = project.simulations.filter((simulation) => simulation.target.id === existing?.id);
+  /** The studies that point at it, from the overview: changing the address here moves where they send people. */
+  const usedBy = project.studies.filter((study) => study.target.id === existing?.id);
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]): void => setDraft((d) => ({ ...d, [key]: value }));
   const setEndpoint = (index: number, patch: Partial<EndpointDraft>): void =>
@@ -164,7 +165,15 @@ export function Target() {
     },
     onSuccess: async (saved) => {
       setDraft(draftFrom(saved));
-      await queries.invalidateQueries();
+      // The overview names the target each study points at and the setup needs say whether it is
+      // finished, so both are refreshed with the list. Specific keys, never a bare invalidation.
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: keys.targets(projectKey) }),
+        queries.invalidateQueries({ queryKey: keys.target(projectKey, saved.id) }),
+        queries.invalidateQueries({ queryKey: keys.project(projectKey) }),
+        queries.invalidateQueries({ queryKey: keys.setup(projectKey) }),
+        queries.invalidateQueries({ queryKey: keys.studies(projectKey) }),
+      ]);
       // A target that has just been created has an id now, and the URL should say which one it is.
       if (existing === undefined) void navigate(href(`library/targets/${encodeURIComponent(saved.id)}`), { replace: true });
     },
@@ -202,7 +211,12 @@ export function Target() {
     mutationFn: () => api.firstContact(projectKey, existing?.id ?? ""),
     onSuccess: async (result) => {
       setContact(result);
-      await queries.invalidateQueries();
+      // First contact is stored on the row and summarised on the overview's target list.
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: keys.targets(projectKey) }),
+        queries.invalidateQueries({ queryKey: keys.project(projectKey) }),
+        queries.invalidateQueries({ queryKey: keys.setup(projectKey) }),
+      ]);
     },
   });
 
@@ -301,7 +315,7 @@ export function Target() {
         {existing && usedBy.length > 0 ? (
           <Measure width="read">
             <Text as="p" size="meta" tone="muted">
-              Used by {usedBy.map((simulation) => simulation.name).join(", ")}. Changing the
+              Used by {usedBy.map((study) => study.name).join(", ")}. Changing the
               address here changes where {usedBy.length === 1 ? "it sends" : "they send"} people.
             </Text>
           </Measure>

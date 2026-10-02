@@ -4,6 +4,7 @@ import type { Cohort } from "../schemas/cohort.js";
 import type { Person } from "../schemas/person.js";
 import type { Simulation } from "../schemas/simulation.js";
 import type { SignInGrant } from "../schemas/sign-in.js";
+import type { FiledIssue, FiledIssueProvider, FiledIssueQuietNotice, FiledIssueSighting, GithubConnection } from "../schemas/github.js";
 import type { Triage } from "../schemas/triage.js";
 import type { Event, EventInput, EventQuery } from "../schemas/event.js";
 import type { Job } from "../schemas/job.js";
@@ -82,6 +83,32 @@ export interface WakeQuery {
   agentId?: string;
   since?: Date;
   until?: Date;
+}
+
+/** One ledger row, addressed the way the table is keyed: an issue number means nothing alone. */
+export interface FiledIssueKey {
+  projectId: string;
+  provider: FiledIssueProvider;
+  repo: string;
+  number: number;
+}
+
+/** What `growFiledIssue` merges into a row that already matched. */
+export interface FiledIssueGrowth {
+  /** Unioned into the row's set. Signatures already there are not duplicated. */
+  signatures: readonly string[];
+  /** Appended unless `(studyId, runId, seq, window)` is already recorded. */
+  seenIn: readonly FiledIssueSighting[];
+  /**
+   * Appended unless `(studyId, since)` is already recorded, which is what makes a gone-quiet
+   * comment news exactly once rather than a state restated every report cycle
+   * (`FiledIssueQuietNoticeSchema`). Optional: a growth that is not announcing an absence says
+   * nothing about the ones already recorded.
+   */
+  quietNotices?: readonly FiledIssueQuietNotice[];
+  updatedAt: string;
+  /** Given, records that a second matching row's issue absorbed this one. */
+  supersededBy?: number;
 }
 
 /**
@@ -225,6 +252,63 @@ export interface Store {
   getSignInGrant(projectId: string, url: string): Promise<SignInGrant | undefined>;
   listSignInGrants(projectId?: string): Promise<SignInGrant[]>;
   deleteSignInGrant(projectId: string, url: string): Promise<void>;
+
+  /**
+   * The project's GitHub connection: the repository populace files issues into and the token it
+   * files them with. One per project, so `projectId` is the whole key — and the same discipline as
+   * a sign-in applies with one clause added, because this credential does not point at the target
+   * at all: nothing under `runWake` or `McpSession.connect` may ever read it, and it must reach no
+   * response body, `ConfigSnapshot`, trace or event (ADR-0040, ADR-0044).
+   */
+  saveGithubConnection(connection: GithubConnection): Promise<void>;
+  getGithubConnection(projectId: string): Promise<GithubConnection | undefined>;
+  deleteGithubConnection(projectId: string): Promise<void>;
+
+  /**
+   * The filing ledger, which is what keeps populace from filing one problem twice.
+   *
+   * `matchFiledIssues` is the whole point of the table: given every member signature of a candidate
+   * cluster, it answers which already went out as an issue. It intersects sets rather than
+   * comparing one key because a cluster's representative signature moves when the digest writes a
+   * verdict — `FiledIssueSchema` carries that argument in full. A row that matches is commented on
+   * and its signature set grows, so drift is absorbed instead of forking.
+   *
+   * Both reads are **oldest first** (`filedAt` ascending), and both say so because the prose rule
+   * they serve is "the oldest filed issue wins": a caller that prefetched the whole ledger and
+   * intersected in memory against a newest-first list would quietly get the opposite policy.
+   *
+   * `matchFiledIssues` is scoped to one `(provider, repo)` and not to the project, which is the
+   * difference between commenting on the right repository and commenting on the one the project
+   * used to point at. A row filed into another repository is NOT a match — that repository has
+   * genuinely never been told about this problem — and it is kept rather than deleted, because it
+   * is what stops a re-point-and-back from re-filing everything.
+   *
+   * It returns EVERY match, not the first. Two rows can both match once the clusterer bridges two
+   * problems into one cluster, and the caller's policy is to comment on the oldest and
+   * cross-reference the rest rather than orphan them silently (`FiledIssue.supersededBy`). A row
+   * already marked superseded still matches, deliberately: it is filed, so re-filing it would be
+   * the duplicate, and the caller follows its pointer to the issue that absorbed it.
+   */
+  saveFiledIssue(issue: FiledIssue): Promise<void>;
+  listFiledIssues(projectId: string): Promise<FiledIssue[]>;
+  matchFiledIssues(projectId: string, provider: FiledIssueProvider, repo: string, signatures: readonly string[]): Promise<FiledIssue[]>;
+  /**
+   * Absorb a candidate's drift into a row that already matched: union its signatures in, append
+   * the window it was seen in, and optionally record that this row has been superseded.
+   *
+   * This exists as a store method rather than a read-modify-write at the call site because there
+   * is no transaction at the call site. `saveFiledIssue` is a whole-row upsert, so growing a set
+   * through it is a `get` and a `save` across two awaits — and the single-problem route runs
+   * OUTSIDE the serial job queue, so a bulk publish job and one click on one finding interleave
+   * there and one write silently drops the other's signatures. That reintroduces exactly the
+   * duplicate the ledger exists to prevent, so the union happens inside one transaction here.
+   *
+   * A sighting already present is dropped rather than appended: `(studyId, runId, seq, window)`
+   * identifies a window, and a second publish of the same window is a double-publish, not a second
+   * sighting. Resolves `undefined` when there is no such row, which a caller reads as "somebody
+   * deleted the project underneath me" rather than as an error.
+   */
+  growFiledIssue(key: FiledIssueKey, growth: FiledIssueGrowth): Promise<FiledIssue | undefined>;
 
   savePersona(persona: StoredPersona): Promise<void>;
   getPersona(id: string): Promise<StoredPersona | undefined>;

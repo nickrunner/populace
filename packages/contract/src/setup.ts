@@ -1,19 +1,21 @@
 import {
+  CadenceSchema,
   DaemonConfigSchema,
-  EventSchema,
+  EventTypeSchema,
   FirebaseAdminConfigSchema,
   FirstContactSchema,
   GuardrailsOverrideSchema,
   GuardrailsSchema,
   JobSchema,
+  JsonValueSchema,
   ModelConfigSchema,
+  ModelOverrideSchema,
   NoAccountsConfigSchema,
   PauseReasonSchema,
   PersonaSpecSchema,
   ProvisionUrlConfigSchema,
   RunStatusSchema,
   SelfSignupConfigSchema,
-  SimulationModeSchema,
   StaticIdentityConfigSchema,
   ToolPolicySchema,
   UndecidedIdentityConfigSchema,
@@ -21,6 +23,7 @@ import {
   VerifierOverrideSchema,
 } from "@populace/core/isomorphic";
 import { z } from "zod";
+import { StudyModeSchema } from "./views.js";
 
 /**
  * The M2 wire shapes: authoring config, starting and steering runs, and watching one happen
@@ -157,9 +160,9 @@ export type IdentityGuess = z.infer<typeof IdentityGuessSchema>;
  * never comes back down, so this says whether one is held and when it dies, and nothing else.
  *
  * It is deliberately separate from `identity` on a target. This is the one human connecting;
- * `identity` is how the STRANGERS a simulation sends get accounts of their own. A screen that
- * blurred the two would be promising that signing in here is enough to run a population, which it
- * is not, and the copy says so.
+ * `identity` is how the STRANGERS a study sends get accounts of their own. A screen that blurred
+ * the two would be promising that signing in here is enough to run a population, which it is not,
+ * and the copy says so.
  */
 export const SignInStatusSchema = z.object({
   /** The address this is about, normalised. */
@@ -299,6 +302,14 @@ export type TargetPromises = z.infer<typeof TargetPromisesSchema>;
 
 // ---- personas -------------------------------------------------------------
 
+/**
+ * A persona spec on the way up. `id` is the slug, and the slug is the row's to give — a builder
+ * drafting a persona has none yet — so the wire never carries it inside the spec. A stored spec
+ * parsed through this drops its `id` and nothing else.
+ */
+export const PersonaSpecInputSchema = PersonaSpecSchema.omit({ id: true });
+export type PersonaSpecInput = z.infer<typeof PersonaSpecInputSchema>;
+
 export const PersonaViewSchema = z.object({
   id: z.string(),
   projectId: z.string(),
@@ -307,35 +318,77 @@ export const PersonaViewSchema = z.object({
   spec: PersonaSpecSchema,
   origin: z.enum(["starter", "authored", "imported"]),
   updatedAt: z.iso.datetime(),
-  /** How many cohorts draw on this persona. Headcount is the population's, not the persona's. */
+  /** How many cohorts draw on this persona. Headcount is the study's, not the persona's. */
   cohorts: z.number().int().nonnegative(),
+  /**
+   * The cohort context the starter this persona came from suggests, when `origin` is `starter`
+   * and the starter still exists under this slug; null otherwise. The cohort builder offers it
+   * as a first draft of "what these people share" and says where it came from.
+   */
+  suggestedContext: z.string().nullable(),
 });
 export type PersonaView = z.infer<typeof PersonaViewSchema>;
 
 export const PersonaInputSchema = z.object({
   /** Only honoured on create; a slug never changes afterwards. Derived from the name if absent. */
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]*$/).optional(),
-  spec: PersonaSpecSchema.omit({ id: true }),
+  spec: PersonaSpecInputSchema,
+  /**
+   * Only honoured on create. A persona the builder began from a starter says so, which is what
+   * lets `suggestedContext` be found later; anything else is authored, and an update never moves
+   * an origin.
+   */
+  origin: z.literal("starter").optional(),
 });
 export type PersonaInput = z.infer<typeof PersonaInputSchema>;
 
+/**
+ * A prebuilt persona as the builder offers it (ADR-0043): enough to show in a picker, and the
+ * whole `spec` so choosing one fills the form rather than creating a row behind the user's back.
+ */
 export const StarterPersonaViewSchema = z.object({
   slug: z.string(),
   name: z.string(),
   role: z.string(),
   /** The one line the picker shows. */
   summary: z.string(),
+  spec: PersonaSpecInputSchema,
+  /** The cohort context this starter suggests for people of its kind, offered as a hint, never applied. */
+  context: z.string(),
 });
 export type StarterPersonaView = z.infer<typeof StarterPersonaViewSchema>;
 
-export const AddStarterBodySchema = z.object({ slug: z.string().min(1), count: z.number().int().nonnegative().default(1) });
+/**
+ * "How this reads to them", for a persona that may not be saved yet. `targetId` names which of the
+ * project's targets to render against; absent, and with exactly one target, that one is used;
+ * with none, the server renders against a placeholder product so the preview still has a shape.
+ */
+export const PersonaPreviewBodySchema = z.object({
+  spec: PersonaSpecInputSchema,
+  targetId: z.string().min(1).optional(),
+});
+export type PersonaPreviewBody = z.infer<typeof PersonaPreviewBodySchema>;
+
+/**
+ * What a preview answers with: the prompt one persona would produce, rendered by the runner's own
+ * code, and the slug it was rendered for — the saved slug, or what the server made of a draft that
+ * has none yet. Two strings, and the same shape whether the persona is saved or not.
+ */
+export const PersonaPreviewViewSchema = z.object({
+  personaSlug: z.string(),
+  text: z.string(),
+});
+export type PersonaPreviewView = z.infer<typeof PersonaPreviewViewSchema>;
 
 // ---- population and settings ---------------------------------------------
 
 /**
- * Which cohorts go and how many of each (ADR-0039). Each member is one cohort at a size, and the
- * size is apportioned across the cohort's mix — `personas[].count` is that arithmetic, done here
- * so a screen never repeats it.
+ * Which cohorts go, and in what ratio (ADR-0039, ADR-0041). A member is one cohort at a WEIGHT;
+ * there is no headcount anywhere in this shape, because the size belongs to the study that sends
+ * the population, and a study of size N deals N across these weights and then across each
+ * cohort's mix. `share` at both levels is `weight / Σ weights` (0..1), done here so a screen never
+ * repeats the arithmetic; the counts a given size makes are the screen's to preview with
+ * `dealStudy`.
  */
 export const PopulationViewSchema = z.object({
   id: z.string(),
@@ -347,31 +400,66 @@ export const PopulationViewSchema = z.object({
       cohort: z.string(),
       cohortName: z.string(),
       context: z.string(),
-      /** How many of this cohort's people this population sends. */
-      size: z.number().int().positive(),
-      personas: z.array(z.object({ personaId: z.string(), slug: z.string(), name: z.string(), count: z.number().int().nonnegative() })),
+      /** This cohort's share of a study's size, as a ratio against the other members. */
+      weight: z.number().positive(),
+      /** `weight / Σ members[].weight`, 0..1. */
+      share: z.number().min(0).max(1),
+      personas: z.array(
+        z.object({
+          personaId: z.string(),
+          slug: z.string(),
+          name: z.string(),
+          /** This persona's weight in the cohort's mix. */
+          weight: z.number().positive(),
+          /** `weight / Σ` over the cohort's mix, 0..1. */
+          share: z.number().min(0).max(1),
+        }),
+      ),
       /** The cohort's own visit cap. `maxWakes` on the row; the wire says visits (ADR-0032). */
       maxVisits: z.number().int().positive().nullable(),
     }),
   ),
-  /** The sum of the member sizes: the only headcount there is. */
-  people: z.number().int().nonnegative(),
+  /** How many studies name this population. Deleting is refused while it is above nought. */
+  usedBy: z.number().int().nonnegative(),
 });
 export type PopulationView = z.infer<typeof PopulationViewSchema>;
 
 /**
- * `members`, when sent, IS the composition: the whole ordered set with a size each, so one PUT is
- * add, resize and remove at once and there is no separate route for any of them. A member at
- * nought is taken out. Setting a size is what writes the people (ADR-0039).
+ * One cohort in a population on the way up. A weight of nought takes the cohort out, so a PUT of
+ * the whole list is add, reweigh and remove at once and there is no separate route for any of them.
+ */
+export const PopulationMemberInputSchema = z.object({ cohortId: z.string().min(1), weight: z.number().nonnegative() });
+export type PopulationMemberInput = z.infer<typeof PopulationMemberInputSchema>;
+
+/**
+ * `members`, when sent, IS the composition: the whole ordered set with a weight each. Changing a
+ * weight can move people in every study that sends the population (ADR-0039 accepts this; the
+ * builder says so), and it re-deals those studies' rosters at their sizes. Nothing here writes a
+ * person on its own: without a study sending it, a population is a recipe (ADR-0041).
  *
- * `seed`, `cadence` and `maxWakes` are not here: the cap decides a simulation's mode (ADR-0030)
- * and belongs to the simulation; the cadence and the seed belong to the cohort.
+ * `seed`, `cadence` and the visit cap are not here: the cap decides a study's mode (ADR-0030) and
+ * belongs to the study; the cadence and the seed belong to the cohort.
  */
 export const PopulationInputSchema = z.object({
   name: z.string().min(1).optional(),
-  members: z.array(z.object({ cohortId: z.string().min(1), size: z.number().int().nonnegative() })).optional(),
+  members: z.array(PopulationMemberInputSchema).optional(),
 });
 export type PopulationInput = z.infer<typeof PopulationInputSchema>;
+
+/**
+ * Creating a population, composed in one request: the builder has the whole form at once, so
+ * `members` goes with the name and there is no empty population to fill in afterwards. A member
+ * at nought is left out, as on a PUT.
+ */
+export const PopulationCreateSchema = z.object({
+  name: z.string().min(1),
+  slug: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9-]*$/)
+    .optional(),
+  members: z.array(PopulationMemberInputSchema).optional(),
+});
+export type PopulationCreate = z.infer<typeof PopulationCreateSchema>;
 
 /** `model.apiKey` is absent by construction: a key is configured in the environment, not a form. */
 export const SettingsViewSchema = z.object({
@@ -379,8 +467,36 @@ export const SettingsViewSchema = z.object({
   guardrails: GuardrailsSchema,
   verifier: VerifierConfigSchema,
   daemon: DaemonConfigSchema,
+  /**
+   * The project's timing, which is what a new study inherits when its form names none of it. It is
+   * on this view because a builder that cannot read it has to invent defaults of its own, and an
+   * invented default that disagrees with the project's is a form that lies about what saving would
+   * do. `cadence` and `seed` are the full stored values rather than a partial, so a screen can show
+   * every field without filling a blank itself.
+   */
+  cadence: CadenceSchema,
+  seed: z.string(),
+  /**
+   * The visit cap every study falls back to: null is no arithmetic end. The row calls this
+   * `maxWakes`; the wire translates the NAME and nothing underneath it (ADR-0032).
+   */
+  maxVisits: z.number().int().positive().nullable(),
   /** Whether the process has a key at all. Without one, nothing that calls the model can run. */
   hasApiKey: z.boolean(),
+  /**
+   * Whether the process can reach the TYPED judge — a second key, `TYPESAFE_API_KEY`, and a second
+   * flag because the two judges fail independently.
+   *
+   * It is here for the same reason `hasApiKey` is, and the case for it is sharper. The typed judge
+   * is the one a screen recommends for the unattended report cycle, on price; chosen without its
+   * key, every automatic cycle refuses at the pre-flight (`judgeRefusal`) for as long as the study
+   * runs, and the only place that refusal appears is the error on a job row nobody is watching. A
+   * form that offers a choice has to be able to say that this install cannot make it.
+   *
+   * It is a boolean and nothing more: the key itself never comes down the wire (ADR-0036,
+   * ADR-0040), and neither does a name, an expiry or a prefix.
+   */
+  hasTypesafeKey: z.boolean(),
   updatedAt: z.iso.datetime(),
 });
 export type SettingsView = z.infer<typeof SettingsViewSchema>;
@@ -419,7 +535,7 @@ export const NeedSchema = z.object({
    */
   blocking: z.boolean(),
   scope: z.object({
-    kind: z.enum(["project", "target", "population", "simulation"]),
+    kind: z.enum(["project", "target", "population", "study"]),
     id: z.string(),
   }),
 });
@@ -439,44 +555,98 @@ export const SetupStatusSchema = z.object({
   needs: z.array(NeedSchema),
   targetId: z.string().nullable(),
   personaCount: z.number().int().nonnegative(),
-  /** How many PEOPLE the population holds. The wire does not say "agent" (Decision A). */
-  peopleCount: z.number().int().nonnegative(),
   hasApiKey: z.boolean(),
   killSwitch: z.object({ engaged: z.boolean(), reason: z.string().nullable(), at: z.string().nullable() }),
   runningRunIds: z.array(z.string()),
-  /** The simulations this project holds, so a caller can name one without a second request. */
-  simulationIds: z.array(z.object({ id: z.string(), slug: z.string(), name: z.string() })),
+  /**
+   * The studies this project holds, so a caller can name one without a second request. There is
+   * no headcount beside them any more: how many go is each study's own `size`, and this GET
+   * creates nothing to count (ADR-0041).
+   */
+  studyIds: z.array(z.object({ id: z.string(), slug: z.string(), name: z.string() })),
 });
 export type SetupStatus = z.infer<typeof SetupStatusSchema>;
 
 // ---- estimating and starting ---------------------------------------------
 
-export const RunEstimateSchema = z.object({
-  /** `history` when this machine has priced wakes to learn from, `default` on a first run. */
+/**
+ * What a study would cost, in the wire's words (ADR-0032, ADR-0042). The server's `estimateRun`
+ * counts agents and wakes; this is its result translated exactly as `wakeCount` becomes `visits`
+ * — `agents` is `people`, a wake is a visit, and the per-row guardrail is per visit — which closes
+ * the part of ADR-0035's recorded debt that let those two words onto the wire here. Both estimate
+ * routes return it. A study whose deal sends nobody gets a zero estimate with `people: 0`, never
+ * a refusal: the number IS the answer.
+ */
+export const EstimateViewSchema = z.object({
+  /** `history` when this machine has priced visits to learn from, `default` on a first run. */
   basis: z.enum(["history", "default"]),
   sampleSize: z.number().int().nonnegative(),
-  perWakeUsd: z.number().nonnegative(),
-  agents: z.number().int().nonnegative(),
+  perVisitUsd: z.number().nonnegative(),
+  people: z.number().int().nonnegative(),
   visits: z.number().int().nonnegative(),
   /** False when nothing caps the visits, in which case the total is a rate, not a ceiling. */
   bounded: z.boolean(),
-  assumedWakesPerAgent: z.number().int().positive().nullable(),
+  /** How many visits each person was assumed to make when nothing caps them; null when bounded. */
+  assumedVisitsEach: z.number().int().positive().nullable(),
   lowUsd: z.number().nonnegative(),
   expectedUsd: z.number().nonnegative(),
   highUsd: z.number().nonnegative(),
-  /** One row per LANE — a cohort and one of the personas it mixes — so `lane` is what tells the rows apart. */
-  perCohort: z.array(z.object({ lane: z.string(), cohort: z.string(), personaId: z.string(), agents: z.number().int(), visits: z.number().int(), capped: z.boolean(), expectedUsd: z.number().nonnegative() })),
+  /**
+   * One row per cohort AND persona — the pair is what tells the rows apart, since a cohort mixes
+   * personas and a persona is in several cohorts. `cohort` is the cohort's slug.
+   */
+  perCohort: z.array(
+    z.object({
+      cohort: z.string(),
+      personaId: z.string(),
+      people: z.number().int().nonnegative(),
+      visits: z.number().int().nonnegative(),
+      capped: z.boolean(),
+      expectedUsd: z.number().nonnegative(),
+    }),
+  ),
   model: z.string(),
   effort: z.string(),
   /** The guardrails that will actually stop it, whatever the arithmetic above says (ADR-0009). */
   stops: z.object({
-    perWakeUsd: z.number(),
-    perWakeTurns: z.number().int(),
+    perVisitUsd: z.number(),
+    perVisitTurns: z.number().int(),
     dailyUsd: z.number(),
-    maxWakesPerAgent: z.number().int().nullable(),
+    maxVisitsPerPerson: z.number().int().nullable(),
   }),
 });
-export type RunEstimate = z.infer<typeof RunEstimateSchema>;
+export type EstimateView = z.infer<typeof EstimateViewSchema>;
+
+/**
+ * The blocks of the project's settings a study sets for itself, on the way up. Each is the
+ * no-default override schema, for the same reason `SettingsInput` uses them: a field a form did
+ * not mention must not arrive carrying a schema default that overwrites the project's value.
+ * When sent, the object IS the study's overrides block — a block absent from it overrides nothing.
+ */
+export const StudyOverridesInputSchema = z.object({
+  model: ModelOverrideSchema.optional(),
+  guardrails: GuardrailsOverrideSchema.optional(),
+  verifier: VerifierOverrideSchema.optional(),
+});
+export type StudyOverridesInput = z.infer<typeof StudyOverridesInputSchema>;
+
+/**
+ * A study that is not saved yet — or a saved one as the form now has it — asking what it would
+ * cost. The server resolves this READ-ONLY (no person is written, no roster is touched) and
+ * answers with an `EstimateView`. `visitsPerPerson` null is a longitudinal study; absent means the
+ * same. `cadence`, `seed` and `overrides` fall through to the project's settings when absent, as
+ * the saved row's would.
+ */
+export const ProjectEstimateBodySchema = z.object({
+  targetId: z.string().min(1),
+  populationId: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  visitsPerPerson: z.number().int().positive().nullable().default(null),
+  cadence: CadenceSchema.partial().optional(),
+  seed: z.string().optional(),
+  overrides: StudyOverridesInputSchema.optional(),
+});
+export type ProjectEstimateBody = z.infer<typeof ProjectEstimateBodySchema>;
 
 export const StopRunBodySchema = z.object({
   /** `drain` lets the visits in flight finish; `now` engages the kill switch mid-visit. */
@@ -500,7 +670,23 @@ export type JobView = z.infer<typeof JobViewSchema>;
 
 // ---- live -----------------------------------------------------------------
 
-export { EventSchema };
+/**
+ * One line of the store's event log as the browser reads it (ADR-0026), and the one record in
+ * this file that is NOT the core row verbatim: the row names the study by the row's own word, and
+ * the wire speaks the user's (ADR-0032, ADR-0042), so the server translates that one field on the
+ * way out and everything else crosses unchanged. `seq` is the SSE cursor and the `pageOf` cursor.
+ */
+export const EventViewSchema = z.object({
+  seq: z.number().int().nonnegative(),
+  at: z.iso.datetime(),
+  projectId: z.string().nullable(),
+  studyId: z.string().nullable(),
+  runId: z.string().nullable(),
+  wakeId: z.string().nullable(),
+  type: EventTypeSchema,
+  payload: JsonValueSchema,
+});
+export type EventView = z.infer<typeof EventViewSchema>;
 
 /**
  * A card on the live screen: who is mid-visit, who is away, and when they come back. Derived from
@@ -532,7 +718,7 @@ export const RunLiveSchema = z.object({
   runId: z.string(),
   status: RunStatusSchema,
   /** Which controls the screen offers: Pause for a longitudinal execution, Stop for an ephemeral one. */
-  mode: SimulationModeSchema,
+  mode: StudyModeSchema,
   /**
    * Why it is not going, when it is not going. `process-ended` is the one a laptop produces and
    * the one the screen has to say out loud: nothing failed, populace was closed, and the run is
@@ -551,7 +737,3 @@ export const RunLiveSchema = z.object({
   participants: z.array(ParticipantLiveSchema),
 });
 export type RunLive = z.infer<typeof RunLiveSchema>;
-
-/** Creating a population: composition starts empty and cohorts are put into it afterwards. */
-export const PopulationCreateSchema = z.object({ name: z.string().min(1), slug: z.string().regex(/^[a-z0-9][a-z0-9-]*$/).optional() });
-export type PopulationCreate = z.infer<typeof PopulationCreateSchema>;

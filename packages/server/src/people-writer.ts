@@ -12,7 +12,7 @@ import {
 } from "@populace/core";
 import { toStrictInputSchema, type ModelProvider } from "@populace/runner";
 import { z } from "zod";
-import { ensureRoster, lanesOf, sizeOfCohort } from "./cohort-store.js";
+import { ensureRoster } from "./cohort-store.js";
 import { ensureSettings } from "./config-store.js";
 import type { JobSpend } from "./jobs.js";
 
@@ -64,7 +64,11 @@ export interface PeopleWriterDeps {
 }
 
 export interface GenerateOptions {
-  /** Restricts generation to these people, by id. Absent means every slot still holding a placeholder. */
+  /**
+   * Restricts generation to these people, by id. Absent means every placeholder in the cohort's
+   * whole roster — which is sized by every study that sends it — so the study route passes the ids
+   * of the people ITS deal sends and writes nobody another study alone is paying for.
+   */
   personIds?: string[];
 }
 
@@ -113,12 +117,15 @@ export async function generatePeople(deps: PeopleWriterDeps, cohortId: string, o
   const live = await liveRunIds(deps.store, cohort.projectId);
   if (live.length > 0) throw new GenerationRefused(`${live.length} execution(s) are reading these people right now; stop or pause them before re-casting the ${cohort.name} cohort`);
 
-  // Tier 1 first, always. Every slot below the cohort's size has a row before a single token is
-  // spent, so every later exit — no key, a refusal, the kill switch — leaves a complete cast.
+  // Tier 1 first, always. Every slot the studies call for has a row before a single token is
+  // spent, so every later exit — no key, a refusal, the kill switch — leaves a complete cast. This
+  // is one of the writers (ADR-0041, D3): generation is a POST, never reached from a read.
   const seededRoster = await ensureRoster(deps.store, cohortId, now());
   // A cohort mixes personas, and the model is briefed one persona at a time: each lane is its
-  // own batch, so a batch is never asked to invent individuals of two kinds at once.
-  const personaOfLane = new Map((await lanesOf(deps.store, cohort, await sizeOfCohort(deps.store, cohort))).map((lane) => [lane.laneSlug, lane.persona]));
+  // own batch, so a batch is never asked to invent individuals of two kinds at once. The lane's
+  // persona is the row's own `personaId`, looked up in one read of the project's personas.
+  const personas = new Map((await deps.store.listPersonas(cohort.projectId)).map((persona) => [persona.id, persona]));
+  const personaOfLane = new Map(seededRoster.map((person) => [person.laneSlug, personas.get(person.personaId)]));
   const settings = await ensureSettings(deps.store, cohort.projectId);
   const model = resolveModel(settings.model, {
     // Writing twenty-five names and a sentence each does not need a thinking budget, and on a

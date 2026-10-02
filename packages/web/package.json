@@ -11,6 +11,7 @@
   "dependencies": {
     "@populace/contract": "workspace:*",
     "@populace/core": "workspace:*",
+    "@populace/fix-prompt": "workspace:*",
     "@radix-ui/react-alert-dialog": "^1.1.23",
     "@radix-ui/react-avatar": "^1.2.6",
     "@radix-ui/react-checkbox": "^1.3.11",

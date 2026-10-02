@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startMockTarget, type RunningMockTarget } from "./index.js";
 
@@ -40,6 +41,36 @@ describe("mock target", () => {
     expect(names).not.toContain("delete_task");
     expect(tools.find((t) => t.name === "delete_project")?.annotations?.destructiveHint).toBe(true);
     await anon.close();
+  });
+
+  /**
+   * The tool list is a function of WHO IS ASKING, and `upgrade_plan` is the tool that changes the
+   * answer. The notification matters as much as the new tool: a stateless server has no standalone
+   * stream, so it rides the response stream of the upgrade call itself and a client that only looks
+   * at results never hears about it.
+   */
+  it("grows a Pro caller's tool list and says so with notifications/tools/list_changed", async () => {
+    const anon = await connect();
+    const signup = await anon.callTool({ name: "sign_up", arguments: { email: "pro+populace:run_2@populace.test", displayName: "Pro", password: "hunter2hunter2" } });
+    const token = structured(signup).token;
+    await anon.close();
+
+    const me = await connect(token);
+    let announced = 0;
+    me.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      announced += 1;
+      return Promise.resolve();
+    });
+    expect((await me.listTools()).tools.map((t) => t.name)).not.toContain("export_tasks");
+
+    const upgraded = await me.callTool({ name: "upgrade_plan", arguments: {} });
+    expect(upgraded.isError).toBeFalsy();
+    expect(announced).toBe(1);
+    expect((await me.listTools()).tools.map((t) => t.name)).toContain("export_tasks");
+    expect((await me.callTool({ name: "export_tasks", arguments: {} })).isError).toBeFalsy();
+
+    await me.callTool({ name: "delete_account", arguments: {} });
+    await me.close();
   });
 
   it("requires auth, supports self-signup, and exhibits the planted bugs", async () => {

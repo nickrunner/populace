@@ -34,7 +34,7 @@ import {
  * refs are real `CallRef`s, the tool names are real `ToolName`s wearing the evidence seam's face
  * and ink, the cohorts are real `CohortCapsule`s drawing the mark's stadium, and the finding at
  * the end is a real `FindingCard` with a real `ToolCallRecord[]` behind it — the same props
- * `SimulationResults` hands it. A reader who then opens the dashboard sees the same objects.
+ * `StudyResults` hands it. A reader who then opens the dashboard sees the same objects.
  *
  * **The ordinals are the flow, and there is no rule** (§9.2). The four stages were hung off one
  * `Ledger` until its spine was measured at 1,673px down `/how-it-works` — a column rule with no
@@ -155,11 +155,13 @@ const FINDING: ClusterCardView = {
     { slug: "early-adopters", name: "Early adopters", hit: 5, total: 6 },
     { slug: "reluctant-switchers", name: "Reluctant switchers", hit: 4, total: 6 },
   ],
+  inLatest: true,
   state: "open",
   seenIn: [1, 2, 3],
   firstSeenAt: new Date(Date.now() - 51 * HOUR).toISOString(),
   lastSeenAt: AT,
   triage: null,
+  filedIssue: null,
 };
 
 export interface VisitDiagramProps {

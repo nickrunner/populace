@@ -44,3 +44,8 @@ One record per fixed decision from the kickoff brief, plus the routine calls mad
 | [0038](0038-a-way-in-for-a-target-with-no-accounts.md) | A way in for a target with no accounts, and three answers instead of four peers |
 | [0039](0039-a-cohort-is-a-shared-condition-and-a-mix.md) | A cohort is a shared condition and a mix of personas; the population says how many |
 | [0040](0040-connecting-is-creating.md) | Connecting a target creates it, and a secret is never shown before it is stored |
+| [0041](0041-size-belongs-to-the-study.md) | Size belongs to the study; a population is a weighted mix of cohorts |
+| [0042](0042-a-simulation-is-called-a-study.md) | A simulation is called a study |
+| [0043](0043-every-noun-has-a-list-and-a-builder.md) | Every noun has a list and a builder, and the builders chain |
+| [0044](0044-filing-a-studys-problems-as-github-issues.md) | Filing a study's problems as GitHub issues |
+| [0045](0045-a-report-cycle-is-the-longitudinal-analogue-of-an-execution.md) | A report cycle is the longitudinal analogue of an execution |

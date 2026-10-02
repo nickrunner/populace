@@ -6,7 +6,8 @@ import { IconButton, Text } from "../atoms/index.js";
  * Stepper — ATOMIC-INVENTORY §2 molecule 9. Replaces the existing `Stepper`, whose − and + are
  * about 20×24px and fail DESIGN-SYSTEM §6's 24px floor outright.
  *
- * How many of this person go into the next execution. Three sites, all of them a headcount.
+ * A count the reader nudges by one: the study's size — the only headcount there is (ADR-0041) —
+ * and the caps and ceilings beside it. Every site is a small whole number with a bound.
  *
  * Both controls are `IconButton`s at `md`, which is 32×32 — and `Button`'s coarse-pointer
  * `::after` box takes them to 44 on a touch screen without touching the layout. That is the
@@ -34,7 +35,7 @@ import { IconButton, Text } from "../atoms/index.js";
  *
  * **At a bound the control is inert, not absent.** `IconButton` draws `disabled` as
  * `aria-disabled` — the button keeps its tab stop, its `aria-label` and its tooltip, and swallows
- * the press — so a headcount sitting at its minimum still has two named, explained controls
+ * the press — so a count sitting at its minimum still has two named, explained controls
  * rather than one named control and one unreachable glyph. The clamp in `step` stays anyway: the
  * bound is the molecule's fact, not the button's.
  */

@@ -3,7 +3,7 @@
 Companion to `DESIGN-SYSTEM.md`. That document is the law; this one is the parts list and the
 order to build them in.
 
-**Counts:** 33 atoms · 34 molecules · 33 organisms · 8 templates · 26 pages.
+**Counts:** 33 atoms · 34 molecules · 36 organisms · 9 templates · the pages of §5, as amended 2026-09-25.
 
 ---
 
@@ -18,8 +18,8 @@ packages/web/src/design/
   variants.ts        # shared CVA fragments: focusRing, control, rowBase, surfaceBase
   atoms/             # 33 files + index.ts
   molecules/         # 35 files + index.ts
-  organisms/         # 35 files + index.ts
-  templates/         # 8 files + index.ts
+  organisms/         # 36 files + index.ts
+  templates/         # 14 files + index.ts (9 templates, the pieces they compose, RouteAnnouncer)
   brand/             # the mark-grammar SVG primitives: Dot, Ring, Capsule, Lattice, Fan
   index.ts           # one barrel. Screens import from "../design/index.js" and nowhere else.
 ```
@@ -668,6 +668,7 @@ contract view type directly.
 | 33 | `ExplorationFan` | `ExplorationFan.tsx` | — | — (new; landing hero, empty states) | 4 |
 | 34 | `ExecutionPicker` | `ExecutionPicker.tsx` | — | **AMENDED:** the picker §5 page 20 already named and this table left out — hand-rolled inside `Executions`, and about to be written a second time by `Compare` | 2 |
 | 35 | `WhatWentWrong` | `WhatWentWrong.tsx` | — | **ADDED (port review, S4.26):** a local helper on one screen, and a raw `error.message` in a `FieldError` on four others | 9 |
+| 36 | `WeightedMixEditor` | `WeightedMixEditor.tsx` | `Slider`, `Select` (through the atoms) | **ADDED (2026-09-25, ADR-0041, ADR-0043):** the builders' ratio control — a cohort is personas with weights, a population is cohorts with weights, and both are balanced here, with a `Meter` as the share mark and never a `Capsule` | 2 |
 
 ### Signatures
 
@@ -739,14 +740,48 @@ export interface LedgerProps {
 export interface LedgerRowProps {
   stub: React.ReactNode;               // ONLY a locator: sequence, severity stack, call ref,
                                        // execution number, or a mark-grammar glyph. Nothing else.
+  stubKind?: LedgerStubKind;           // "position" | "mark"; the bare-value rule otherwise
   to?: string;
   onClick?: () => void;
+  aside?: React.ReactNode;             // ONE small control that is not the row's own act, rendered
+                                       // OUTSIDE the link — see the amendment below
   selected?: boolean;
   suspect?: boolean;                   // 2px critical left edge on the CONTENT column + a word
   density?: Density;
   children: React.ReactNode;
 }
 // Below --breakpoint-md the stub collapses and its contents render as a leading line.
+//
+// AMENDED (2026-09-25, ADR-0043) — the sanctioned aside for edit + delete on a list row.
+// Every noun has a list page now (§5), and every row on it is a link to the item's page AND
+// offers Edit and Delete. Four screens wanted that before there was an `aside`, and the choices
+// were a `<button>` inside an `<a>` (invalid HTML that navigates instead of acting) or a toolbar
+// beside every row. The one pattern, used by every list page and by nothing else:
+//
+//   aside={
+//     <>
+//       <DropdownMenu
+//         label={`${item.name} actions`}
+//         trigger={<IconButton icon="chevron-down" label={`Actions for ${item.name}`} />}
+//         items={[
+//           { label: "Edit", to: builderHref },
+//           { label: "Delete", tone: "danger", onSelect: () => setConfirming(true) },
+//         ]}
+//       />
+//       <AlertDialog open={confirming} onOpenChange={setConfirming} … />
+//     </>
+//   }
+//
+// Three rules, all of them review stops. (1) ONE trigger per row: an `IconButton` opening a
+// `DropdownMenu`; two buttons on a linked row is the toolbar the prop's doc comment forbids.
+// (2) The `AlertDialog` is CONTROLLED (`open`/`onOpenChange`) and is a SIBLING of the menu in
+// the aside — never rendered inside a menu item, because Radix unmounts the item on select and
+// takes the dialog with it, and never given the item as its `trigger`, because a menu item is
+// not a slotted button. (3) The delete copy states what the server will do, including refusal:
+// a row whose item is held (`usedBy > 0`, `cohorts > 0`, a study naming the target) puts the
+// Delete item at a bound with the reason as its label, and a 409 that arrives anyway shows
+// through `WhatWentWrong`. Studies archive rather than delete by default, and their dialog says
+// what happens to the people no other study sends.
 
 // 5 — DataTable. Square cells inside a radius-md container. No zebra. One serif sentence column.
 export interface Column<T> {
@@ -798,6 +833,30 @@ export interface AlertDialogProps { title: string; body: React.ReactNode; confir
 
 // 35 — WhatWentWrong. ADDED by the port review (S4.26).
 export interface WhatWentWrongProps { says: string; error: Error; id?: string }
+
+// 36 — WeightedMixEditor. ADDED 2026-09-25 (ADR-0041, ADR-0043). Imports NOTHING from core.
+export interface WeightedMixEntry { id: string; name: string; detail?: string; weight: number }
+export interface WeightedMixOption { id: string; name: string; detail?: string }
+export interface WeightedMixEditorProps {
+  legend: string;                              // "Mix", "Cohorts"
+  entries: readonly WeightedMixEntry[];        // in the order the deal favours on a tie
+  options: readonly WeightedMixOption[];       // everything that could be in the mix; present ones filtered here
+  onChange: (entries: WeightedMixEntry[]) => void;
+  addLabel: string;                            // "Add a persona" — names the Select
+  emptyState: React.ReactNode;                 // when there is nothing to pick from: a link to the builder
+  min?: number;                                // default 1
+  minReason: string;                           // the held remove control's label
+  previewCounts?: readonly number[];           // one per entry, computed by the SCREEN with dealStudy
+  previewSentence?: string;                    // "At 20 people: …"
+}
+export function sharePercents(weights: readonly number[]): number[]   // largest remainder; sums to 100
+export function shownWeight(weight: number): number                    // max(1, round(w)); written back only on touch
+// A row is name (`t-name`, the id the Slider is labelled by) + detail + an authoritative
+// `NumberInput` (min 1, step 1, no max) + a `Slider` for coarse adjustment (max = max(20, …weights),
+// `ariaLabelledBy` the name, `valueLabel` "3 of 7 parts, about 43%") + a `Meter size="sm"` as the
+// share mark + the tabular percent + the count from `previewCounts` + a quiet `IconButton icon="x"`
+// at a bound below `min`. NEVER a `Capsule`: its length means a headcount, and a mix has none until
+// a study gives it a size. Feedback is instant — nothing here transitions.
 // A mutation that did not land: OUR sentence — what failed, in the reader's terms, and what is
 // still true — in a `role="alert"` `FieldError`, and THEIR words verbatim in the one
 // `PayloadBlock` beneath it. DESIGN-SYSTEM §7.4 asks for exactly this pair, and it was spelled
@@ -805,7 +864,9 @@ export interface WhatWentWrongProps { says: string; error: Error; id?: string }
 // `error.message` into a `FieldError`, which puts an HTTP status inside the product's own voice
 // and loses the evidence seam (§4.3). It is an organism because the well is one — there is one
 // well in the product, not three. `id` is optional for the reason `FieldError`'s is (molecule 3).
-export interface DropdownMenuItem { label: string; to?: string; onSelect?: () => void; tone?: "default" | "danger"; disabled?: boolean }
+export interface DropdownMenuItem { label: React.ReactNode; textValue?: string; to?: string; onSelect?: () => void; tone?: "default" | "danger"; disabled?: boolean }
+// `label` is a node so a row can carry a name and a fact through a `MetaLine` (§4.5); a node
+// label brings `textValue` for typeahead. `disabled` is how a Delete item sits at a bound.
 export interface DropdownMenuProps { trigger: React.ReactElement; items: readonly DropdownMenuItem[]; label: string }
 export interface PopoverProps { trigger: React.ReactElement; children: React.ReactNode; label: string }
 export interface TabsProps { value: string; onChange: (v: string) => void; tabs: readonly { value: string; label: string; count?: number }[]; children: React.ReactNode }
@@ -981,13 +1042,14 @@ else.** No data fetching, no product nouns, no business logic.
 | # | Template | File | Owns | Used by |
 |---|---|---|---|---|
 | 1 | `AppShell` | `AppShell.tsx` | `SkipLink` + `Sidebar` + scrolling `<main id="main" tabindex="-1">` + `RouteAnnouncer` + the `Toast` region + the one `TooltipProvider`; the rail→drawer switch below 900px. **AMENDED: the header bar is unconditional, and the lockup in it is a link** — see the note under the code block | every `/app` screen |
-| 2 | `DocumentPage` | `DocumentPage.tsx` | `--w-page`, the 72px stub grid, `--measure-read`, an optional 264px sticky instrument rail at ≥1240px, `PageHeader` slot, state slot. **AMENDED: railless, the column is `mx-auto`** — `--w-page` is the width of the TWO-column layout (648 + 48 + 264 + gutters) and only `SimulationResults` passes a rail, so everywhere else the frame reserved 312px that piled up on the right and pushed the page 201px left of centre | 12 screens |
+| 2 | `DocumentPage` | `DocumentPage.tsx` | `--w-page`, the 72px stub grid, `--measure-read`, an optional 264px sticky instrument rail at ≥1240px, `PageHeader` slot, state slot. **AMENDED: railless, the column is `mx-auto`** — `--w-page` is the width of the TWO-column layout (648 + 48 + 264 + gutters) and only `SimulationResults` passes a rail, so everywhere else the frame reserved 312px that piled up on the right and pushed the page 201px left of centre. **AMENDED (2026-09-25, ADR-0043) — "only one screen passes a rail" is no longer true, and the centring rule does not depend on it.** Four do now: `StudyResults` (its figures), `ExecutionDigest` (an execution's totals), and two builders through template 9's `rail` prop — the population builder's "Try a size" deal preview and the study builder's `CostRail`. The rule stays what it was: a page WITH a rail fills the frame, a page without one centres its column | 12 screens |
 | 3 | `InstrumentPage` | `InstrumentPage.tsx` | `--w-page` full bleed, no reading measure, 32px rows, the stub as a leading column, a toolbar slot | 8 screens |
 | 4 | `SplitPage` | `SplitPage.tsx` | `grid-cols-[minmax(0,1fr)_minmax(0,1fr)]`, sticky right rail, stacking at 1000px with the **detail above the list** | 5 screens |
-| 5 | `FormPage` | `FormPage.tsx` | `DocumentPage` + a sticky `SaveBar`, an unsaved-changes guard, field error focus management | 4 screens |
+| 5 | `FormPage` | `FormPage.tsx` | `DocumentPage` + `FormPane`. **AMENDED (2026-09-25, ADR-0043): split three ways.** `FormBody` is the `<form>` alone — Enter as the act (a no-op while `blocked`), focus to the first `[aria-invalid]` on the falling edge of `busy`, `beforeunload` only when `guard`, and a `foot` rendered as its sibling so the bar can stick. `FormPane` = `FormBody` + `SaveBar`, with the guard bound to `dirty`. `FormPage` = `DocumentPage` + `FormPane`, as before. The split exists so template 9 could take the form without the save bar | 3 screens (Settings, Target, and `FormPane` alone where a screen composes its own frame) |
 | 6 | `CenteredPage` | `CenteredPage.tsx` | `--w-page-narrow`, railless, vertically generous | 1 screen (Projects) + the shells' own error states |
 | 7 | `WizardPanel` | `WizardPanel.tsx` | the numbered/ticked step spine, collapse-to-a-line, the done summary, nothing spends until the last step | 1 screen (GetStarted) |
 | 8 | `MarketingShell` | `MarketingShell.tsx` | `--w-landing`; `radius-lg`, exported as `LANDING_PANEL` — the one spelling of the 20px corner, composed by the hero panel, the diagram plates and the final CTA; the transparent nav; `RouteAnnouncer` and the focus move, as `AppShell` does them; the footer; `ThemeToggle`. **AMENDED: no `<LedgerSpine />`** — see DESIGN-SYSTEM §9.2 | 5 screens (the public route) |
+| 9 | `BuilderPage` | `BuilderPage.tsx` | **ADDED (2026-09-25, ADR-0043).** `DocumentPage` + `FormBody` + **one of two bars chosen by `mode`**: an `ActionBar` for `new` (the act named in the product's words, `guard={false}` because the draft is persisted under the route) and a `SaveBar` for `:id` (dirtiness, discard, the guard bound to `dirty`). Both bars take `blockedBecause`, `note` and `extra`, so a refused edit says why in the same place a refused create does and "Apply to the running execution" sits beside the save. Enter follows the bar's bound. The props are a discriminated union (`BuilderCreateProps` \| `BuilderEditProps`) | 4 screens: the persona, cohort, population and study builders |
 
 ```ts
 export interface AppShellProps { rail?: React.ReactNode; children: React.ReactNode }
@@ -1037,7 +1099,32 @@ export interface SplitPageProps extends PageStateSlots {
   header: React.ReactNode; left: React.ReactNode; right: React.ReactNode;
   ratio?: "even" | "narrow-right"; state?: StateKind;
 }
+export interface FormBodyProps {                 // the <form> alone (2026-09-25)
+  busy: boolean;                                 // falling edge → focus the first [aria-invalid]
+  guard: boolean;                                // beforeunload while true; an editor passes dirty, a create page false
+  blocked?: boolean;                             // Enter is a no-op while set
+  onSubmit: () => void;                          // what Enter does; the bar has its own button
+  foot: React.ReactNode;                         // SaveBar or ActionBar, rendered as the form's SIBLING so it can stick
+  children: React.ReactNode;
+}
+export interface FormPaneProps { dirty: boolean; saving: boolean; onSave: () => void; savedAt: string | null; onDiscard?: () => void; children: React.ReactNode }
+// = FormBody{ busy: saving, guard: dirty, blocked: !dirty || saving, foot: <SaveBar/> }
 export interface FormPageProps extends DocumentPageProps { dirty: boolean; saving: boolean; onSave: () => void; savedAt: string | null }
+export interface SaveBarProps { dirty: boolean; saving: boolean; onSave: () => void; savedAt: string | null; onDiscard?: () => void; blockedBecause?: React.ReactNode; note?: React.ReactNode; extra?: React.ReactNode }
+// AMENDED (2026-09-25): `blockedBecause`, `note` and `extra` are additive, borrowed from ActionBar for
+// the builders' edit mode — a held "Save changes" with no sentence beside it is a colour and nothing
+// else (§1.2), and the study builder's "Apply to the running execution" needs a place beside the act.
+export interface BuilderPageCommon extends PageStateSlots {
+  header: React.ReactNode; rail?: React.ReactNode; state?: StateKind;
+  blockedBecause?: React.ReactNode;              // the bar says it; the button AND Enter are held
+  note?: React.ReactNode;                        // what the act will do; never what an execution will find (§7.3)
+  onCancel?: () => void; extra?: React.ReactNode; children: React.ReactNode;
+}
+export interface BuilderCreateProps extends BuilderPageCommon { mode: "create"; actLabel: string; pending: boolean; onAct: () => void }
+export interface BuilderEditProps extends BuilderPageCommon { mode: "edit"; dirty: boolean; saving: boolean; savedAt: string | null; onSave: () => void; onDiscard?: () => void }
+export type BuilderPageProps = BuilderCreateProps | BuilderEditProps;
+// create → FormBody{ busy: pending, guard: false, blocked: held || pending, foot: <ActionBar/> }
+// edit   → FormBody{ busy: saving, guard: dirty, blocked: held || !dirty || saving, foot: <SaveBar/> }
 export interface CenteredPageProps extends PageStateSlots { header?: React.ReactNode; state?: StateKind; children: React.ReactNode }
 export interface WizardPanelProps { title: string; steps: readonly { id: string; label: string; done: boolean; summary?: React.ReactNode; body: React.ReactNode }[]; openId: string; onOpen: (id: string) => void }
 // `title` is the explicit <h2> §6 gives GetStarted, which has no <h1> and whose step labels are
@@ -1050,40 +1137,55 @@ export interface MarketingShellProps { children: React.ReactNode }
 
 ## 5. PAGES — the 26 screens
 
+> **Amendment (2026-09-25, ADR-0041, ADR-0042, ADR-0043) — the table below is rewritten.** Three
+> things changed under it. *Simulation* is *study* on every route and screen (`/p/:proj/studies/…`,
+> `StudyResults`, `StudyActions`). Every noun — target, persona, cohort, population, study — now
+> has a **list page** (`DocumentPage` + `PageHeader` with a primary "New …" link + `Ledger`, rows
+> with the aside menu pattern amended under organism 4) and **one builder page** on `BuilderPage`
+> serving `new` and `:id`, and the builders chain through `?then=`. `NewSimulation`,
+> `SimulationSettings`, `FirstRun`, `GetStarted`, `Cohort`, `PersonaEditor` and the population
+> editor are gone; their rows are replaced in place so the numbering the port plan (§6) refers to
+> still resolves. The rows that stayed keep their old text and gain only their new routes.
+
 | # | Page | Route | Template | Principal organisms |
 |---|---|---|---|---|
 | 1 | `Landing` **(new)** | `/` | `MarketingShell` | `ExplorationFan`, `FindingCard`, `PayloadBlock`, `Ledger`, `Section` |
 | 2 | `Projects` | `/projects` | `CenteredPage` | `Ledger`, `Card`, `PageHeader`, `Dialog` |
-| 3 | `ProjectHome` | `/p/:proj` | `DocumentPage` | `StatGroup`, `Section`, `Ledger`, `GetStarted` panel |
-| 4 | `GetStarted` | *(embedded in 3)* | `WizardPanel` | `ChoiceCard` group, `CostEstimate`, `Stepper`, `Checkbox` |
-| 5 | `NewSimulation` | `/p/:proj/s/new` | `DocumentPage` + `ActionBar` **(amended)** | `RadioGroup` choice cards, `CohortCapsule`, `CostEstimate`, `ActionBar` |
-| 6 | `Preflight` | `/p/:proj/s/:sim/preflight` | `DocumentPage` | `CostEstimate`, `PayloadBlock` (prompt preview), `Ledger` (blockers), `ConfirmButton` |
+| 3 | `ProjectHome` — **the Studies dashboard** | `/p/:proj` | `DocumentPage` | `PageHeader` (meta: studies, targets, spend today; primary "New study"), a needs panel from `SetupStatus.needs` (`Ledger`), the studies `Ledger` grouped by target when there is more than one, the cross-study `ClusterRow` section (`id="problems"`) when studies > 1. **The study row's pattern:** the row's `to` IS the study's results — or its `live` screen while it is running — and every control sits in the `aside` sibling: `StudyActions` (`deletable={false}`), the organism-4 menu with **Edit** (`studies/:study/edit`) and **Archive** (at a bound, "Archiving waits until it stops", while running), and the controlled archive `AlertDialog` with its "Delete its executions too" `Checkbox`. The content column is name + mode `Badge` + a live/paused `Chip`, then two `MetaLine`s: the shape ("Target × Population", size — "N of M asked for" when the deal sends fewer — cohorts, mode) and the results (confirmed, new, "not reported this time", cost) whose LAST fact names where the row goes: "Read the results" or "Watch it live". The Targets and Who-can-go bands, `PairingsGrid` and `FirstRun` are removed (ADR-0043) |
+| 4 | `StudyPeople` | `/p/:proj/studies/:study/people` | `DocumentPage` | `Ledger` grouped by cohort then persona-in-cohort, the per-person `PersonRow` editor (moved out of `Cohort`), `JobProgress`, `ConfirmButton` (regenerate), `StateBlock`. The top line says the study meets the first N of each cohort and that a line written here follows the person into every study sending the cohort; "also sent by N other studies" when `alsoSentBy > 0` |
+| 5 | `StudyBuilder` | `/p/:proj/studies/new` and `/p/:proj/studies/:study/edit` | `BuilderPage` + rail (`CostRail`) | One file, two components chosen by `useParams().study`: `CreateStudy` at `studies/new` (persisted draft, `?then=`/`?picked=`) and `EditStudy` at `studies/:study/edit`, mounted inside `StudyShell` where `useStudy()` is available — a split because hooks cannot be conditional. The study's old `settings` address redirects to `edit`. `Select` (target, population) with empty states linking to the target and population builders, `NumberInput` + `Stepper` (size), the deal preview as a `Ledger` of cohorts with `RosterLattice`/`CohortCapsule` provisional dots, `ConditionalFieldset` + `Radio` (mode, the two glossed radios verbatim), `DurationField`, `Disclosure` (overrides), `CostEstimate` reading an `EstimateView` from `POST /projects/:p/estimate` |
+| 6 | `Preflight` | `/p/:proj/studies/:study/preflight` | `DocumentPage` | `CostEstimate`, `PayloadBlock` (prompt preview), `Ledger` (blockers), `ConfirmButton` |
 | 7 | `Settings` | `/p/:proj/settings` | `FormPage` | `Field`, `FieldGrid`, `Switch` (kill), `DangerZone`, `AlertDialog` |
-| 8 | `Targets` | `/p/:proj/library/target` | `DocumentPage` | `Ledger`, `Section` (`TargetStatus` is the RAIL's block, organism 32 — §6.3 row 2) |
-| 9 | `Target` | `/p/:proj/library/target/:t` | `FormPage` + `Tabs` | `ToolPolicyEditor`, `ConnectionStatusBar`, `Repeater`, `SecretField`, `FirstContactPanel` |
-| 10 | `Personas` | `/p/:proj/library/personas` | `DocumentPage` | `Ledger`, `AlertDialog` (removing a persona takes its cohorts) |
-| 11 | `PersonaEditor` | `/p/:proj/library/personas/:x` | `SplitPage` + `FormPage` | `ToolPolicyEditor`, `ScaleField`, `TagListField`, `KeyValueEditor`, `SamplePreview` |
-| 12 | `People` | `/p/:proj/library/people` | `SplitPage` | `CohortCapsule`, `RosterLattice`, `JobProgress`, `CostEstimate`, `AlertDialog` (removing a cohort takes its people out of the population) |
-| 13 | `Cohort` | `/p/:proj/library/people/:cohortSlug` | `DocumentPage` | `RosterGrid`, `InlineEdit`, `JobProgress`, `AlertDialog` ("Re-cast all of them") |
-| 14 | `SimulationResults` | `/p/:proj/s/:sim` | `DocumentPage` + rail | `ClusterRow` ledger, `StatGroup`, `IncidenceBars`, `RosterLattice`, `Disclosure`, `SimulationActions` |
-| 15 | `FindingInFull` | `/p/:proj/s/:sim/f/:signature` | `SplitPage` | `EvidenceSteps`, `ReplayVerdict`, `TriageForm`, `PersonQuoteCard`, `IncidenceBars` |
+| 8 | `Targets` | `/p/:proj/library/targets` | `DocumentPage` | `Ledger` (address and way-in per row; the aside menu, Delete at a bound while a study points at it), `StateBlock`, `PageHeader` whose one act is **"Connect a target"** — not "New target", because what follows is ADR-0040's connect-then-finish flow, the exception ADR-0043 §5 records, and the verb says so |
+| 9 | `Target` | `/p/:proj/library/targets/new` and `…/targets/:t` | `FormPage` + `Tabs` | `ToolPolicyEditor`, `ConnectionStatusBar`, `Repeater`, `SecretField`, `FirstContactPanel`. **The deliberate exception to "save at the end"** (ADR-0043): it saves on the first successful check and edits in place (ADR-0040) |
+| 10 | `Personas` | `/p/:proj/library/personas` | `DocumentPage` | `Ledger` (Avatar stub, `NameWithRole`; the aside menu), `AlertDialog` (refused while a cohort mixes it), `StateBlock` |
+| 11 | `PersonaBuilder` | `/p/:proj/library/personas/new` and `…/personas/:x` | `BuilderPage` | "Start from one of these": the starters as `LedgerRow onClick selected` rows; `TagListField`, `KeyValueEditor`, `ScaleField`, `ToolPolicyEditor` (the target's policy as `floor` when there is one), `Disclosure` (model), `SamplePreview` ("How this reads to them", both modes, through `POST /personas/preview`) |
+| 12 | `Cohorts` | `/p/:proj/library/cohorts` | `DocumentPage` | `Ledger stubKind="mark"` whose stub is a `Capsule size="sm"` (the grammar's word for a cohort, a locator whose length means nothing); each row is a `Text size="name"` + the fact "N personas" and, beneath, the first sentence of `context` (`firstSentence`, exported for the population builder's detail line); the aside is the organism-4 pattern exactly — a `chevron-down` `IconButton` opening a `DropdownMenu` with **Edit** (`to` the builder) and **Delete** (`tone="danger"`; at a bound labelled "Delete — in N populations" while `usedBy > 0`) and a controlled `AlertDialog` as the menu's SIBLING; `StateBlock`; a 409 through `WhatWentWrong`. **No people, no headcounts** |
+| 12a | `CohortBuilder` | `/p/:proj/library/cohorts/new` and `…/cohorts/:c` | `BuilderPage` | In this order, because the old page asked for a persona before a name: "What to call them" (name; slug derived, editable before the first save, a `Mono` fact after); "What they share" — `TextArea rows={8}`, required, **prefilled with the mix's first persona's `suggestedContext`** while empty, the hint saying it came from the starter, the first keystroke making it the reader's own; "Who they are drawn from" — **`WeightedMixEditor`** over personas (empty state → persona builder with `?then=`) beside a local **"Try a size"** `NumberInput` (never saved) whose counts the SCREEN computes with core's `apportion` and hands in as `previewCounts` + a `previewSentence` naming the tie rule; "What the cohort applies to all of them" — `KeyValueEditor` (fixed traits), `ToolPolicyEditor` with the target's policy as `floor` when the project has exactly one target, and a model override (model, effort, **`maxTokens`**); "How often, and who comes next" — a **Timing** `Disclosure` (cadence override, visit cap) that opens itself when either is set, the seed with ADR-0031's gloss ("decides who the next person is, not who these people are"), and notes (`TextArea rows={8}`). **Create posts the whole `CohortInput`; edit PUTs only what changed** (`changesOf`, and dirtiness is that object having keys). The edit-mode note says a saved mix re-deals the cohort in every study that sends it |
+| 13 | `Populations` | `/p/:proj/library/populations` | `DocumentPage` | `Ledger` whose stub is a `Ring size="sm"` — the grammar's empty slot, the shape people fill once a study gives it a size — and whose one fact is **"N cohorts"** ("no cohorts yet" at zero); the aside menu with Delete at a bound ("N studies send it") while `usedBy > 0`; `AlertDialog` as the menu's sibling; `StateBlock` |
+| 13a | `PopulationBuilder` | `/p/:proj/library/populations/new` and `…/populations/:pop` | `BuilderPage` + rail | **`WeightedMixEditor`** over cohorts (detail = `firstSentence` of each context; empty state → cohort builder with `?then=`). **The rail IS the "Try a size" deal preview**: a `Field` with a local `NumberInput` (default 20, never saved), then "At N people" and one line per persona-in-cohort computed by the SCREEN with `dealStudy` from `@populace/core/isomorphic` — "First-time visitors in Mobile signups: 3", "… would send nobody at this size", "N of M would go; the rest fall to a cohort with no personas" — with the per-cohort counts handed to the editor as `previewCounts`. This is the second `BuilderPage` to pass a rail (§4 template 2 amendment) |
+| 14 | `StudyResults` | `/p/:proj/studies/:study` | `DocumentPage` + rail | `ClusterRow` ledger, `StatGroup`, `IncidenceBars`, `RosterLattice`, `Disclosure`, `StudyActions`; the "Who we sent" `DataTable` footer carries two links for two questions — **"Who went, by name"** → `executions/:runId/cohorts` (row 21, the latest execution's frozen cast) and **"The people this study sends"** → `studies/:study/people` (row 4, the study as it stands today) — and "Who walked away" when anybody did |
+| 15 | `FindingInFull` | `/p/:proj/studies/:study/f/:signature` | `SplitPage` | `EvidenceSteps`, `ReplayVerdict`, `TriageForm`, `PersonQuoteCard`, `IncidenceBars` |
 | 16 | `PeopleWhoHit` | `…/f/:signature/people` | `InstrumentPage` | `DataTable`, `PersonLink`, `RosterLattice` |
-| 17 | `Gaps` | `/p/:proj/s/:sim/coverage` | `InstrumentPage` | `DataTable` (tool usage), `ClusterRow` (coverage-gap), `ToolName` |
-| 18 | `WhoLeft` | `/p/:proj/s/:sim/left` | `DocumentPage` | `PersonQuoteCard`, `Ledger`, `StateBlock` |
+| 17 | `Gaps` | `/p/:proj/studies/:study/coverage` | `InstrumentPage` | `DataTable` (tool usage), `ClusterRow` (coverage-gap), `ToolName` |
+| 18 | `WhoLeft` | `/p/:proj/studies/:study/left` | `DocumentPage` | `PersonQuoteCard`, `Ledger`, `StateBlock` |
 | 19 | `Compare` | `…/executions/compare?a=&b=` | `InstrumentPage` | **`ExecutionCompare`**, `ClusterRow density="tight"`, `ExecutionPicker`, `Card tone="sunk"` (the caveat) |
-| 20 | `Executions` | `/p/:proj/s/:sim/executions` | `InstrumentPage` | `ExecutionRow` ledger, `LiveActivityFeed` (a longitudinal execution's life), `ExecutionPicker` |
-| 21 | `RunCohorts` | `/p/:proj/s/:sim/population` | `InstrumentPage` | `CohortCapsule`, `RosterLattice`, `DataTable`, `Disclosure` |
-| 22 | `Visits` | `/p/:proj/s/:sim/visits` | `InstrumentPage` | `DataTable` (7 cols + stub, expandable detail row), `FilterChips`, `PersonLink`, `Pagination` |
-| 23 | `WatchAVisit` | `…/visits/:wakeId` | `SplitPage` | `TranscriptList`, `TranscriptDetail`, `ToolCallBlock`, `CitedAsEvidence`, `MemoryPanel` |
-| 24 | `LiveRun` | `/p/:proj/s/:sim/live` | `InstrumentPage` | `LiveActivityFeed`, `PersonLiveCard` grid, `RunControlBar`, `Meter`, `Toast` |
+| 20 | `Executions` | `/p/:proj/studies/:study/executions` | `InstrumentPage` | `ExecutionRow` ledger, `LiveActivityFeed` (a longitudinal execution's life), `ExecutionPicker`; each row's aside carries "Who went" (→ 21), "Digest" and the delete control, and a longitudinal execution's line carries the same two links |
+| 21 | `RunCohorts` | `/p/:proj/studies/:study/executions/:runId/cohorts` | `InstrumentPage` | Titled **"Who went"** — the people this execution sent, by cohort, as they were when it ran. `CohortCapsule`, `RosterLattice`, `DataTable`, `Disclosure`. Reached from an `Executions` row and from `StudyResults`' footer, and from nowhere in the study's rail: it is a fact about ONE execution, frozen in its snapshot — the study's own people live on row 4. `RunRedirect`'s `rehomed()` sends an old `/runs/:id/agents` bookmark here |
+| 22 | `Visits` | `/p/:proj/studies/:study/visits` | `InstrumentPage` | `DataTable` (7 cols + stub, expandable detail row), `FilterChips`, `PersonLink`, `Pagination` |
+| 23 | `WatchAVisit` | `…/visits/:visitId` | `SplitPage` | `TranscriptList`, `TranscriptDetail`, `ToolCallBlock`, `CitedAsEvidence`, `MemoryPanel` |
+| 24 | `LiveRun` | `/p/:proj/studies/:study/live` | `InstrumentPage` | `LiveActivityFeed`, `PersonLiveCard` grid, `RunControlBar`, `Meter`, `Toast` |
 | 25 | `Person` | `…/people/:pid` and `/p/:proj/people/:personId` | `SplitPage ratio="narrow-right"` | `PersonIdentityLine`, `MemoryPanel`, `DataTable` (visits), `RosterLattice` |
 | 26 | `NotFound` **(new)** | `*` | `CenteredPage` | `StateBlock kind="gone"`, `ExplorationFan size="inline"` |
 
-Shared non-route components that move with the pages: `SimulationActions` (organism, 2 sites),
-`NeedsExecution` (a `StateBlock` preset that keeps the screen's own title and the pre-flight
-link), `RunRedirect` (unchanged behaviour, new copy for the "Back to where you were" link now
-that `/` is public), `ProjectShell` / `SimulationShell` (their loading, 404 and error states move
-**inside** `AppShell` — today they render without the sidebar).
+Shared non-route components that move with the pages: `StudyActions` (organism, 2 sites; it was
+`SimulationActions` until ADR-0042), `NeedsExecution` (a `StateBlock` preset that keeps the
+screen's own title and the pre-flight link), `RunRedirect` (unchanged behaviour, new copy for the
+"Back to where you were" link now that `/` is public, and it emits `/studies/`), `ProjectShell` /
+`StudyShell` (their loading, 404 and error states move **inside** `AppShell` — today they render
+without the sidebar). The builders also share one hook, `useThen()`, and one draft rule (a zod
+`DraftSchema` per builder, `sessionStorage` under `populace:draft:${pathname}`, create mode
+only) — both are app-side, in `screens/`, because a template fetches nothing and knows no route.
 
 **AMENDED — `SimulationActions` is `design/organisms/SimulationActions.tsx`, published from the
 barrel.** "Moves with the pages" put it in `components/`, and from there it kept drawing its
@@ -1150,7 +1252,7 @@ behaviour change plus a state machine.
 | 13 | `Preflight` | 2 | `DocumentPage` | `CostEstimate`, `PayloadBlock`, `Ledger`, `ConfirmButton` | `grid-cols-4`, `max-w-[420px]`, the third `CostEstimate` | **M** | This is the screen that saves the user money and it is a footnote link today — promote it. "Send them in" spends real money and gets a confirm <br> **AMENDED:** "promote it" means an entry point of its own, and every link added to it in the port was still a footnote inside somebody else's empty state. It is a row in the **simulation's own navigation group**, directly under "Results" — unconditional, because what an execution would cost is a fair question of a simulation that has run ten times as much as of one that has never run, and the page spends nothing to answer it. The links from `GetStarted` and from `NeedsExecution` stay; they are shortcuts now rather than the only way in |
 | 14 | `ProjectHome` | 3 | `DocumentPage` | `StatGroup`, `Section`, `Ledger`, `SimulationActions` | `grid-cols-3`, `max-w-[34ch] leading-[1.25]` | **M** | Embeds `GetStarted`. Copy must be **trimmed**, not shrunk, now that `t-read` is 15px <br> **AMENDED:** it rendered the legacy `components/SimulationActions` inside its own `data-design-system` subtree, where the shim is off, so `tone="go"` — `bg-accent text-white border-accent` — drew "Send them in" **white on lime at 1.22:1**. The organism is the fix (see §5's shared-components note); the marker stays where it is, since lifting it would un-port the rest of the screen |
 | 15 | `GetStarted` | 3 | `WizardPanel` | `RadioGroup` choice cards, `CostEstimate`, `Stepper` | two `ChoiceCard` sizes, the raw checkbox, `max-w-[560px]`/`[320px]` | **M** | Same wave as 14; same file tree. What it gets right and must survive: it is a card not a wizard, steps collapse to lines, it never says persona/cohort/population, nothing spends until the last step, the cost estimate names its own basis, and **the two mode cards are the best copy in the repo — keep them verbatim**. It has no `<h1>`; the template gives it an explicit `<h2>` |
-| 16 | `NewSimulation` | 3 | `DocumentPage` + `ActionBar` | `RadioGroup`, `CohortCapsule`, `CostEstimate`, `ActionBar` | two button-cards + two bare radios for the same concept in one file, `p-4 rounded-lg` vs `p-3.5 rounded-md` | **M** | One `ChoiceCard` at one size replaces four implementations. The `ActionBar` becomes sticky. **AMENDED — the template is `DocumentPage`, not `FormPage`.** `FormPage` mounts a `SaveBar` unconditionally, and given one this page said "Nothing changed yet" → "Unsaved changes" → "Save changes" about a simulation that does not exist yet. It composes `DocumentPage` + its own `<form>` (Enter still commits) + `ActionBar` instead. The verb is **Make it**, the one this screen has always used, and a held bar states its reason — no name, no population, no target — rather than going dead in silence |
+| 16 | `NewSimulation` | 3 | `DocumentPage` + `ActionBar` | `RadioGroup`, `CohortCapsule`, `CostEstimate`, `ActionBar` | two button-cards + two bare radios for the same concept in one file, `p-4 rounded-lg` vs `p-3.5 rounded-md` | **M** | One `ChoiceCard` at one size replaces four implementations. The `ActionBar` becomes sticky. **AMENDED — the template is `DocumentPage`, not `FormPage`.** `FormPage` mounts a `SaveBar` unconditionally, and given one this page said "Nothing changed yet" → "Unsaved changes" → "Save changes" about a simulation that does not exist yet. It composes `DocumentPage` + its own `<form>` (Enter still commits) + `ActionBar` instead. The verb is **Make it**, the one this screen has always used, and a held bar states its reason — no name, no population, no target — rather than going dead in silence. **AMENDED (2026-09-25, ADR-0043) — the screen is `StudyBuilder` on `BuilderPage`, which switches bars by `mode`.** The hand-made composition above was right and became the template: `BuilderPage` (§4 template 9) is `DocumentPage` + `FormBody` + an `ActionBar` for `new` or a `SaveBar` for `:study/edit` (two components, `CreateStudy` and `EditStudy`, chosen by `useParams().study`, since hooks cannot be conditional), so one file serves both and neither the "Nothing changed yet" defect nor its fix has to be remembered per screen. The verb stays the study's own — "Make this study" — and the size, the deal preview and the `POST /projects/:p/estimate` cost sit on the same page (§5 row 5) |
 | 17 | `Person` | 3 | `SplitPage` | `MemoryPanel`, `DataTable`, `RosterLattice` | `grid-cols-[minmax(0,22rem)]`, `text-[11px]`, `text-[12px]` | **M** | Two entry routes. `PersonInSimulation` throws a `Failed` card for a normal zero state (dead code) — make it a `StateBlock kind="empty"`. `PersonAcrossProject` does a serial N-run walk behind one loading line: give it a skeleton and a progressive list. `visits` is an **array** here and a count on the summary |
 | 18 | `People` | 3 | `SplitPage` | `CohortCapsule`, `RosterLattice`, `JobProgress`, `CostEstimate` | `grid-cols-[1fr_1fr] gap-6`, `sticky top-9`, `max-w-[320px]`, the fourth `CostEstimate` | **M** | Two `JobProgress` implementations (`string[]` here, `string \| null` in `Cohort`) unify <br> **AMENDED:** they did not — both screens kept a local `WritingProgress` and the two had already drifted on the meter's hide rule and on which job's label is spoken. The organism takes both shapes and both screens call it. **Also:** removing a cohort is destructive and went through a `Tooltip` and a quiet button, while the same act reached from `Personas` went through an `AlertDialog` naming the consequence. Destructiveness belongs to the act, not to the screen it is pressed on: both ends use the dialog, and this one says how many people leave the population and that executions already run keep naming them |
 | 19 | `SimulationResults` | 4 | `DocumentPage` + rail | `ClusterRow`, `StatGroup`, `IncidenceBars`, `Disclosure`, `SimulationActions` | `grid-cols-5 gap-6 mb-9 pb-8`, `max-w-[34ch]`, the client-side `headline()` | **H** | The direction's showcase. **Use `SimulationResultsView.headline` from the wire** — the screen recomputes it today while the field sits unused. A zero-findings execution gets the same 30px serif statement, not an empty state. Carries the screen's one marker band |

@@ -35,3 +35,44 @@ yet, are to replay each finding against a fresh identity, to narrow or drop the 
 so a finding without evidence is judged inconclusive rather than replayed on calls nobody chose, to
 snapshot and reset the target between replays where it exposes a way to, or to mark a verdict as
 contaminated when a prior replay in the same pass wrote. **Open for M3.**
+
+## Amendment (2026-09-30): replay is deliberately not part of the recurring loop
+
+ADR-0045 gave a longitudinal study a repeating report cycle: every so often it digests what has been
+reported since the last window and files or comments on it (ADR-0044). The obvious thing to put in
+that loop is a **functional** re-check — replay the recorded calls and see whether the problem is
+still there — and it is free of model spend, because `heuristicJudge` costs nothing. **It was
+considered and refused**, and this is the record of why, so the question is not re-opened without
+the prerequisite being dealt with first.
+
+Three reasons, all of them consequences of the amendment above rather than new findings:
+
+1. **Replay writes.** It re-issues stored arguments verbatim, and reproduction steps include
+   creates, edits and deletes. The amendment above lists this as unsettled and
+   `WEB-ARCHITECTURE.md` says it must be settled before R1. A *recurring* loop compounds it: the
+   target drifts further with every pass, so the thing being measured is changed by the act of
+   measuring it, on a schedule, for as long as the study runs. That is worse than a contaminated
+   verdict — it is a contaminated **product**, and the study's own findings after the first few
+   cycles would be about damage populace did.
+2. **It would replay calls nobody chose.** The `slice(-5)` fallback stands: a finding filed with no
+   `evidence_calls` gets the visit's last five tool calls, and `give_up` routinely names none. So a
+   recurring functional check on such a finding re-issues five arbitrary writes unrelated to the
+   problem, every cycle, for ever.
+3. **A verdict is sticky, so a re-check would mostly do nothing anyway.** `verifyPending` takes
+   `unverifiedOnly: true` and there is no API to clear a verdict, so a second pass over the same
+   finding is a no-op. That is convenient here rather than limiting — each cycle verifies only what
+   was filed since the last one, which is what keeps a recurring cycle cheap — but it means "re-check
+   it every hour" is not a thing the current code can do even if the first two reasons went away.
+
+**So the loop uses reach, not replay:** who hit the problem, who is still visiting, how many visits
+they have made since it was last reported, and who walked away over it and has therefore passed no
+judgement (ADR-0045 §6). That is evidence populace already has, it costs nothing, and it writes
+nothing to anybody's product.
+
+**The prerequisite, named so it is not guessed at later: narrow or drop the `slice(-5)` evidence
+fallback** in `packages/runner/src/wake.ts`, so a finding that named no evidence is judged
+inconclusive rather than replayed on calls nobody chose. That is the smallest change that makes
+replay safe enough to consider putting on a schedule, and it is the one of this record's four open
+options that has to come first — replaying against a fresh identity, resetting the target between
+replays and marking a verdict contaminated all still leave the arbitrary-writes case intact. Until
+it is done, a functional check belongs to a human pressing something, once, and not to a loop.

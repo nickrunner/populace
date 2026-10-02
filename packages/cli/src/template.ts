@@ -28,7 +28,7 @@ target:
   tools:
     allow: []                  # globs; empty means everything the target exposes
     deny: []                   # globs; always wins over allow
-    destructive: confirm       # allow | confirm | deny, for tools annotated destructiveHint
+    destructive: allow         # allow | confirm | deny, for tools annotated destructiveHint
 
 identity:
   strategy: self-signup        # self-signup | static | admin-mint
@@ -67,15 +67,18 @@ verifier:
 digestDir: digests
 
 # Who exists. A COHORT is people who share a condition (its context, which every one of them is
-# told) drawn from one persona or a MIX of them in a ratio; size is how many of them this
-# population sends, split across the mix. There is no scale factor.
+# told) drawn from one persona or a MIX of them in a ratio; its size is how many of them this
+# file's study sends, split across the mix. There is no scale factor. (In the dashboard the one
+# size is on the study and cohorts carry weights; importing this file turns each size into its
+# cohort's weight and adds them up for the study, so the same people go.)
 population:
   id: tasklet-trial
   name: Everyone
 
-# What to run. A simulation is the population against the target, in one of two modes:
+# What to run. A STUDY is the population against the target, in one of two modes:
 #   ephemeral    - clean slate every execution, bounded by visitsPerPerson, ends on its own
 #   longitudinal - memory, accounts and visits accumulate; paused and resumed rather than re-run
+# This block may also be spelled \`studies:\`; the CLI runs the first entry.
 simulations:
   - slug: trial
     name: Tasklet trial
@@ -84,6 +87,14 @@ simulations:
     cadence: { every: 2m, jitter: 30s }
     seed: populace
     autoSweep: true            # delete the accounts this execution created when it ends
+    # How often a run of this study stops to report: it looks at what it has found and writes to
+    # whatever issue tracker the project is connected to. It is what a longitudinal study compares
+    # itself against over time, and the one dial on how often populace writes into your repository.
+    # \`everyVisits\` closes a window early once that many visits have happened, whichever comes
+    # first; null leaves time as the only trigger. Keep the jitter non-zero — two runs started in
+    # the same minute would otherwise report in lockstep for ever.
+    reportCycle: { every: 1h, jitter: 5m, initialDelay: 0s, everyVisits: 25 }
+    # size: 3                  # how many people the dashboard sends once imported; left out, the cohorts' sizes add up to it
 
 cohorts:
   - slug: casual-listers
@@ -148,7 +159,5 @@ cohorts:
       budgetUsd: 20
       # This cohort pushes hardest on scale and paging, so it gets the stronger model.
       model: { model: claude-opus-5, effort: high }
-      tools:
-        destructive: confirm
 `;
 }

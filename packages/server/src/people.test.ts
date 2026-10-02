@@ -1,17 +1,19 @@
-import { JobViewSchema, PersonViewSchema, ProjectOverviewViewSchema, pageOf, routes, type PersonView } from "@populace/contract";
-import { PersonaSpecSchema, nameFrom, newCohortId, newPersonaId, type Cohort, type Store, type StoredPersona } from "@populace/core";
+import { JobViewSchema, PersonViewSchema, ProjectOverviewViewSchema, StudyPeopleViewSchema, routes, type PersonView } from "@populace/contract";
+import { PersonaSpecSchema, StoredTargetSchema, nameFrom, newCohortId, newPersonaId, newPopulationId, newTargetId, type Cohort, type Person, type Simulation, type Store, type StoredPersona } from "@populace/core";
 import { ScriptedProvider, call, type ScriptContext, type ScriptPolicy } from "@populace/runner/testing";
 import { SqliteStore } from "@populace/store-sqlite";
 import { describe, expect, it } from "vitest";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
-import { ensurePopulation, ensureProject, ensureSettings, setPopulationMember } from "./config-store.js";
+import { ensureProject, ensureSettings, ensureSimulation } from "./config-store.js";
 import { EventHub, RecordingStore } from "./events.js";
 import { JobRunner } from "./jobs.js";
 import { RunController } from "./runs.js";
 
 /**
- * Stage 6: who the people in a cohort are, and what it costs to find out.
+ * Stage 6: who the people in a cohort are, and what it costs to find out — read and written
+ * through the STUDY that sends them (ADR-0041), since which of a cohort's people are "in" is the
+ * study's size dealt, and a cohort has no people routes of its own.
  *
  * Every test here runs offline. Tier 1 — the seeded name bank — needs no key at all, and tier 2
  * is driven by `ScriptedProvider`, so "the model wrote this cohort" is exercised without a single
@@ -35,14 +37,17 @@ interface Harness {
   jobs: JobRunner;
   cohort: Cohort;
   persona: StoredPersona;
+  /** The study that sends the cohort; its size is the one headcount. */
+  study: Simulation;
   /** How many model calls the writer has made. */
   calls(): number;
   close(): Promise<void>;
 }
 
 /**
- * A project with one persona and one cohort, wired the way `serve` wires it, minus the target: no
- * run is ever started here, so nothing needs an MCP endpoint.
+ * A project with one persona, one cohort of it, one population holding that cohort and one study
+ * sending the population at `size`, wired the way `serve` wires it. The target is a row and nothing
+ * more: no run is ever started here, so nothing needs an MCP endpoint that answers.
  */
 async function harness(options: { size?: number; policy?: ScriptPolicy; provider?: boolean; onCall?: (turn: number, store: Store) => void } = {}): Promise<Harness> {
   const inner = new SqliteStore(":memory:");
@@ -70,8 +75,11 @@ async function harness(options: { size?: number; policy?: ScriptPolicy; provider
     updatedAt: at,
   };
   await store.saveCohort(cohort);
-  // A cohort has no size of its own: the population that sends it says how many (ADR-0039).
-  await setPopulationMember(store, await ensurePopulation(store), cohort.id, options.size ?? 5);
+  // A cohort has no size of its own, and neither has the population that holds it: the STUDY says
+  // how many (ADR-0041), and sizing it is what writes the people.
+  await store.saveTarget(StoredTargetSchema.parse({ id: newTargetId(), projectId: P, slug: "nowhere", name: "Nowhere", mcp: [{ url: "http://127.0.0.1:1/mcp" }], identity: { strategy: "none" }, firstContact: null, reset: { kind: "none" }, createdAt: at, updatedAt: at }));
+  await store.savePopulation({ id: newPopulationId(), projectId: P, slug: "everyone", name: "Everyone", members: [{ cohortId: cohort.id, weight: 1 }], createdAt: at, updatedAt: at });
+  const study = await ensureSimulation(store, P, { size: options.size ?? 5 });
 
   const provider = new ScriptedProvider(options.policy ?? roster((turn) => options.onCall?.(turn, store)));
   const jobs = new JobRunner(store);
@@ -94,7 +102,7 @@ async function harness(options: { size?: number; policy?: ScriptPolicy; provider
       sweep: () => Promise.resolve({ identities: 0, removed: 0, preExisting: 0, stranded: 0, failures: 0, lines: [] }),
     },
   });
-  return { app, store, jobs, cohort, persona, calls: () => provider.requests.length, close: () => inner.close() };
+  return { app, store, jobs, cohort, persona, study, calls: () => provider.requests.length, close: () => inner.close() };
 }
 
 /**
@@ -138,20 +146,26 @@ const json = async (res: Response): Promise<ResponseBody> => {
   return res.json();
 };
 
-/** Runs the generate job for a cohort and waits for the queue to settle. */
+/** Runs the generate job for the study's people and waits for the queue to settle. */
 async function generate(h: Harness, path: string, body: object = {}): Promise<Response> {
   const res = await post(h.app, path, body);
   await h.jobs.idle();
   return res;
 }
 
-const rosterOf = async (h: Harness): Promise<PersonView[]> =>
-  pageOf(PersonViewSchema).parse(await json(await h.app.request(routes.cohortPeople(P, h.cohort.id)))).items;
+/** The people the harness's study sends, in deal order, as its People page reads them. */
+const rosterOf = async (h: Harness): Promise<PersonView[]> => StudyPeopleViewSchema.parse(await json(await h.app.request(routes.studyPeople(P, h.study.id)))).items;
 
-describe("writing a cohort's people", () => {
+/** Every row of the harness's cohort, the people a shrink put aside included, in ordinal order. */
+const everyoneOf = async (h: Harness): Promise<Person[]> => (await h.store.listPeople({ cohortId: h.cohort.id, includeArchived: true })).sort((a, b) => a.ordinal - b.ordinal);
+
+/** The study at `size`: grown, or shrunk with the tail put aside. */
+const resize = (h: Harness, size: number): Promise<Simulation> => ensureSimulation(h.store, P, { size });
+
+describe("writing a study's people", () => {
   it("writes every slot once and then has nothing left to write", async () => {
     const h = await harness({ size: 5 });
-    await generate(h, routes.cohortPeople(P, h.cohort.id));
+    await generate(h, routes.studyPeople(P, h.study.id));
 
     const first = await rosterOf(h);
     expect(first).toHaveLength(5);
@@ -161,7 +175,7 @@ describe("writing a cohort's people", () => {
     expect(h.calls()).toBe(1);
 
     // The second run has no placeholder left to claim, so it spends nothing and changes nobody.
-    await generate(h, routes.cohortPeople(P, h.cohort.id));
+    await generate(h, routes.studyPeople(P, h.study.id));
     expect(h.calls()).toBe(1);
     expect(await rosterOf(h)).toEqual(first);
     await h.close();
@@ -179,7 +193,7 @@ describe("writing a cohort's people", () => {
     }
 
     const noKey = await harness({ size: 3, provider: false });
-    await generate(noKey, routes.cohortPeople(P, noKey.cohort.id));
+    await generate(noKey, routes.studyPeople(P, noKey.study.id));
     expect((await rosterOf(noKey)).every((person) => person.generatedBy === "seeded")).toBe(true);
     expect(await seeded(noKey)).toEqual(expected);
     await noKey.close();
@@ -190,7 +204,7 @@ describe("writing a cohort's people", () => {
         throw new Error("the model was unreachable");
       },
     });
-    await generate(broken, routes.cohortPeople(P, broken.cohort.id));
+    await generate(broken, routes.studyPeople(P, broken.study.id));
     const after = await rosterOf(broken);
     expect(after.every((person) => person.generatedBy === "seeded")).toBe(true);
     expect(after.map((person) => person.name)).toEqual(expected);
@@ -201,17 +215,21 @@ describe("writing a cohort's people", () => {
     await broken.close();
   });
 
-  it("gives the same five people back after a cohort shrinks and grows again", async () => {
+  it("gives the same five people back after a study shrinks and grows again", async () => {
     const h = await harness({ size: 5 });
-    await generate(h, routes.cohortPeople(P, h.cohort.id));
+    await generate(h, routes.studyPeople(P, h.study.id));
     const original = (await rosterOf(h)).map((person) => person.name);
     expect(original).toHaveLength(5);
 
-    await setPopulationMember(h.store, await ensurePopulation(h.store), h.cohort.id, 3);
+    // The study sends three now; the other two are aside, not away.
+    await resize(h, 3);
     const shrunk = await rosterOf(h);
-    expect(shrunk.filter((person) => !person.archived)).toHaveLength(3);
+    expect(shrunk).toHaveLength(3);
+    expect(shrunk.map((person) => person.name)).toEqual(original.slice(0, 3));
+    const aside = await everyoneOf(h);
+    expect(aside.filter((person) => person.archivedAt !== null).map((person) => person.name)).toEqual(original.slice(3));
 
-    await setPopulationMember(h.store, await ensurePopulation(h.store), h.cohort.id, 5);
+    await resize(h, 5);
     const grown = await rosterOf(h);
     expect(grown.map((person) => person.name)).toEqual(original);
     // Nobody was re-cast on the way back up: the two who came back are the two who left.
@@ -229,12 +247,12 @@ describe("writing a cohort's people", () => {
     const before = await rosterOf(h);
     const mine = before[1]!;
 
-    const renamed = PersonViewSchema.parse(await json(await patch(h.app, routes.cohortPerson(P, h.cohort.id, mine.id), { name: "Hand Typed" })));
+    const renamed = PersonViewSchema.parse(await json(await patch(h.app, routes.studyPerson(P, h.study.id, mine.id), { name: "Hand Typed" })));
     expect(renamed.name).toBe("Hand Typed");
     expect(renamed.generatedBy).toBe("authored");
     expect(renamed.handle).toBe(mine.handle);
 
-    await generate(h, routes.cohortPeople(P, h.cohort.id));
+    await generate(h, routes.studyPeople(P, h.study.id));
     const after = await rosterOf(h);
     expect(after[1]?.name).toBe("Hand Typed");
     expect(after[1]?.handle).toBe(mine.handle);
@@ -246,17 +264,17 @@ describe("writing a cohort's people", () => {
 
   it("re-casts the people it was asked for and leaves the other empty slots alone", async () => {
     const h = await harness({ size: 1 });
-    await generate(h, routes.cohortPeople(P, h.cohort.id));
+    await generate(h, routes.studyPeople(P, h.study.id));
     expect((await rosterOf(h)).map((person) => person.name)).toEqual(["Written Person 1"]);
 
     // Two more slots, still holding the seeded bank's names.
-    await setPopulationMember(h.store, await ensurePopulation(h.store), h.cohort.id, 3);
+    await resize(h, 3);
     const grown = await rosterOf(h);
     expect(grown.slice(1).map((person) => person.generatedBy)).toEqual(["seeded", "seeded"]);
 
     // "Re-cast this one person" is a price quoted for one person. Everything else is untouched —
     // including the placeholders, which a plain generate would have been the way to ask for.
-    await generate(h, routes.cohortPeopleRegenerate(P, h.cohort.id), { personIds: [grown[0]!.id], confirm: true });
+    await generate(h, routes.studyPeopleRegenerate(P, h.study.id), { personIds: [grown[0]!.id], confirm: true });
     const after = await rosterOf(h);
     expect(after[0]?.generatedBy).toBe("model");
     expect(after.slice(1).map((person) => person.generatedBy)).toEqual(["seeded", "seeded"]);
@@ -280,12 +298,12 @@ describe("writing a cohort's people", () => {
         return writes(ctx);
       },
     });
-    await generate(h, routes.cohortPeople(P, h.cohort.id));
+    await generate(h, routes.studyPeople(P, h.study.id));
     const written = await rosterOf(h);
     expect(written.map((person) => person.name)).toEqual(["Written Person 1", "Written Person 2"]);
 
     broken = true;
-    const queued = JobViewSchema.parse(await json(await post(h.app, routes.cohortPeopleRegenerate(P, h.cohort.id), { confirm: true })));
+    const queued = JobViewSchema.parse(await json(await post(h.app, routes.studyPeopleRegenerate(P, h.study.id), { confirm: true })));
     await h.jobs.idle();
     const job = JobViewSchema.parse(await json(await h.app.request(routes.job(queued.id))));
     // Not a quiet success: the cast the user asked to replace is gone, and nothing replaced it.
@@ -302,10 +320,10 @@ describe("writing a cohort's people", () => {
 
   it("refuses to re-cast people without being told that it changes who they are", async () => {
     const h = await harness({ size: 3 });
-    await generate(h, routes.cohortPeople(P, h.cohort.id));
+    await generate(h, routes.studyPeople(P, h.study.id));
     const before = await rosterOf(h);
 
-    const refused = await post(h.app, routes.cohortPeopleRegenerate(P, h.cohort.id), {});
+    const refused = await post(h.app, routes.studyPeopleRegenerate(P, h.study.id), {});
     expect(refused.status).toBe(400);
     expect(await refused.text()).toContain("confirm");
     await h.jobs.idle();
@@ -313,7 +331,7 @@ describe("writing a cohort's people", () => {
     expect(h.calls()).toBe(1);
 
     // With the acknowledgement, the same slots are written again — by the model, from scratch.
-    await generate(h, routes.cohortPeopleRegenerate(P, h.cohort.id), { confirm: true });
+    await generate(h, routes.studyPeopleRegenerate(P, h.study.id), { confirm: true });
     expect(h.calls()).toBe(2);
     expect((await rosterOf(h)).every((person) => person.generatedBy === "model")).toBe(true);
     await h.close();
@@ -335,7 +353,7 @@ describe("spending money outside a wake", () => {
     // Three batches of two, so there are two moments between batches at which to be stopped.
     await h.store.saveSettings({ ...settings!, guardrails: { ...settings!.guardrails, maxPeoplePerGenerate: 2 } });
 
-    const queued = JobViewSchema.parse(await json(await post(h.app, routes.cohortPeople(P, h.cohort.id))));
+    const queued = JobViewSchema.parse(await json(await post(h.app, routes.studyPeople(P, h.study.id))));
     await h.jobs.idle();
 
     const job = JobViewSchema.parse(await json(await h.app.request(routes.job(queued.id))));
@@ -352,7 +370,7 @@ describe("spending money outside a wake", () => {
 
   it("keeps authoring spend and visit spend apart under one project ceiling", async () => {
     const h = await harness({ size: 2 });
-    await generate(h, routes.cohortPeople(P, h.cohort.id));
+    await generate(h, routes.studyPeople(P, h.study.id));
     const since = new Date(Date.now() - 86_400_000);
     const authoring = await h.store.costSince({ projectId: P, kind: "authoring" }, since);
     expect(authoring).toBeGreaterThan(0);
@@ -397,7 +415,7 @@ describe("spending money outside a wake", () => {
       endedAt: null,
       totals: { agents: 0, activeAgents: 0, wakes: 0, findings: 0, confirmed: 0, costUsd: 0 },
     });
-    const refused = await post(h.app, routes.cohortPeople(P, h.cohort.id));
+    const refused = await post(h.app, routes.studyPeople(P, h.study.id));
     expect(refused.status).toBe(409);
     expect(await refused.text()).toContain("reading these people");
     expect(h.calls()).toBe(0);

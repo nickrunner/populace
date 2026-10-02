@@ -158,3 +158,20 @@ Three properties, decided deliberately:
 What this does not do: populace still cannot send anything the persona model cannot hold. A trait
 is a string, a number or a boolean, so an app needing a nested object or a list gets neither, and
 the answer for now is to flatten it into keys.
+
+## Amendment (2026-09-30): "holds no vendor credential at all" is no longer true of populace
+
+This record's decision says: *"The app makes its own people, behind an endpoint it owns. populace
+calls it with one shared secret and holds no vendor credential at all."*
+
+**The second half stopped being true on 2026-09-30.** Filing a study's problems as GitHub issues
+(ADR-0044) gave populace a fine-grained personal access token to github.com, scoped to
+`issues:write` on one repository, stored in its own `github_connections` table.
+
+Nothing about the provisioning wire changed, and the least-privilege argument above is intact: for
+the **target**, populace still holds a dev-scoped, revocable, single-purpose secret and no vendor
+service account, which is the whole reason `provision-url` is offered first. What changed is that
+populace grew an outbound job that has nothing to do with the target, and therefore a credential
+that points somewhere the population never goes. ADR-0036's amendment carries the three-way
+taxonomy and the rule, which is that this one never reaches `runWake` or `McpSession.connect` under
+any name, never enters a `ConfigSnapshot`, and never comes back down the wire.

@@ -183,7 +183,7 @@ function consent(authorizeUrl: string, target: GatedTarget): { code: string; sta
   return { code, state: params.get("state") ?? "" };
 }
 
-/** Nothing in this file runs a simulation; the seams that would need one refuse out loud. */
+/** Nothing in this file runs a study; the seams that would need one refuse out loud. */
 const notInThisTest = (): never => {
   throw new Error("no config in this test");
 };
@@ -226,11 +226,11 @@ async function harness(): Promise<Harness> {
 const P = "default";
 
 /**
- * A simulation pointed at the gated address, built the way `populace.yaml` builds one, so the
+ * A study pointed at the gated address, built the way `populace.yaml` builds one, so the
  * preflight route has something real to answer about. `identity: none` keeps it to the one thing
  * under test — nobody is provisioned, so the only credential in play is the operator's sign-in.
  */
-async function simulationAgainst(store: Store, mcpUrl: string): Promise<Simulation> {
+async function studyAgainst(store: Store, mcpUrl: string): Promise<Simulation> {
   await seedProjectFromConfig(
     store,
     PopulaceConfigSchema.parse({
@@ -244,9 +244,9 @@ async function simulationAgainst(store: Store, mcpUrl: string): Promise<Simulati
       },
     }),
   );
-  const simulation = (await store.listSimulations({}))[0];
-  if (!simulation) throw new Error("seeding produced no simulation");
-  return simulation;
+  const study = (await store.listSimulations({}))[0];
+  if (!study) throw new Error("seeding produced no study");
+  return study;
 }
 
 const post = async (app: Hono, path: string, body: object = {}): Promise<Response> =>
@@ -372,8 +372,8 @@ describe("signing in to an address that will not talk to strangers", () => {
   /**
    * A sign-in has to reach every screen that lists tools, not just the one that asked for it.
    *
-   * It did not. Signing in got a reader through the connect screen and then, on the simulation
-   * they set up with that target, `Missing bearer token` — because preflight connects through
+   * It did not. Signing in got a reader through the connect screen and then, on the study they
+   * set up with that target, `Missing bearer token` — because preflight connects through
    * `targetView`, which built its sessions with no provider. ADR-0036 names "the check and the
    * tool list behind it" as the things acting AS the user; there is more than one tool list.
    */
@@ -382,8 +382,8 @@ describe("signing in to an address that will not talk to strangers", () => {
     const back = consent((started as { authorizeUrl: string }).authorizeUrl, target);
     await h.app.request(`${routes.signInCallback}?code=${back.code}&state=${back.state}`);
 
-    const simulation = await simulationAgainst(h.store, target.mcpUrl);
-    const preflight = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    const study = await studyAgainst(h.store, target.mcpUrl);
+    const preflight = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, study.id))));
     // The tool list the people will be offered — the thing the screen could not get before.
     expect(preflight.target.tools).toEqual(["search_stays"]);
     // And no warning saying the target would not talk to us, which is what it used to print.

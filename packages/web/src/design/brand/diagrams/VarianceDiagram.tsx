@@ -26,12 +26,12 @@ import { DiagramKey } from "./DiagramKey.js";
 import { DiagramFigure, EXECUTIONS_ARE_INDEPENDENT, type DiagramSize } from "./Figure.js";
 
 /**
- * VarianceDiagram — one simulation, sent in twice, producing **overlapping but different**
+ * VarianceDiagram — one study, sent in twice, producing **overlapping but different**
  * results (DESIGN-SYSTEM §7.3; ADR-0030; ADR-0028 amendment).
  *
  * **This figure exists to make variance read as a designed property rather than as noise.**
  * There is no determinism subsystem in Populace and none is planned: the model is sampled, the
- * cadence jitters, the target's state moves, and two executions of one simulation *will* produce
+ * cadence jitters, the target's state moves, and two executions of one study *will* produce
  * different prose, different counts and different costs. A diagram that drew two identical
  * columns would be a lie the reader would not catch until their second execution. So the
  * difference is drawn as the subject of the picture, not as an error bar around it.
@@ -255,8 +255,8 @@ export const VarianceDiagram = forwardRef<HTMLElement, VarianceDiagramProps>(
         size={size}
         className={className}
         sample={problems === SAMPLE_PROBLEMS}
-        name="The same simulation, sent in twice"
-        lede={`Two executions of one simulation against one build, ${plural(cast, "person", "people")} each time. The cast is the same — a cohort's seed draws the same people — and what they do with your product is not.`}
+        name="The same study, sent in twice"
+        lede={`Two executions of one study against one build, ${plural(cast, "person", "people")} each time. The cast is the same — a cohort's seed draws the same people — and what they do with your product is not.`}
         trailing={`${plural(problems.length, "problem")}, ${both} reported in both`}
         caption={
           <>

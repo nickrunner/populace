@@ -8,7 +8,7 @@ import { Button, Heading, Inline, Spacer, Stack, Text } from "../atoms/index.js"
 /**
  * AlertDialog — ATOMIC-INVENTORY §3, organism 7. Radix `react-alert-dialog`. Four sites, all of
  * them destructive: remove a persona (which takes its cohorts with it), delete a project, delete
- * a simulation, re-cast a whole population.
+ * a study, re-cast a whole population.
  *
  * **The destructive grammar, stated once.** DESIGN-SYSTEM §1.2 makes `danger` deliberately *not*
  * a filled red button: "a destructive act goes through a `Dialog`, so the button itself only

@@ -50,8 +50,12 @@ export interface WhatWentWrongProps {
 
 export const WhatWentWrong = forwardRef<HTMLDivElement, WhatWentWrongProps>(
   function WhatWentWrong({ says, error, id, children }, ref) {
+    // Stretched, not `align="start"`. An `items-start` column sizes each child to its own
+    // content, so the payload well below grew to the width of the longest line it was given and
+    // painted out over whatever sat beside it; the `whitespace-pre-wrap` inside it can only wrap
+    // within a width something has set, and the default stretch is that width.
     return (
-      <Stack ref={ref} gap={2} align="start">
+      <Stack ref={ref} gap={2}>
         <FieldError id={id}>{says}</FieldError>
         <PayloadBlock caption="What came back" value={error.message} error />
         {children}

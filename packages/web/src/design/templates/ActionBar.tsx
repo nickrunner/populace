@@ -7,12 +7,13 @@ import { Button, Inline, Spacer, Text } from "../atoms/index.js";
  * ActionBar — the sticky foot of a page that makes something, beside `SaveBar`, which is the
  * sticky foot of a page that edits something.
  *
- * ATOMIC-INVENTORY §5 row 5 and §6.3 row 16 both ask for an `ActionBar` on `NewSimulation`, and
- * it was never built, so that screen was given `SaveBar` instead. The result is a page for
- * creating a simulation that opens saying *"Nothing changed yet"*, changes to *"Unsaved changes"*
- * as you fill it in, and offers a button labelled *"Save changes"* for an act that makes a
- * simulation that did not exist a moment ago. Every one of those words is about a record that is
- * already there.
+ * ATOMIC-INVENTORY §5 row 5 and §6.3 row 16 both ask for an `ActionBar` on the page that makes a
+ * new study, and it was never built, so that screen was given `SaveBar` instead. The result was a
+ * page for creating a study that opened saying *"Nothing changed yet"*, changed to *"Unsaved
+ * changes"* as you filled it in, and offered a button labelled *"Save changes"* for an act that
+ * makes a study that did not exist a moment ago. Every one of those words is about a record that
+ * is already there. `BuilderPage` (template 9) now makes the choice between the two bars by
+ * `mode`, so no builder has to remember it.
  *
  * **The difference is not cosmetic.** A save is idempotent, repeatable and about a thing the
  * reader already owns; dirtiness is the right thing to report and "discard" is a real escape. A
@@ -20,7 +21,7 @@ import { Button, Inline, Spacer, Text } from "../atoms/index.js";
  * *whether anything is stopping it* — which is why this bar's status line is either the reason it
  * cannot happen yet or a note about what happens next, and never a dirtiness flag.
  *
- * **The button names the act, in the product's own words** (§7.4) — "Create this simulation",
+ * **The button names the act, in the product's own words** (§7.4) — "Make this study",
  * "Send them in", "Write them all". Never "Submit", never "Save changes", never "Execute". That
  * is the `label` prop and it is required: there is no default verb, because a default verb is how
  * a page ends up saying "Save changes" about a thing it is creating.
@@ -40,7 +41,7 @@ import { Button, Inline, Spacer, Text } from "../atoms/index.js";
  */
 
 export interface ActionBarProps {
-  /** The act, in the product's own words — "Create this simulation". Never "Save changes". */
+  /** The act, in the product's own words — "Make this study". Never "Save changes". */
   label: string;
   onAct: () => void;
   /** The act is in flight. The button keeps its width and shows the `Spinner` in its place. */

@@ -190,7 +190,7 @@ export function HowItWorks() {
           <Stack gap={6} align="start">
             <Measure as="p" width="lede">
               <Text size="lede" tone="soft" as="span">
-                The dashboard prices a simulation before it spends anything. A live run needs an
+                The dashboard prices a study before it spends anything. A live run needs an
                 Anthropic API key.
               </Text>
             </Measure>

@@ -120,7 +120,10 @@ export const PayloadBlock = forwardRef<HTMLElement, PayloadBlockProps>(function 
   );
 
   return (
-    <figure ref={ref} className="group m-0 flex flex-col gap-1.5">
+    // `min-w-0 max-w-full` is not decoration: a flex or grid child's floor is its content, so a
+    // well holding one long unbroken line would otherwise widen past whatever contains it and
+    // the wrapping below would never engage. It costs nothing where the parent already fits.
+    <figure ref={ref} className="group m-0 flex min-w-0 max-w-full flex-col gap-1.5">
       <Inline gap={2} align="baseline">
         <Text as="figcaption" size="label" tone="muted">
           {caption}

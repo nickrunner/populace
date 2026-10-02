@@ -25,10 +25,12 @@ import { DiagramFigure, type DiagramDetail, type DiagramSize } from "./Figure.js
  * that (§1.2 M4). A reader looking at a 200-person population sees exactly what the product
  * would show them.
  *
- * **What it is careful not to claim.** Composition is fixed by the cohorts — the same cohorts
- * make the same number of people, in the same order, which is what `expandPopulation` is for.
- * What those people then *do* varies between executions by design (ADR-0028/0030), and the
- * caption says so rather than letting a tidy diagram imply otherwise.
+ * **What it is careful not to claim.** Composition is fixed by the weights and the study's size
+ * — the same population at the same size deals the same number of people to each cohort, in the
+ * same order, which is what the deal (`dealStudy`, ADR-0041) is for. The counts drawn here are a
+ * study's, because nothing but a study has a headcount: a cohort and a population are ratios
+ * until a size is given. What those people then *do* varies between executions by design
+ * (ADR-0028/0030), and the caption says so rather than letting a tidy diagram imply otherwise.
  *
  * Phone width is the components' own: the capsules are `w-fit max-w-full` and stack in a column
  * whose lengths stay comparable, the cohort name truncates before the bar does, and the lattice
@@ -39,11 +41,15 @@ import { DiagramFigure, type DiagramDetail, type DiagramSize } from "./Figure.js
  * frame — `DiagramFigure` — rather than in a `<figure>` of its own.
  */
 
-/** One cohort, as this figure needs it: a name a person typed, and a headcount. */
+/**
+ * One cohort, as this figure needs it: a name a person typed, and how many people a study deals
+ * to it. The count is the study's — a cohort has no headcount of its own (ADR-0041) — so a
+ * figure about a real population is drawn at a real study's size, or at a size the page names.
+ */
 export interface CompositionCohort {
   /** The cohort's name. Never its slug (§7.4). */
   name: string;
-  /** The headcount. The capsule's length IS this number. */
+  /** How many people the study sends from this cohort. The capsule's length IS this number. */
   size: number;
   /** A route to the cohort, where the figure is a way in. */
   to?: string;
@@ -118,7 +124,7 @@ export interface CompositionDiagramProps {
  * that wants to say more says it in its own prose beside the figure.
  */
 const DEFAULT_CAPTION =
-  "The same people appear in all three readings. Composition is fixed by the cohorts; what those people do on a visit varies between executions by design.";
+  "The same people appear in all three readings. Composition is fixed by the weights and the study's size; what those people do on a visit varies between executions by design.";
 
 export const CompositionDiagram = forwardRef<HTMLElement, CompositionDiagramProps>(
   function CompositionDiagram(
@@ -167,7 +173,7 @@ export const CompositionDiagram = forwardRef<HTMLElement, CompositionDiagramProp
             </Band>
           ) : null}
 
-          <Band label={`A cohort is people on one persona — ${plural(cohorts.length, "cohort")} here`}>
+          <Band label={`A cohort is people who share something — ${plural(cohorts.length, "cohort")} here`}>
             <Stack gap={2} align="start">
               {cohorts.map((cohort, c) => (
                 <CohortCapsule
@@ -181,8 +187,9 @@ export const CompositionDiagram = forwardRef<HTMLElement, CompositionDiagramProp
             {detail === "full" ? (
               <Measure width="read">
                 <Text as="p" size="read-sm" tone="soft">
-                  The stadium is the cohort and its length is the headcount — a bar made, visibly,
-                  of the individuals inside it.
+                  The stadium is the cohort and its length is how many of them the study sends —
+                  a bar made, visibly, of the individuals inside it. The cohort itself is a ratio;
+                  the study gives it a size.
                 </Text>
               </Measure>
             ) : null}

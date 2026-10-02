@@ -23,7 +23,7 @@ import { FieldWarning } from "../molecules/index.js";
  *
  * **It knows nothing about routes.** The caller passes `to` — already composed from its own `a`
  * and `b` — because where a comparison lives is the app's business and a design organism that
- * built the path would have to know which simulation it was inside.
+ * built the path would have to know which study it was inside.
  *
  * Nothing here says the two executions ought to agree. They are independent by design (§7.3): the
  * screens either side of this control carry that sentence, and this control does not contradict

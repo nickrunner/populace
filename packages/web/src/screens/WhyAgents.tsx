@@ -78,7 +78,7 @@ const THESIS =
 const LIMITS: readonly { name: string; body: string }[] = [
   {
     name: "Outcomes vary, by design",
-    body: "Two executions of one simulation produce different prose, different counts and different costs. Read the overlap between them, not the difference.",
+    body: "Two executions of one study produce different prose, different counts and different costs. Read the overlap between them, not the difference.",
   },
   {
     name: "An absence is not a repair",

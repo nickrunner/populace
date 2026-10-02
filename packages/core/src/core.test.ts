@@ -1,14 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MODEL,
   FindingSchema,
   PopulaceConfigSchema,
+  PopulationMemberRefSchema,
   PopulationSchema,
+  SimulationContextSchema,
+  StoredPopulationSchema,
+  ToolPolicySchema,
+  VerifierConfigSchema,
   agentIdFor,
   apportion,
   applyMemoryOperation,
   blockedBecause,
   cohortSlugOfAgentId,
   costOf,
+  dealStudy,
   effectiveToolPolicy,
   emptyMemory,
   expandPopulation,
@@ -57,6 +64,24 @@ describe("tool policy", () => {
     expect(isToolAllowed("delete_project", [], ["delete_*"])).toBe(false);
     expect(isToolAllowed("create_task", ["list_*"], [])).toBe(false);
     expect(isToolAllowed("list_tasks", ["list_*"], ["list_tasks"])).toBe(false);
+  });
+});
+
+describe("what a policy nobody wrote does", () => {
+  it("lets a destructive tool through, because the environment is assumed disposable", () => {
+    // The default is the whole of ADR-0013's amendment: `confirm` bought its safety by putting a
+    // tool error in front of the model that no real user would ever meet. Every schema that holds
+    // a policy prefaults an empty object, so this one line is what a target, a cohort and a
+    // persona all get when nobody says.
+    expect(ToolPolicySchema.parse({}).destructive).toBe("allow");
+    expect(effectiveToolPolicy(ToolPolicySchema.parse({}), ToolPolicySchema.parse({})).destructive).toBe("allow");
+  });
+
+  it("still cannot be loosened by a persona, which is what keeps the default safe to change", () => {
+    // The flip moved the floor, not the one-way merge (ADR-0033). An operator who says `deny` on
+    // a target that is NOT disposable gets `deny`, whatever the people sent at it leave unset.
+    const strictTarget = ToolPolicySchema.parse({ destructive: "deny" });
+    expect(effectiveToolPolicy(strictTarget, ToolPolicySchema.parse({})).destructive).toBe("deny");
   });
 });
 
@@ -267,6 +292,149 @@ describe("apportionment", () => {
       previous = next;
     }
   });
+
+  /**
+   * A broken weight used to hand the whole size to index 0: `NaN / 1` is `NaN`, `NaN > -1` is
+   * false, `best` stayed at nought and every seat went there. Nobody is dealt on the strength of a
+   * number that is not one.
+   */
+  it("deals nobody when no weight is a positive finite number, and ignores the ones that are not", () => {
+    expect(apportion(10, [0, 0])).toEqual([0, 0]);
+    expect(apportion(10, [-1, Number.NaN])).toEqual([0, 0]);
+    expect(apportion(10, [Number.POSITIVE_INFINITY])).toEqual([0]);
+    // A single bad entry among good ones simply gets nothing; the rest is dealt as before.
+    expect(apportion(10, [Number.NaN, 3, 2])).toEqual([0, 6, 4]);
+    expect(apportion(10, [0, 1, 1])).toEqual([0, 5, 5]);
+    // A size that is not a whole number of people is floored; below nought is nought.
+    expect(apportion(2.9, [1])).toEqual([2]);
+    expect(apportion(-3, [1, 1])).toEqual([0, 0]);
+    expect(apportion(Number.NaN, [1, 1])).toEqual([0, 0]);
+  });
+});
+
+/**
+ * The two-level deal (ADR-0041): a study's size across the population's cohorts by their weights,
+ * then each cohort's count across its mix. Three cohorts and six lanes, with weights chosen so that
+ * ties and light entries both happen at small sizes.
+ */
+describe("dealing a study", () => {
+  const members = [
+    { cohortId: "mobile", weight: 3 },
+    { cohortId: "desktop", weight: 2 },
+    { cohortId: "pilot", weight: 1 },
+  ];
+  const mixes = [
+    { cohortId: "mobile", entries: [{ personaId: "casual", weight: 2 }, { personaId: "power", weight: 1 }] },
+    { cohortId: "desktop", entries: [{ personaId: "casual", weight: 1 }, { personaId: "sceptic", weight: 1 }] },
+    { cohortId: "pilot", entries: [{ personaId: "power", weight: 1 }, { personaId: "admin", weight: 1 }] },
+  ];
+  const laneCounts = (size: number): number[] => dealStudy(size, members, mixes).cohorts.flatMap((c) => c.lanes.map((l) => l.count));
+
+  it("gives each cohort exactly what apportion gives it, and every lane the cohort's deal of that", () => {
+    for (let size = 0; size <= 300; size++) {
+      const dealt = dealStudy(size, members, mixes);
+      const cohortCounts = apportion(
+        size,
+        members.map((m) => m.weight),
+      );
+      expect(dealt.cohorts.map((c) => c.count)).toEqual(cohortCounts);
+      dealt.cohorts.forEach((cohort, i) => {
+        const mix = mixes[i]!;
+        expect(cohort.cohortId).toBe(members[i]!.cohortId);
+        expect(cohort.lanes.map((l) => l.personaId)).toEqual(mix.entries.map((e) => e.personaId));
+        expect(cohort.lanes.map((l) => l.count)).toEqual(
+          apportion(
+            cohort.count,
+            mix.entries.map((e) => e.weight),
+          ),
+        );
+        for (const lane of cohort.lanes) expect(lane.cohortId).toBe(cohort.cohortId);
+      });
+      // Every cohort here has a mix, so what is sent is what was dealt.
+      expect(dealt.sends).toBe(size);
+      expect(laneCounts(size).length).toBe(6);
+    }
+  });
+
+  /**
+   * The property that keeps ADR-0031 true when a study is scaled: both levels are house-monotone
+   * and so is their composition, so raising the size by one adds a person somewhere and archives
+   * nobody. Checked rather than trusted, because the two levels interact — a cohort's count moving
+   * up by one changes which of ITS lanes wins the next seat, and that must never take one back.
+   */
+  it("never shrinks a lane when the study grows", () => {
+    let previous = laneCounts(0);
+    for (let size = 1; size <= 300; size++) {
+      const next = laneCounts(size);
+      next.forEach((n, i) => expect(n).toBeGreaterThanOrEqual(previous[i] ?? 0));
+      previous = next;
+    }
+  });
+
+  it("deals nobody when every weight is nought, and nothing when there are no members", () => {
+    const zeros = dealStudy(
+      25,
+      members.map((m) => ({ ...m, weight: 0 })),
+      mixes,
+    );
+    expect(zeros.cohorts.map((c) => c.count)).toEqual([0, 0, 0]);
+    expect(zeros.sends).toBe(0);
+    for (const cohort of zeros.cohorts) for (const lane of cohort.lanes) expect(lane.count).toBe(0);
+    expect(dealStudy(25, [], mixes)).toEqual({ cohorts: [], sends: 0 });
+  });
+
+  it("gives a member whose mix is missing or empty its count and no lanes, and leaves it out of what is sent", () => {
+    const partial = dealStudy(12, members, [mixes[0]!, { cohortId: "pilot", entries: [] }]);
+    expect(partial.cohorts.map((c) => c.count)).toEqual([6, 4, 2]);
+    // "mobile" has a mix; "desktop" has none at all; "pilot" has an empty one.
+    expect(partial.cohorts[0]!.lanes.map((l) => l.count)).toEqual([4, 2]);
+    expect(partial.cohorts[1]!.lanes).toEqual([]);
+    expect(partial.cohorts[2]!.lanes).toEqual([]);
+    expect(partial.sends).toBe(6);
+  });
+
+  /** A stated rule the builders preview: the earlier member wins a tie, then the earlier entry. */
+  it("breaks ties in favour of the earlier member, then the earlier mix entry", () => {
+    const even = [
+      { cohortId: "a", weight: 1 },
+      { cohortId: "b", weight: 1 },
+    ];
+    const evenMixes = [
+      { cohortId: "a", entries: [{ personaId: "x", weight: 1 }, { personaId: "y", weight: 1 }] },
+      { cohortId: "b", entries: [{ personaId: "x", weight: 1 }, { personaId: "y", weight: 1 }] },
+    ];
+    const one = dealStudy(1, even, evenMixes);
+    expect(one.cohorts.map((c) => c.count)).toEqual([1, 0]);
+    expect(one.cohorts[0]!.lanes.map((l) => l.count)).toEqual([1, 0]);
+    const three = dealStudy(3, even, evenMixes);
+    expect(three.cohorts.map((c) => c.count)).toEqual([2, 1]);
+    expect(three.cohorts[0]!.lanes.map((l) => l.count)).toEqual([1, 1]);
+    expect(three.cohorts[1]!.lanes.map((l) => l.count)).toEqual([1, 0]);
+    // Swapping the order swaps the winner: order is the rule, not the id.
+    expect(dealStudy(1, [even[1]!, even[0]!], evenMixes).cohorts.map((c) => `${c.cohortId}${c.count}`)).toEqual(["b1", "a0"]);
+  });
+});
+
+describe("authored population members", () => {
+  /**
+   * A blob written before ADR-0041 says `size` where the schema now says `weight`. Sainte-Laguë
+   * returns a target vector exactly when the weights are proportional to it and sum to the size, so
+   * reading the sizes as weights deals an upgraded study the same people it had.
+   */
+  it("reads a legacy member's size as its weight, and leaves a weight alone", () => {
+    expect(PopulationMemberRefSchema.parse({ cohortId: "c", size: 3 })).toEqual({ cohortId: "c", weight: 3 });
+    expect(PopulationMemberRefSchema.parse({ cohortId: "c" })).toEqual({ cohortId: "c", weight: 1 });
+    expect(PopulationMemberRefSchema.parse({ cohortId: "c", weight: 2, size: 9 })).toEqual({ cohortId: "c", weight: 2 });
+    const now = new Date().toISOString();
+    const population = StoredPopulationSchema.parse({ id: "p", projectId: "x", slug: "p", members: [{ cohortId: "a", size: 7 }, { cohortId: "b", size: 3 }], createdAt: now, updatedAt: now });
+    expect(population.members).toEqual([
+      { cohortId: "a", weight: 7 },
+      { cohortId: "b", weight: 3 },
+    ]);
+    expect(dealStudy(10, population.members, []).cohorts.map((c) => c.count)).toEqual([7, 3]);
+    // The duplicate-cohort rule still runs on the preprocessed shape.
+    expect(StoredPopulationSchema.safeParse({ id: "p", projectId: "x", slug: "p", members: [{ cohortId: "a", size: 1 }, { cohortId: "a" }], createdAt: now, updatedAt: now }).success).toBe(false);
+  });
 });
 
 describe("names", () => {
@@ -349,6 +517,18 @@ describe("pricing", () => {
     expect(usd).toBe(5);
     expect(priceFor("mystery-model")).toEqual(price);
   });
+
+  it("prices every model it defaults to, and bills an unknown one conservatively", () => {
+    // A current model with no row is not free: it is billed at the Opus rate the unknown-model
+    // fallback picks, so it reads several times high and spends somebody's ceiling early. The
+    // default model is the one that bites, so assert it is priced as itself rather than as Opus.
+    expect(priceFor(DEFAULT_MODEL)).toEqual({ input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 });
+    expect(priceFor(DEFAULT_MODEL)).not.toEqual(priceFor("mystery-model"));
+
+    // The judge is pinned rather than inherited, so it needs its own row for the same reason.
+    expect(VerifierConfigSchema.parse({}).model.model).toBe("claude-opus-5-5");
+    expect(priceFor("claude-opus-5-5")).not.toEqual(priceFor("mystery-model"));
+  });
 });
 
 describe("config", () => {
@@ -360,10 +540,18 @@ describe("config", () => {
     });
     expect(config.version).toBe(2);
     expect(config.simulation.mode).toBe("longitudinal");
+    // A config built by hand from lane counts has no study size and nothing extra to tell people.
+    expect(config.simulation.size).toBe(0);
+    expect(config.simulation.brief).toBe("");
+    expect(SimulationContextSchema.parse({ size: 12, brief: "Try the mobile flow." })).toMatchObject({ size: 12, brief: "Try the mobile flow." });
     expect(config.population.members[0]!.cohort).toBe("x");
-    expect(config.model.model).toBe("claude-opus-5");
-    expect(config.model.effort).toBe("high");
+    // A Sonnet at `low`, not an Opus at `high`: every person a study sends pays for this on every
+    // visit, so the considered-and-expensive agent is the one a cohort opts into.
+    expect(config.model.model).toBe("claude-sonnet-5-5");
+    expect(config.model.effort).toBe("low");
     expect(config.model.fallbacks).toBe(true);
+    // Likewise the judge: free unless a digest somebody is waiting on asks for better.
+    expect(config.verifier.judge).toBe("heuristic");
     expect(config.guardrails.perWake.maxUsd).toBe(3);
     expect(config.store.kind).toBe("sqlite");
     expect(config.population.cadence.every).toBe(600_000);

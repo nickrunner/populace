@@ -21,11 +21,12 @@ export type CohortMixEntry = z.infer<typeof CohortMixEntrySchema>;
  * people are a ratio of personas, so one cohort can stand for a realistic slice of a user base
  * rather than for one kind of person counted N times.
  *
- * A cohort has NO headcount. The population that sends it says how many (`members[].size`), and
- * that number is apportioned across the mix per lane — one (cohort, persona) pair — so the same
- * cohort at two sizes in two populations is the same people up to the smaller size. That is why
- * the cohort, not the population and not the simulation, owns the seed and the `people` rows:
- * "did the mobile cohort hit this in the other simulation too?" is a question with an answer.
+ * A cohort has NO headcount, and neither has the population that holds it: a population gives the
+ * cohort a WEIGHT (`members[].weight`), a study gives the population a size, and the deal turns the
+ * two into a count per lane — one (cohort, persona) pair — by the mix weights (ADR-0041). The same
+ * cohort at two sizes in two studies is the same people up to the smaller size. That is why the
+ * cohort, not the population and not the study, owns the seed and the `people` rows: "did the
+ * mobile cohort hit this in the other study too?" is a question with an answer.
  */
 export const CohortSchema = z
   .object({

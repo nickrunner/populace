@@ -5,6 +5,7 @@ import {
   JsonValueSchema,
   MemorySchema,
   SeveritySchema,
+  SimulationModeSchema,
   ToolCallRecordSchema,
   TraceEventSchema,
   VerdictSchema,
@@ -33,6 +34,15 @@ import { z } from "zod";
 export const RunStatusSchema = z.enum(["pending", "running", "paused", "completed", "killed", "failed"]);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
+/**
+ * The wire speaks the user's words and the rows do not change (ADR-0032): a `Simulation` row is a
+ * STUDY on the wire, in the URL bar and on every screen (ADR-0042). This is the one place the
+ * contract touches the row's name — the mode enum is the same two words on both sides, so it is
+ * aliased rather than restated, and every other study shape below is written in the wire's words.
+ */
+export const StudyModeSchema = SimulationModeSchema;
+export type StudyMode = z.infer<typeof StudyModeSchema>;
+
 export const RunTotalsSchema = z.object({
   agents: z.number().int().nonnegative(),
   activeAgents: z.number().int().nonnegative(),
@@ -47,13 +57,13 @@ export const RunSummarySchema = z.object({
   id: z.string(),
   label: z.string(),
   /**
-   * Which simulation this is an execution of, and which project owns it (SPEC §6.1: "a run id is
-   * globally unique and the row carries its project and its simulation"). The browser needs them
-   * to turn a bookmarked `/runs/:id` into the simulation page that replaced it, without walking
-   * every project. Empty on a derived row that predates runs having a row of their own.
+   * Which study this is an execution of, and which project owns it (SPEC §6.1: "a run id is
+   * globally unique and the row carries its project and its study"). The browser needs them to
+   * turn a bookmarked `/runs/:id` into the study page that replaced it, without walking every
+   * project. Empty on a derived row that predates runs having a row of their own.
    */
   projectId: z.string(),
-  simulationId: z.string(),
+  studyId: z.string(),
   populationId: z.string(),
   /**
    * Derived in M1 and therefore coarse: `running` while any agent is still active, `completed`

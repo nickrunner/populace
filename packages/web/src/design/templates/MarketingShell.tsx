@@ -68,8 +68,8 @@ import { RouteAnnouncer } from "./RouteAnnouncer.js";
  * template is mounted by the five public screens and by nothing under `/app` (§4's template table
  * names its screens, and `AppShell` is the product's frame), so the word reaches no product UI
  * from here. **If this shell is ever rendered inside the product, that label goes first** — in
- * product copy the words are project, simulation, population, cohort, person, visit, execution
- * and finding, and there is no exception.
+ * product copy the words are project, study, population, cohort, person, visit, execution and
+ * finding, and there is no exception.
  *
  * **`radius-lg` is legal here and nowhere else** (§5.2, §1.3 rule 8), and the shell *owns* it
  * rather than merely permitting it: `LANDING_PANEL` below is the one spelling of the 20px corner

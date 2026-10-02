@@ -12,9 +12,23 @@ export const ClusterCohortSchema = z.object({
 export type ClusterCohort = z.infer<typeof ClusterCohortSchema>;
 
 export const ClusterSchema = z.object({
-  /** Positional, for in-page anchors. The join key across executions is `signature`. */
+  /** Positional, for in-page anchors. Renumbered by every clustering pass; never an identity. */
   id: z.string(),
-  /** The representative's `signature`; stable across executions. */
+  /**
+   * The representative's `signature` — a display key and an in-page anchor, and NOT an identity.
+   *
+   * It MOVES, and it moves for a reason worth knowing before keying anything off it:
+   * `pickRepresentative` (`packages/reports/src/cluster.ts:25-31`) sorts on verdict score FIRST,
+   * and verdicts are written by the digest AFTER the run. So the same cluster over the same
+   * findings presents under a DIFFERENT signature once a verdict lands — inside one execution,
+   * before anybody has reworded a title. Across executions it is worse: an identical signature
+   * recurs at 0% (ADR-0028's amendment measures it).
+   *
+   * Anything durable that keys off this field therefore records the same problem twice. What is
+   * stable is the individual finding's own `signature`, computed once at file time and never
+   * recomputed, which is why the identity of a problem over time is the member signature SET:
+   * `FiledIssueSchema.signatures` in `./github.js`, matched by intersection and grown on a match.
+   */
   signature: z.string().min(1),
   kind: FindingKindSchema,
   title: z.string(),

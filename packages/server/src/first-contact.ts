@@ -74,7 +74,11 @@ function probeAgent(at: Date): Agent {
     cohortSlug: "probe",
     personId: "probe.probe#1",
     context: "",
-    cohortTools: { allow: [], deny: [], destructive: "confirm" },
+    // `deny` where everything else now defaults to `allow` (ADR-0013 amendment): a check acts on
+    // the OPERATOR's behalf against an address nobody has run a study against yet, so it is the
+    // one caller that must not destroy anything. `readOnlyCandidate` already picks a read-only
+    // tool; this is the floor under that, not a second opinion about it.
+    cohortTools: { allow: [], deny: [], destructive: "deny" },
     name: "First contact",
     details: "",
     // Unique per check, so a target that refuses a duplicate email does not report the SECOND
@@ -365,7 +369,7 @@ export async function firstContact(target: StoredTarget, options: FirstContactOp
           outcome: "accepted",
           checkedAt,
           strategy,
-          summary: `Nobody needs an account here, and \`${tried}\` answered. Everyone a simulation sends will visit exactly as this did.`,
+          summary: `Nobody needs an account here, and \`${tried}\` answered. Everyone a study sends will visit exactly as this did.`,
           detail: null,
           handle: null,
           tool: tried,

@@ -124,33 +124,11 @@ export function personIdOfAgentId(agentId: string): string {
 }
 
 /**
- * How many of `size` people each entry of a mix gets — Sainte-Laguë highest averages.
- *
- * The property that matters is that it is HOUSE-MONOTONE: growing the cohort never shrinks a
- * lane, so raising a population from 10 to 11 people adds one person somewhere and archives
- * nobody. Largest-remainder rounding does not have that property (the Alabama paradox), and a
- * cohort that archived somebody because it grew would break ADR-0031 for no reason anybody could
- * see. Ties go to the earlier entry, so the result is a pure function of `(size, weights)`.
- *
- * At small sizes a light entry gets nobody; that is the honest answer and the editor says so.
+ * `apportion` lives in `apportion.ts` now, with `dealStudy` beside it, because the builders preview
+ * the deal in the browser and this file cannot cross that line (it imports `node:crypto`). It is
+ * re-exported here so every existing import keeps working.
  */
-export function apportion(size: number, weights: readonly number[]): number[] {
-  const seats = weights.map(() => 0);
-  if (weights.length === 0) return seats;
-  for (let seat = 0; seat < size; seat++) {
-    let best = 0;
-    let bestScore = -1;
-    for (let i = 0; i < weights.length; i++) {
-      const score = (weights[i] ?? 0) / (2 * (seats[i] ?? 0) + 1);
-      if (score > bestScore) {
-        bestScore = score;
-        best = i;
-      }
-    }
-    seats[best] = (seats[best] ?? 0) + 1;
-  }
-  return seats;
-}
+export { apportion } from "./apportion.js";
 
 function definedOnly(override: ModelOverride): ModelOverride {
   return {

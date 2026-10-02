@@ -28,20 +28,24 @@ where its config came from, it is in the wrong layer.
 
 ## 2. Packages
 
-Two new packages, and the dependency direction stays strictly downward.
+Two new packages at M2 — `contract` and `server` — and a third leaf since, `fix-prompt` (ADR-0044).
+The dependency direction stays strictly downward.
 
 ```
 cli ────────► server ──► reports / runner / adapters / store-sqlite ──► core
-                │                                                        ▲
-                └──► contract ◄──────────── web ─────────────────────────┘
+                │  │                                                     ▲
+                │  └──► fix-prompt ──┐                                   │
+                │                    ▼                                   │
+                └──► contract ◄──────┴───── web ─────────────────────────┘
                                                               (types only)
 ```
 
 | Package | What it is | Depends on |
 | --- | --- | --- |
 | `@populace/contract` | The HTTP wire format: a zod schema per request and response, the route table, and the SSE event union. No I/O, no Node built-ins — it is imported by both sides. | `core` |
-| `@populace/server` | The HTTP API, the job runner, the SSE hub, and static hosting of the built dashboard. Owns the store process-wide. | `contract`, `core`, `runner`, `reports`, `store-sqlite`, `adapters` |
-| `@populace/web` | The dashboard: a React SPA built by Vite. Ships as static assets inside `server`'s package at build time. | `contract`, `core` (types) |
+| `@populace/server` | The HTTP API, the job runner, the SSE hub, and static hosting of the built dashboard. Owns the store process-wide. | `contract`, `core`, `runner`, `reports`, `store-sqlite`, `adapters`, `fix-prompt` |
+| `@populace/fix-prompt` | One problem written out for a reader with no populace access: the reproduction, the reach, the intent, the verdict, with credentials redacted and long evidence clipped. Also `fitIssueBody` (a GitHub body is capped at 65,536 characters) and `issueTitleOf`, which redacts too. No I/O and no zod — every contract import is `import type`, so the emitted JS has no imports at all. | `contract` (types only) |
+| `@populace/web` | The dashboard: a React SPA built by Vite. Ships as static assets inside `server`'s package at build time. | `contract`, `core` (types), `fix-prompt` |
 
 `cli` gains one command, `populace serve`, which starts `server`. It keeps every command it has
 today.
@@ -60,7 +64,9 @@ keeping the browser build clean. It is also the artifact an M4 CI client or an M
 schemas at runtime, in a browser. The fix is small and is M1 work: `randomBytes` becomes
 `globalThis.crypto.getRandomValues` (present in Node 22 and every target browser) and the seeded
 sampler's `createHash` moves behind an explicit import boundary so it is not pulled in by a schema
-import. A lint rule forbids new `node:` imports in `core`.
+import. A lint rule forbids new `node:` imports in `core`. The deal — `apportion` and `dealStudy` in
+`packages/core/src/apportion.ts` — is on the isomorphic path on purpose, so the builders preview the
+server's own arithmetic live (ADR-0041).
 
 ## 3. Stack
 
@@ -120,7 +126,7 @@ Two rules run through all of it.
 **Authoring is project-scoped, and the project is a path segment.** It is not something the process
 closed over at startup: one `serve` holds several projects, and a handler that reads `:p` cannot
 answer for the wrong one. Run reads stay flat, because a run id is globally unique and the row
-carries its project and its simulation (`?project=`, `?simulation=` filter them).
+carries its project and its study (`?project=`, `?study=` filter them).
 
 **The wire speaks the user's words** (ADR-0032). A participant is an `Agent` row translated at this
 boundary: `wakeCount` becomes `visits`, `maxWakes` becomes `maxVisits`, and the word "agent" appears
@@ -136,30 +142,32 @@ GET|POST       /projects/:p/targets              GET|PUT|DELETE  …/targets/:t
 POST           …/targets/check                   a draft the wizard has not saved
 POST           …/targets/:t/check                …/targets/:t/promises   …/targets/:t/reset
 GET|POST       /projects/:p/personas             GET|PUT|DELETE  …/personas/:x
-GET|POST       …/personas/starters               POST …/personas/:x/preview
-GET|POST       /projects/:p/cohorts              GET|PUT|DELETE  …/cohorts/:c
-GET|POST       …/cohorts/:c/people               POST …/cohorts/:c/people/regenerate
-PATCH          …/cohorts/:c/people/:ordinal      rename or re-blurb one person
-GET|POST       /projects/:p/populations          GET|PUT|DELETE  …/populations/:pop
+GET            …/personas/starters               the six starters, each with its spec and a suggested context
+POST           …/personas/preview                how a DRAFT reads to them; …/personas/:x/preview delegates here
+GET|POST       /projects/:p/cohorts              GET|PUT|DELETE  …/cohorts/:c        (no people routes: see studies)
+GET|POST       /projects/:p/populations          GET|PUT|DELETE  …/populations/:pop  (members carry weights)
+POST           /projects/:p/estimate             a study that does not exist yet; resolves without writing
 GET|PUT        /projects/:p/settings             GET|PUT /projects/:p/triage
 
-GET|POST       /projects/:p/simulations          GET|PUT|DELETE  …/simulations/:s
-POST           …/simulations/:s/estimate         arithmetic over history; spends nothing
-GET            …/simulations/:s/preflight        who is going, what they will meet, what it costs
-POST|GET       …/simulations/:s/runs             start an execution / list them
-GET            …/simulations/:s/results          THE RESULTS SCREEN, in one request
-GET            …/simulations/:s/results/:sig     one problem in full, by signature
-GET            …/simulations/:s/compare?a=&b=    two executions side by side
-POST           …/simulations/:s/apply            re-resolve a live longitudinal execution
+GET|POST       /projects/:p/studies              GET|PUT|DELETE  …/studies/:s       (DELETE archives)
+POST           …/studies/:s/estimate             arithmetic over history; spends nothing
+GET            …/studies/:s/preflight            who is going, what they will meet, what it costs
+POST|GET       …/studies/:s/runs                 start an execution / list them
+GET            …/studies/:s/results              THE RESULTS SCREEN, in one request
+GET            …/studies/:s/results/:sig         one problem in full, by signature
+GET            …/studies/:s/compare?a=&b=        two executions side by side
+POST           …/studies/:s/apply                re-resolve a live longitudinal execution
+GET|POST       …/studies/:s/people               the people this study sends, in deal order / write their details
+POST           …/studies/:s/people/regenerate    PATCH …/studies/:s/people/:person   one person, shared by every study sending the cohort
 
-GET    /runs                                     ?project= ?simulation=
+GET    /runs                                     ?project= ?study=
 GET    /runs/:id                                 /runs/:id/participants[/:pid][/memory]
 GET    /runs/:id/cohorts   /runs/:id/wakes   /runs/:id/findings   /runs/:id/digest
 GET    /runs/:id/spend     /runs/:id/tools   /runs/:id/live
 GET    /wakes/:id          /wakes/:id/trace  /findings/:id
 POST   /runs/:id/stop | round | pause | resume | carry-forward | sweep | digest/job
 POST   /kill-switch        GET /jobs/:id
-GET    /events             GET /events/history   ?project= ?simulation= ?run= &after=
+GET    /events             GET /events/history   ?project= ?study= ?run= &after=
 GET    /health
 ```
 
@@ -173,12 +181,67 @@ one memory read per participant on a five-second poll.
 
 ### Names are a level, not a field
 
-`ProjectOverviewView` and `SimulationResultsView` carry **no person names at all** — headcounts,
+`ProjectOverviewView` and `StudyResultsView` carry **no person names at all** — headcounts,
 cohort slugs and person ids, and nowhere to put a name (SPEC §7.1). A name first appears on
 `ClusterDetailView`, as the author of a quote. The rule is enforced by the payload shapes rather
 than by screen discipline, so a screen that wants to break it has to add a request to do it; a test
 in `control.test.ts` reads the raw response bodies of both views and asserts that none of the run's
 real names appear in either.
+
+### Nothing that reads writes
+
+Every GET above resolves and returns; none creates a row. That was not always so — `GET /setup` and
+`GET /populations` used to create a default population and a default study on an empty
+project, and reading a cohort wrote its roster — and ADR-0041 ended it: resolution is read-only, and
+the writers are the POSTs, PUTs and DELETEs that name what they write. A screen that needs an
+estimate for a study nobody has saved asks `POST /projects/:p/estimate`, which is a POST because it
+takes a body, not because it writes.
+
+### The screens, as ADR-0043 left them
+
+Every authored noun has a **list page** and **one builder page** that serves both `new` and an id,
+and the builders chain forward when the thing to pick from does not exist yet:
+
+```
+/p/:proj                                   Studies dashboard: what needs doing, the studies, problems seen in more than one
+/p/:proj/studies/new                       Study builder, create mode (`CreateStudy`): what, where (target), who (population + SIZE,
+                                           deal preview), how, overrides, cost; a persisted draft, `?then=` and `?picked=`
+/p/:proj/studies/:study                    the study's RESULTS — its default view; a study that has never run says so here
+/p/:proj/studies/:study/edit               Study builder, edit mode (`EditStudy`), inside the study shell where the row is known
+/p/:proj/studies/:study/people             the people this study sends, grouped by cohort then persona; the per-person editor
+/p/:proj/studies/:study/executions         the executions; each row links its cast (…/executions/:runId/cohorts, "Who went")
+/p/:proj/studies/:study/executions/:runId/cohorts   who went on ONE execution, frozen in its snapshot (`RunCohorts`)
+/p/:proj/library/targets                   list; /new is ADR-0040's connect flow ("Connect a target"), the one builder that
+                                           saves on the first check; /:t is the saved-target editor
+/p/:proj/library/personas                  list; /new | /:x is the builder, with the starters offered inside it as a starting point
+/p/:proj/library/cohorts                   list; /new | /:c is the builder — name, context, a weighted mix of personas, the rest
+/p/:proj/library/populations               list; /new | /:pop is the builder — a weighted mix of cohorts and a "try a size" preview
+
+redirects, all `replace`:
+/p/:proj/studies  and  /p/:proj/s          → /p/:proj            (the index IS the studies dashboard)
+/p/:proj/s/new                             → studies/new, carrying the search string (a chain's `then` lives there)
+/p/:proj/s/:sim/*                          → studies/:sim/<rest>, each tail segment re-encoded, search and hash carried
+/p/:proj/studies/:study/settings           → …/edit             (the settings screen was retired into the builder)
+/p/:proj/studies/:study/population         → …/people           (the per-study "Population" item became People)
+/p/:proj/library/target | target/:t        → library/targets | targets/:t
+/p/:proj/library/people | people/:cohort   → library/cohorts | cohorts/:cohort
+/runs/:runId/*                             → the run's study, under /studies/ (`RunRedirect`; its `rehomed()` maps the old tails — `agents` → …/executions/:runId/cohorts, `wakes` → visits, `gaps` → coverage)
+/p/:proj/*   and   /p/:proj/studies/:study/*   → `..`   (each shell's catch-all lands on the shell itself)
+```
+
+Every relative `to` in those redirects is written `..`, not `.`: react-router v7 resolves a relative
+`to` inside a splat route against the FULL matched path, so `.` from `/p/:proj/*` would land on the
+unknown path it was leaving (ADR-0042 §2). `RehomedNewStudy`, `RehomedStudy`, `RehomedTarget` and
+`RehomedCohort` are components rather than `<Navigate>` elements because `<Navigate>` cannot
+interpolate a param.
+
+A list row states one fact and no headcount; its aside is one menu with Edit and Delete (or
+Archive), the destructive item opening a confirming dialog. A builder in create mode keeps a draft
+in session storage under its own path and carries `?then=` back to the builder that opened it; the
+opener applies `?picked=<id>` once the option exists. `WeightedMixEditor` — the organism both mix
+screens use — knows weights only; the screen computes the deal with `dealStudy` and hands it the
+counts. `NewSimulation`, `SimulationSettings`, `FirstRun` and the pairings grid are gone, and the
+old `/s/…` addresses redirect (ADR-0042).
 
 ### Binding and access
 
@@ -196,9 +259,10 @@ same query with a different starting point.
 
 ## 6. Live updates
 
-One SSE endpoint, `/api/v1/events?after=<cursor>` scoped by `&project=`, `&simulation=` or `&run=`,
+One SSE endpoint, `/api/v1/events?after=<cursor>` scoped by `&project=`, `&study=` or `&run=`,
 carrying a discriminated union of event types declared in `contract`: `run.*`, `wake.*`, `trace.*`,
-`finding.*`, `job.*`, `guardrail.*`. A project page follows every simulation in it on ONE connection
+`finding.*`, `job.*`, `guardrail.*`. The wire shape is `EventView`, whose `studyId` is the row's
+`simulationId` translated on the way out (ADR-0042). A project page follows every study in it on ONE connection
 rather than opening one per execution, which is what the `events.project_id` column is for.
 
 The cursor is a store-level monotonic sequence over an append-only `events` table (ADR-0026).
@@ -265,7 +329,7 @@ Two pieces of this rung are **not** on `main` and are the outstanding M2 work: *
 import from the dashboard**, and **config history with restore**. `yaml` is a dependency of `cli`
 only, and there is no revision table. Both were built on the pre-restructure entity model and were
 not carried across it; ADR-0025 still says export exists, so either they are rebuilt on projects,
-simulations and cohorts, or that ADR needs amending to say the file is a CLI-only entry point.
+studies and cohorts, or that ADR needs amending to say the file is a CLI-only entry point.
 Until one or the other happens the ADR and the code disagree, which is the state this document
 exists to prevent.
 
@@ -298,10 +362,10 @@ gathered here so nobody has to find them by reading every ADR. Checked against `
   than during it.** Options and reasoning: ADR-0014, amendment of 2026-09-18.
 
 - **The stop is global while executions are not.** Starting is scoped — one execution per
-  simulation, because an ephemeral start resets the target — but "Stop everything now" engages the
-  store-wide kill switch, and nothing may start while it is engaged. Two simulations running at
+  study, because an ephemeral start resets the target — but "Stop everything now" engages the
+  store-wide kill switch, and nothing may start while it is engaged. Two studies running at
   once therefore stop each other. Two more things sit on the same seam: an ephemeral start resets a
-  target another simulation may be mid-run against, and the daily ceiling is scoped per population
+  target another study may be mid-run against, and the daily ceiling is scoped per population
   rather than per machine. ADR-0022, amendment of 2026-09-18.
 
 - **YAML export and import, and config history, are missing from `main`.** See the M2 row above:

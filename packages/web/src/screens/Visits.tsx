@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
 import type { Wake } from "../api.js";
-import { useSimulation } from "../context.jsx";
+import { useStudy } from "../context.jsx";
 import { clock, plural, wakeOutcome } from "../format.js";
 import { q } from "../queries.js";
 import {
@@ -105,7 +105,7 @@ export function Visits({ runId }: { runId: string }) {
     setPage(1);
   }
 
-  const { href } = useSimulation();
+  const { href } = useStudy();
   const visitLog = useQuery(q.wakes(runId));
   const participants = useQuery(q.participants(runId));
 

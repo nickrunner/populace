@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { JobKind } from "@populace/core/isomorphic";
 
 import { api, openEventStream, type LiveEvent, type ParticipantLive, type RunLive } from "../api.js";
 import { keys, q } from "../queries.js";
-import { useSimulation } from "../context.jsx";
+import { useStudy } from "../context.jsx";
 import { lasted, payloadNumber, payloadText, people, plural } from "../format.js";
 import {
   Badge,
@@ -66,6 +67,43 @@ function severityOf(word: string): SeverityLevel | null {
   return null;
 }
 
+/**
+ * What each kind of job IS, as the subject of "… did not finish".
+ *
+ * This is a map and not a chain of ternaries because a chain has a last arm, and the last arm is
+ * whatever the author happened to write first: the feed used to say "Starting the execution did
+ * not finish" for a failed `people.generate`, a failed `target.reset` and — once filing existed —
+ * a failed `issues.publish` too. `satisfies Record<JobKind, string>` makes the compiler name the
+ * kinds this file has no words for the moment `JobKindSchema` grows one, which is the only way a
+ * missing case becomes visible rather than mislabelled.
+ *
+ * Every phrase is a subject, not a verb, and none of them says "job": a reader watching an
+ * execution does not have the word for our queue and does not need it.
+ */
+const JOB_WORDS = {
+  "run.start": "Starting the execution",
+  "run.continue": "Carrying on from the earlier execution",
+  "run.round": "Sending another round",
+  "run.resume": "Picking the execution back up",
+  digest: "The digest",
+  "target.check": "Checking the target",
+  sweep: "The clean-up",
+  "people.generate": "Writing the people",
+  "target.reset": "Putting the target back to a clean state",
+  "issues.publish": "Filing this to your issue tracker",
+  "issues.cycle": "The report cycle",
+} satisfies Record<JobKind, string>;
+
+/**
+ * The kind off the wire, narrowed the way `severityOf` narrows a severity. An event payload is a
+ * free-form `JsonValue`, so the kind arrives as a string and may be one this build has never
+ * heard of; `null` is that case, and the sentence falls back to the one thing still true.
+ */
+function jobWords(kind: string): string | null {
+  for (const [key, words] of Object.entries(JOB_WORDS)) if (key === kind) return words;
+  return null;
+}
+
 /** What the screen is called, which is the execution's resting state in a word. */
 function headingOf(run: RunLive, abandoned: boolean): string {
   if (run.status === "running" || run.status === "pending") return run.mode === "longitudinal" ? "Going" : "Running";
@@ -98,7 +136,7 @@ function headingOf(run: RunLive, abandoned: boolean): string {
  */
 export function LiveRun({ runId }: { runId: string }) {
   const queries = useQueryClient();
-  const { href } = useSimulation();
+  const { href } = useStudy();
   const live = useQuery(q.live(runId));
   const cohorts = useQuery(q.runCohorts(runId));
   const [feed, setFeed] = useState<LiveEvent[]>([]);
@@ -386,7 +424,7 @@ export function LiveRun({ runId }: { runId: string }) {
                 <CohortGrid
                   participants={run.participants}
                   names={cohortNames}
-                  visitPath={(wakeId) => href(`visits/${encodeURIComponent(wakeId)}`)}
+                  visitPath={(visitId) => href(`visits/${encodeURIComponent(visitId)}`)}
                   going={going}
                   theOne={theOne}
                 />
@@ -423,7 +461,7 @@ export function LiveRun({ runId }: { runId: string }) {
 interface GridProps {
   participants: readonly ParticipantLive[];
   names: Map<string, string>;
-  visitPath: (wakeId: string) => string;
+  visitPath: (visitId: string) => string;
   going: boolean;
   theOne: string | null;
 }
@@ -454,7 +492,7 @@ function CohortGrid({ participants, names, visitPath, going, theOne }: GridProps
 interface BlockProps {
   name: string;
   members: readonly ParticipantLive[];
-  visitPath: (wakeId: string) => string;
+  visitPath: (visitId: string) => string;
   going: boolean;
   theOne: string | null;
 }
@@ -492,7 +530,7 @@ function CohortBlock({ name, members, visitPath, going, theOne }: BlockProps) {
 interface PeopleGridProps {
   people: readonly ParticipantLive[];
   cohort: string;
-  visitPath: (wakeId: string) => string;
+  visitPath: (visitId: string) => string;
   going: boolean;
   theOne: string | null;
 }
@@ -518,7 +556,7 @@ function stateOf(person: ParticipantLive): PersonLiveState {
 interface CellProps {
   person: ParticipantLive;
   cohort: string;
-  visitPath: (wakeId: string) => string;
+  visitPath: (visitId: string) => string;
   going: boolean;
   theOne: string | null;
 }
@@ -590,16 +628,27 @@ function sentenceOf(event: LiveEvent, names: Map<string, string>): ReactNode {
       return `It started with ${people(num("agents"))}.`;
     case "run.ended":
       return `It ended: ${text("status")}.`;
-    case "run.status":
-      return text("action") === "paused"
-        ? text("reason") === "process-ended"
-          ? "It stopped, because populace was closed."
-          : "It was paused."
-        : text("action") === "resumed"
-          ? "It was picked back up."
-          : text("action") === "reset"
-            ? "The target was put back to a clean state."
-            : "Everyone was asked back for another round.";
+    case "run.status": {
+      // The five actions the server appends, each said once. This was a ternary chain whose last
+      // arm was "Everyone was asked back for another round", so the automatic sweep at the end of
+      // an ephemeral execution — action `swept`, which deletes accounts — was announced in the
+      // feed as a fresh round of visits. An action this build does not know is the one sentence
+      // that cannot be wrong: the event says the execution's state moved, and nothing more.
+      const action = text("action");
+      if (action === "paused")
+        return text("reason") === "process-ended" ? "It stopped, because populace was closed." : "It was paused.";
+      if (action === "resumed") return "It was picked back up.";
+      if (action === "reset") return "The target was put back to a clean state.";
+      if (action === "round") return "Everyone was asked back for another round.";
+      if (action === "swept") return `The clean-up ran: ${plural(num("removed"), "account")} deleted.`;
+      return action === "" ? (
+        "Its state changed."
+      ) : (
+        <>
+          Its state changed: <Mono size="code-sm">{action}</Mono>
+        </>
+      );
+    }
     case "run.config":
       return "The configuration it runs was replaced.";
     case "wake.started":
@@ -635,15 +684,60 @@ function sentenceOf(event: LiveEvent, names: Map<string, string>): ReactNode {
       );
     case "identity.created":
       return `An account was created${text("email") ? ` for ${text("email")}` : ""}.`;
-    case "job.updated":
+    case "issue.opened":
+    case "issue.commented": {
+      // The payload is five fields — repo, number, url, outcome and a signature count — and
+      // deliberately nothing else: `EventSchema.payload` is a free-form `JsonValue` with no
+      // per-type schema, so the scope that appends keeps the token and the response body out of
+      // the log entirely (ADR-0040). The sentence therefore says what populace did, and never
+      // what the issue now says or what state a repository this screen has not read is in.
+      const signatures = num("signatures");
+      const wordings = signatures > 1 ? `, reported under ${plural(signatures, "wording")}` : "";
+      const where = issueName(text("repo"), num("number"), text("url"));
+      return event.type === "issue.opened" ? (
+        <>
+          populace opened {where} for one problem{wordings}.
+        </>
+      ) : (
+        <>
+          populace added to {where}, which it had already opened for that problem{wordings}.
+        </>
+      );
+    }
+    case "job.updated": {
+      // Only a FAILED job reaches the feed (see `rows`), so this row is always the bad news and
+      // always says so in `critical` ink — with the word "not", because ink is never the only
+      // channel a state is carried in (DESIGN-SYSTEM §4.2).
+      const words = jobWords(text("kind"));
       return (
         <Text size="ui" tone="critical">
-          {text("kind") === "digest" ? "The digest" : text("kind") === "sweep" ? "The clean-up" : "Starting the execution"} did not
-          finish
+          {words ?? "Something populace was doing"} did not finish
           {text("error") ? `: ${text("error")}` : ""}
         </Text>
       );
+    }
     default:
       return text("action") || event.type;
   }
+}
+
+/**
+ * An issue, as `owner/repo#41` — the spelling the publisher's own result summaries use, so the
+ * feed and the results screen name the same thing the same way.
+ *
+ * It is a link only when the payload's url is an `https:` one. The payload is free-form JSON
+ * written by whoever appended the event, so an `href` taken from it unchecked is a destination
+ * this screen cannot vouch for; `Link`'s `href` is what carries the external glyph and the note a
+ * screen reader hears, and without a url there is simply nothing to link to. A payload missing its
+ * repo still has to read as English, hence the two fallbacks.
+ */
+function issueName(repo: string, number: number, url: string): ReactNode {
+  const name = repo === "" ? "an issue" : number === 0 ? repo : `${repo}#${String(number)}`;
+  return url.startsWith("https://") ? (
+    <Link size="ui" href={url}>
+      {name}
+    </Link>
+  ) : (
+    name
+  );
 }

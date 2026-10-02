@@ -41,6 +41,11 @@ import { DropdownMenu, type DropdownMenuItem } from "./DropdownMenu.js";
  * inside the switcher's menu — are `MetaLine`s. The menu one is why `DropdownMenuItem.label` is a
  * `ReactNode`: a menu row that can only hold a string has nowhere to put the rule, and the dot
  * comes back by default.
+ *
+ * **The headcount is a count of rows, not a sum of sizes.** `counts.people` is the person rows
+ * some study currently sends, each counted once however many studies send them (ADR-0041) — so
+ * it is the honest "how many people are in this project", and never a promise about how many any
+ * one study will send.
  */
 
 /**
@@ -71,8 +76,8 @@ function peopleWord(n: number): string {
   return `${n} ${n === 1 ? "person" : "people"}`;
 }
 
-function simulationsWord(n: number): string {
-  return `${n} ${n === 1 ? "simulation" : "simulations"}`;
+function studiesWord(n: number): string {
+  return `${n} ${n === 1 ? "study" : "studies"}`;
 }
 
 export const ProjectSwitcher = forwardRef<HTMLDivElement, ProjectSwitcherProps>(
@@ -143,7 +148,7 @@ export const ProjectSwitcher = forwardRef<HTMLDivElement, ProjectSwitcherProps>(
               <MetaLine
                 facts={[
                   { key: "people", node: peopleWord(current.counts.people) },
-                  { key: "simulations", node: simulationsWord(current.counts.simulations) },
+                  { key: "studies", node: studiesWord(current.counts.studies) },
                 ]}
               />
             )}

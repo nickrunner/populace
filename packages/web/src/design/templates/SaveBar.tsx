@@ -1,7 +1,7 @@
-import { forwardRef } from "react";
+import { forwardRef, type ReactNode } from "react";
 
 import { cn } from "../cn.js";
-import { Button, Inline, Spacer, Text } from "../atoms/index.js";
+import { Button, Inline, Spacer, Stack, Text } from "../atoms/index.js";
 import { RelativeTime } from "../molecules/index.js";
 
 /**
@@ -23,6 +23,16 @@ import { RelativeTime } from "../molecules/index.js";
  * **The button names the act** (§7.4) and takes `pending` rather than swapping its label, so the
  * bar does not change width while it is working. Nothing in this component promises that saving
  * changes what a future execution will find (§7.3) — it saves a form.
+ *
+ * **Amended for the builders — three things `ActionBar` had that an editor turned out to need.**
+ * A builder in edit mode is a `SaveBar` (ATOMIC-INVENTORY §4, template 9), and an edit can be
+ * refused for the same reasons a create can — a name emptied, a population unpicked — so
+ * `blockedBecause` is the sentence and the held button follows it, exactly as on `ActionBar`; a
+ * greyed "Save changes" with no reason beside it is §1.2's colour-and-nothing-else. `note` is the
+ * sentence a save needs to carry when it is not the whole story — a longitudinal execution that
+ * is running takes a change only through "Apply to the running execution", and the reader has to
+ * be told that before pressing save, not after. `extra` is where that button lives: beside the
+ * act, never inside the `<form>`, so it is not an implicit submit.
  */
 
 export interface SaveBarProps {
@@ -35,14 +45,32 @@ export interface SaveBarProps {
   savedAt: string | null;
   /** Offered only when there is something to throw away. */
   onDiscard?: () => void;
+  /**
+   * Why the changes cannot be saved yet, in a sentence — "Give it a name first." The bar says it
+   * in place of "Unsaved changes" and the button is held while it is set. `undefined` means
+   * nothing is stopping it.
+   */
+  blockedBecause?: ReactNode;
+  /**
+   * What saving will and will not do, when that is worth a sentence — "The running execution
+   * takes this only through Apply." Shown beneath the status while there is something to save
+   * and nothing blocking it; it never claims what a future execution will find (§7.3).
+   */
+  note?: ReactNode;
+  /** Anything that belongs beside the act — a second route, such as applying to a running execution. */
+  extra?: ReactNode;
 }
 
 export const SaveBar = forwardRef<HTMLDivElement, SaveBarProps>(function SaveBar(
-  { dirty, saving, onSave, savedAt, onDiscard },
+  { dirty, saving, onSave, savedAt, onDiscard, blockedBecause, note, extra },
   ref,
 ) {
+  const blocked = dirty && blockedBecause !== undefined;
+
   const status = saving ? (
     "Saving…"
+  ) : blocked ? (
+    blockedBecause
   ) : dirty ? (
     "Unsaved changes"
   ) : savedAt !== null ? (
@@ -52,6 +80,9 @@ export const SaveBar = forwardRef<HTMLDivElement, SaveBarProps>(function SaveBar
   ) : (
     "Nothing changed yet"
   );
+
+  // The note is about what a save would do, so it is shown only while a save is on offer.
+  const says = dirty && !saving && !blocked ? note : undefined;
 
   return (
     <div
@@ -69,16 +100,24 @@ export const SaveBar = forwardRef<HTMLDivElement, SaveBarProps>(function SaveBar
     >
       <Inline gap={3} align="center">
         {/* The reader is inside the form when this changes, so the news comes to them. */}
-        <Text size="meta" tone={dirty && !saving ? "ink" : "muted"} as="div" className="min-w-0">
-          <span aria-live="polite">{status}</span>
-        </Text>
+        <Stack gap={1} className="min-w-0">
+          <Text size="meta" tone={dirty && !saving ? "ink" : "muted"} as="div">
+            <span aria-live="polite">{status}</span>
+          </Text>
+          {says === undefined ? null : (
+            <Text size="meta" tone="muted" as="div">
+              {says}
+            </Text>
+          )}
+        </Stack>
         <Spacer />
+        {extra}
         {onDiscard === undefined ? null : (
           <Button variant="quiet" onClick={onDiscard} disabled={!dirty || saving}>
             Discard changes
           </Button>
         )}
-        <Button variant="primary" onClick={onSave} disabled={!dirty} pending={saving}>
+        <Button variant="primary" onClick={onSave} disabled={!dirty || blocked} pending={saving}>
           Save changes
         </Button>
       </Inline>

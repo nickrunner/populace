@@ -77,7 +77,7 @@ export type { DiagramStageProps } from "./DiagramStage.js";
 // product honest about what it does and does not claim.
 // ---------------------------------------------------------------------------------------------
 
-/** The model — project → simulation → population → cohort → person → visit → finding. */
+/** The model — project → study → population → cohort → person → visit → finding. */
 export { ChainDiagram, CHAIN_LINKS } from "./ChainDiagram.js";
 export type { ChainDiagramProps, ChainLink } from "./ChainDiagram.js";
 
@@ -101,7 +101,7 @@ export type { EvidenceDiagramProps } from "./EvidenceDiagram.js";
 export { PipelineDiagram } from "./PipelineDiagram.js";
 export type { PipelineDiagramProps, PipelineReport } from "./PipelineDiagram.js";
 
-/** The honesty — one simulation sent in twice, overlapping and different. */
+/** The honesty — one study sent in twice, overlapping and different. */
 export { VarianceDiagram } from "./VarianceDiagram.js";
 export type { VarianceDiagramProps, VarianceProblem } from "./VarianceDiagram.js";
 

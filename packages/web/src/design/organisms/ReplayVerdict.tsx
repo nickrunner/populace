@@ -39,10 +39,16 @@ const REPLAY_TITLE = "What happened when we tried it again";
 /**
  * Who ruled. The enum spelling is not the reader's word: a `heuristic` is a rule we wrote, and
  * saying so is more honest about how much weight the verdict carries than the enum is.
+ *
+ * `typesafe` is the one whose enum spelling would mislead outright — it names a vendor, and a
+ * reader weighing a verdict does not care whose service answered. What they need to know is that
+ * a model picked between fixed options and our own code turned that into the verdict, so the
+ * reason below is a sentence we composed and not one a model wrote.
  */
 const JUDGE_WORDS = {
   model: "judged by a model",
   heuristic: "judged by a rule",
+  typesafe: "judged by a classifier",
 } satisfies Record<Verification["judge"], string>;
 
 export interface ReplayVerdictProps {

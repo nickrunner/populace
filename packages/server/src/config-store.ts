@@ -1,21 +1,29 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import {
   DEFAULT_PROJECT_ID,
+  GuardrailsSchema,
   PopulaceConfigSchema,
   SimulationSchema,
+  VerifierConfigSchema,
   newCohortId,
   newPersonaId,
   newPopulationId,
   newSimulationId,
   newTargetId,
+  personIdFor,
   resolveModel,
   slugify,
   JsonValueSchema,
   type Cadence,
   type Cohort,
   type ConfigSnapshot,
+  type Guardrails,
+  type GuardrailsOverride,
   type JsonValue,
+  type ModelConfig,
   type ModelOverride,
+  type Person,
   type PersonaSpec,
   type PersonProfile,
   type ToolPolicy,
@@ -23,19 +31,27 @@ import {
   type PopulaceConfig,
   type Project,
   type Simulation,
+  type SimulationContext,
   type Store,
   type StoredPersona,
   type StoredPopulation,
   type StoredSettings,
   type StoredTarget,
+  type VerifierConfig,
+  type VerifierOverride,
 } from "@populace/core";
-import { ensureRoster, lanesOf, rosterProfiles, RosterIncomplete, sizeIn } from "./cohort-store.js";
+import { dealFor, draftPerson, ensureRosterFor, rosterProfiles, RosterIncomplete, type Deal } from "./cohort-store.js";
 
 /**
  * Assembly between the authored rows and the resolved `PopulaceConfig` the runner consumes
  * (ADR-0025). Resolution is assembly, not translation: every shape stored here is the same zod
  * schema `PopulaceConfig` already uses, which is what keeps YAML import and export lossless and
  * keeps the runner ignorant of where its config came from.
+ *
+ * Resolution is READ-ONLY and materialisation is explicit (ADR-0041, D3). `resolveDraft` and
+ * `resolveSimulationConfig` read the roster and fill a slot no writer has reached yet in memory;
+ * `materialise` is the write, and it is called by the routes that change who goes — never by a
+ * GET, never by a resolve.
  */
 
 export interface ProcessConfig {
@@ -48,48 +64,55 @@ function now(): string {
   return new Date().toISOString();
 }
 
-/** The population a project gets before anybody composes a second one. */
-export const DEFAULT_POPULATION_SLUG = "everyone";
-
-/** The simulation a project gets before anybody creates a second one. */
+/** The study a project gets before anybody creates a second one. */
 export const DEFAULT_SIMULATION_SLUG = "trial";
 
 /** What `SimulationContextSchema` fills in for a config that names no simulation at all. */
 const PLACEHOLDER_SIMULATION_SLUG = "simulation";
 
 /**
- * One simulation as a file or a form describes it, before it is a row: the plan, without the ids
- * that only the store can mint. `populace.yaml`'s `simulations:` block parses into these.
+ * One study as a file or a form describes it, before it is a row: the plan, without the ids that
+ * only the store can mint. `populace.yaml`'s `simulations:` (or `studies:`) block parses into
+ * these.
  */
 export interface SimulationPlan {
   slug: string;
   name: string;
   description?: string;
-  /** Null is a longitudinal simulation; a number is an ephemeral one and its visit cap. */
+  /** Null is a longitudinal study; a number is an ephemeral one and its visit cap. */
   visitsPerPerson: number | null;
   cadence: Cadence;
   seed: string;
   autoSweep?: boolean;
   requireFreshTarget?: boolean;
+  /**
+   * How many people the study sends (ADR-0041). A file that says nothing sends exactly the lane
+   * counts it wrote — the importer puts their sum here — so an import is lossless either way.
+   */
+  size?: number;
 }
 
 /**
- * The simulation a config implies when it names none of its own: the cap decides the mode. A file
+ * The study a config implies when it names none of its own: the cap decides the mode. A file
  * that caps visits describes something that ENDS, which is what ephemeral means; one that does not
- * describes a soak, which is longitudinal.
+ * describes a soak, which is longitudinal. Its size is the config's own when the loader set one
+ * and the sum of the lane counts otherwise — the same number, said twice, so a hand-built config
+ * that never heard of sizes still sends everybody it lists.
  */
 export function simulationPlanOf(config: PopulaceConfig): SimulationPlan {
   const named = config.simulation.slug !== PLACEHOLDER_SIMULATION_SLUG;
+  const counted = config.population.members.reduce((sum, member) => sum + member.count, 0);
   return {
     slug: named ? config.simulation.slug : DEFAULT_SIMULATION_SLUG,
     name: named ? config.simulation.name : `${config.target.name} — ${config.population.name}`,
     visitsPerPerson: config.simulation.visitsPerPerson ?? config.population.maxWakes,
     cadence: config.population.cadence,
     seed: config.population.seed,
+    size: config.simulation.size > 0 ? config.simulation.size : counted,
     // `autoSweep` is deliberately NOT copied off the context: its default there is false (a config
-    // that has never heard of simulations must not silently delete accounts), while a simulation
-    // row's default is true (SPEC §2.7). A file that means it says so in its `simulations:` block,
-    // which reaches this function as an explicit plan rather than through a context.
+    // that has never heard of studies must not silently delete accounts), while a study row's
+    // default is true (SPEC §2.7). A file that means it says so in its `simulations:` block, which
+    // reaches this function as an explicit plan rather than through a context.
     ...(named && config.simulation.autoSweep ? { autoSweep: true } : {}),
   };
 }
@@ -121,9 +144,7 @@ export async function ensureProject(store: Store, projectId = DEFAULT_PROJECT_ID
 }
 
 /** Settings a project has before anyone touches the form: every schema default, nothing invented. */
-export async function ensureSettings(store: Store, projectId = DEFAULT_PROJECT_ID): Promise<StoredSettings> {
-  const existing = await store.getSettings(projectId);
-  if (existing) return existing;
+function defaultSettings(projectId: string): StoredSettings {
   const base = PopulaceConfigSchema.parse({
     target: { name: "unset", mcp: [{ url: "http://127.0.0.1:1/" }] },
     // `none` and not a self-signup naming a tool called "unset": these are the SCHEMA DEFAULTS a
@@ -132,7 +153,7 @@ export async function ensureSettings(store: Store, projectId = DEFAULT_PROJECT_I
     identity: { strategy: "none" },
     population: { id: "unset", members: [{ persona: { id: "unset", name: "unset", role: "unset", backstory: "unset", goals: ["unset"] } }] },
   });
-  const settings: StoredSettings = {
+  return {
     projectId,
     model: base.model,
     guardrails: base.guardrails,
@@ -143,139 +164,32 @@ export async function ensureSettings(store: Store, projectId = DEFAULT_PROJECT_I
     seed: base.population.seed,
     updatedAt: now(),
   };
+}
+
+/** The project's settings row, written with the defaults when there is none yet. */
+export async function ensureSettings(store: Store, projectId = DEFAULT_PROJECT_ID): Promise<StoredSettings> {
+  const existing = await store.getSettings(projectId);
+  if (existing) return existing;
+  const settings = defaultSettings(projectId);
   await store.saveSettings(settings);
   return settings;
 }
 
 /**
- * The project's default population — the one called "everyone", created on first use.
- *
- * A project may hold several: a population is composition, and a simulation names the one it runs
- * (`simulation.populationId`). This is only the fallback for the surfaces that have not been given
- * a population to work with yet.
- *
- * **The fallback is the OLDEST, and that is a fix, not a detail.** It used to be
- * `find(slug === "everyone") ?? populations[0]`, and the comment above it claimed that looking up
- * by slug meant "a second population cannot silently become the default". Only the first half of
- * that expression is by slug. A YAML-seeded project has no row slugged `everyone` — an import
- * names its population whatever the file says — so those installs fell through to
- * `populations[0]`, and `listPopulations` is `ORDER BY slug`. **Composing a population whose slug
- * sorts earlier therefore made it the project's default**, silently retargeting `cohortsOf`, the
- * setup status, `ensureSimulation` and the first-run panel at a cast the reader had just invented.
- * Nothing would have reported it; the headcount would simply have changed.
- *
- * Oldest-first is stable under anything added later, which is the only property this fallback
- * actually needs. `createdAt` ties break on id, so two rows written in the same millisecond still
- * resolve the same way on every call.
+ * The project's settings for READING: the row, or the defaults it would be written with. This is
+ * what resolution uses, because resolution writes nothing — not even a row of defaults, which a
+ * GET on an empty project would otherwise leave behind (ADR-0041, D3).
  */
-export async function ensurePopulation(store: Store, projectId = DEFAULT_PROJECT_ID): Promise<StoredPopulation> {
-  const populations = await store.listPopulations(projectId);
-  const oldest = [...populations].sort((a, b) =>
-    a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt),
-  )[0];
-  const existing = populations.find((population) => population.slug === DEFAULT_POPULATION_SLUG) ?? oldest;
-  if (existing) return existing;
-  const at = now();
-  const population: StoredPopulation = {
-    id: newPopulationId(),
-    projectId,
-    slug: DEFAULT_POPULATION_SLUG,
-    name: "Everyone",
-    members: [],
-    createdAt: at,
-    updatedAt: at,
-  };
-  await store.savePopulation(population);
-  return population;
-}
-
-/**
- * The population's cohorts, in the population's own order.
- *
- * `population.members` is authoritative in both directions. A cohort id that no longer resolves
- * is dropped rather than throwing — the population row is composition and a dangling reference is
- * a display problem, not a reason to refuse to run. A cohort the population does NOT hold is not
- * added back: this is the list that decides who is expanded into agents and spends money, and a
- * project can hold cohorts outside its population (a YAML import rewrites the members and leaves
- * whatever was authored in the browser behind). Those belong to a library listing, not here.
- */
-export async function cohortsOf(store: Store, projectId = DEFAULT_PROJECT_ID): Promise<Cohort[]> {
-  return cohortsOfPopulation(store, await ensurePopulation(store, projectId));
+export async function settingsOf(store: Store, projectId = DEFAULT_PROJECT_ID): Promise<StoredSettings> {
+  return (await store.getSettings(projectId)) ?? defaultSettings(projectId);
 }
 
 /**
  * What everybody in a cohort made from one persona alone has in common, when nobody has said.
- * A starter carries its own line; an authored persona adopted straight into a cohort gets this
- * one, and the cohort screen is where it is rewritten.
+ * An import whose lanes carry no context gets this line, and the cohort builder is where it is
+ * rewritten.
  */
 export const DEFAULT_COHORT_CONTEXT = "You came across this product on your own and are trying it for your own reasons.";
-
-/**
- * Sets how many of `cohortId`'s people this population sends, and writes the people that number
- * calls for (ADR-0039). Nought takes the cohort out of THIS population and nothing else: a cohort
- * is a library object, the same people in every cast that holds it, so "send none of them here"
- * and "delete these people" are different acts and only the second touches the row.
- *
- * The roster is written where the headcount is decided, not later on a screen that happens to
- * read the cohort: `counts.people` is the number of PEOPLE ROWS and is what the zero state gates
- * the way forward on. `ensureRoster` sizes the cohort at the largest size any population gives
- * it, so a shrink here archives people only if no other population still sends them.
- */
-export async function setPopulationMember(store: Store, population: StoredPopulation, cohortId: string, size: number): Promise<StoredPopulation> {
-  const at = now();
-  const held = population.members.some((member) => member.cohortId === cohortId);
-  const members =
-    size <= 0
-      ? population.members.filter((member) => member.cohortId !== cohortId)
-      : held
-        ? population.members.map((member) => (member.cohortId === cohortId ? { cohortId, size } : member))
-        : [...population.members, { cohortId, size }];
-  const updated: StoredPopulation = { ...population, members, updatedAt: at };
-  await store.savePopulation(updated);
-  await ensureRoster(store, cohortId, new Date(at));
-  return updated;
-}
-
-/**
- * The cohort that IS this persona and nothing else — a mix of one — sent at `count` people in
- * `population`. This is the first-run path: adopting a starter has to make a persona, a cohort,
- * a population member and a roster in one request without the reader learning the word cohort
- * (ADR-0029). It finds an existing one-persona cohort on this persona before making one, and
- * prefers the one the population already holds.
- */
-export async function ensurePersonaCohort(store: Store, population: StoredPopulation, persona: StoredPersona, count: number, context = DEFAULT_COHORT_CONTEXT): Promise<Cohort> {
-  const projectId = population.projectId;
-  const cohorts = await store.listCohorts(projectId);
-  const soleOn = cohorts.filter((cohort) => cohort.mix.length === 1 && cohort.mix[0]?.personaId === persona.id);
-  const existing = soleOn.find((cohort) => sizeIn(population, cohort.id) > 0) ?? soleOn[0];
-  const at = now();
-  let cohort = existing;
-  if (!cohort) {
-    // A cohort's slug is the first half of every lane slug, so two cohorts in one project cannot
-    // share one — the same de-dup loop `POST /cohorts` carries.
-    const taken = new Set(cohorts.map((c) => c.slug));
-    let slug = persona.slug;
-    for (let n = 2; taken.has(slug); n++) slug = `${persona.slug}-${String(n)}`;
-    cohort = {
-      id: newCohortId(),
-      projectId,
-      slug,
-      name: persona.spec.name,
-      context,
-      mix: [{ personaId: persona.id, weight: 1 }],
-      traits: {},
-      tools: { allow: [], deny: [], destructive: "confirm" },
-      model: {},
-      seed: "populace",
-      notes: "",
-      createdAt: at,
-      updatedAt: at,
-    };
-    await store.saveCohort(cohort);
-  }
-  await setPopulationMember(store, population, cohort.id, count);
-  return cohort;
-}
 
 /**
  * One cohort as the resolved config carries it. The same shape `PopulationMemberSchema` takes as
@@ -298,28 +212,81 @@ interface ResolvedMember {
 }
 
 /**
- * The rows a simulation resolves out of, alongside the config they assembled into. The callers
- * that start a run need the target's row id (it goes on the run) and the simulation's, so they
- * come back rather than being looked up twice.
+ * The blocks of the project's settings a study sets for itself. A block that is absent overrides
+ * nothing; a field absent from a block falls through to the project's value. `Simulation["overrides"]`
+ * satisfies this, and so does the partial a form sends before the row exists.
  */
-export interface ResolvedSimulation {
-  config: PopulaceConfig;
-  simulation: Simulation;
-  target: StoredTarget;
-  population: StoredPopulation;
-  cohorts: Cohort[];
-  personas: StoredPersona[];
+export interface StudyOverrides {
+  model?: ModelOverride;
+  guardrails?: GuardrailsOverride;
+  verifier?: VerifierOverride;
 }
 
-/** Why a simulation cannot be run yet, in the words the screen shows. */
+/**
+ * A study as the form has it, saved or not: everything resolution needs that is not an id the
+ * store mints. A saved row resolves through exactly this shape (`draftOf`), so a builder's cost
+ * estimate and the run it goes on to start are one arithmetic.
+ */
+export interface StudyDraft {
+  projectId: string;
+  targetId: string;
+  populationId: string;
+  /** THE headcount (ADR-0041): what `dealStudy` deals across the population's weights. */
+  size: number;
+  /** Null is longitudinal; a number is ephemeral and its visit cap. Decides the mode. */
+  visitsPerPerson: number | null;
+  cadence: Cadence;
+  seed: string;
+  autoSweep?: boolean;
+  requireFreshTarget?: boolean;
+  overrides?: StudyOverrides;
+  /** What the study tells its people, after their cohort's context (D3b). */
+  brief?: string;
+}
+
+/**
+ * The rows a draft resolves out of, alongside the config they assembled into and the deal that
+ * decided who is in it. The callers that start a run need the target's row id (it goes on the
+ * run), so it comes back rather than being looked up twice.
+ */
+export interface ResolvedDraft {
+  config: PopulaceConfig;
+  target: StoredTarget;
+  population: StoredPopulation;
+  /** The population's cohorts that still exist, in member order. */
+  cohorts: Cohort[];
+  /** Every persona in the project, for the screens that name one. */
+  personas: StoredPersona[];
+  deal: Deal;
+}
+
+/** A saved study, resolved: the draft's rows plus the row itself. */
+export interface ResolvedSimulation extends ResolvedDraft {
+  simulation: Simulation;
+}
+
+/** The one sentence a start is refused with when the deal comes to nought. */
+export const SENDS_NOBODY = "this study sends nobody yet: give it a size";
+
+/**
+ * Why a study cannot be run yet, in the words the screen shows. `sendsNobody` marks the one case
+ * that is not a missing row but an empty deal — a size of nought, or weights that leave every lane
+ * empty — because the estimate route answers that one with a zero estimate rather than a refusal.
+ */
 export class ConfigIncomplete extends Error {
-  constructor(readonly missing: string[]) {
+  readonly sendsNobody: boolean;
+
+  constructor(
+    readonly missing: string[],
+    options: { sendsNobody?: boolean } = {},
+  ) {
     super(missing.join("; "));
     this.name = "ConfigIncomplete";
+    this.sendsNobody = options.sendsNobody ?? false;
   }
 }
 
-/** The cohorts a population holds, in the population's own order. */
+/** The cohorts a population holds, in the population's own order. A cohort that is gone is left out. */
 export async function cohortsOfPopulation(store: Store, population: StoredPopulation): Promise<Cohort[]> {
   const byId = new Map((await store.listCohorts(population.projectId)).map((cohort) => [cohort.id, cohort]));
   return population.members.flatMap((member) => {
@@ -329,117 +296,84 @@ export async function cohortsOfPopulation(store: Store, population: StoredPopula
 }
 
 /**
- * The simulation a project-scoped caller means when it has not been given one.
- *
- * It is created once, from the project's default population and its target, and from then on it is
- * a row like any other: the target it names is the target its runs go to. That is the end of
- * `listTargets(projectId)[0]` deciding — the choice is made once, visibly, and frozen on the row
- * rather than being re-decided by `updated_at DESC` every time a run starts.
+ * The project's settings with a study's overrides layered on, field-wise, exactly as a persona's
+ * model override layers over the global one: an unset field falls through. Parsed back through
+ * the config schemas so the result is typed, which is what lets a zero estimate name the ceilings
+ * that would have applied to a study that sends nobody.
  */
-export async function ensureSimulation(store: Store, projectId = DEFAULT_PROJECT_ID): Promise<Simulation> {
-  const existing = (await store.listSimulations({ projectId })).find((simulation) => !simulation.archived);
-  if (existing) return existing;
-  const target = (await store.listTargets(projectId))[0];
-  if (!target) throw new ConfigIncomplete(["no target is set up yet"]);
-  const population = await ensurePopulation(store, projectId);
-  const settings = await ensureSettings(store, projectId);
-  return createSimulation(store, {
-    projectId,
-    slug: DEFAULT_SIMULATION_SLUG,
-    name: `${target.name} — ${population.name}`,
-    populationId: population.id,
-    targetId: target.id,
-    visitsPerPerson: settings.maxWakes,
-    cadence: settings.cadence,
-    seed: settings.seed,
-  });
+export function planSettings(settings: StoredSettings, overrides: StudyOverrides = {}): { model: ModelConfig; guardrails: Guardrails; verifier: VerifierConfig } {
+  return {
+    model: resolveModel(settings.model, overrides.model),
+    guardrails: GuardrailsSchema.parse({ ...settings.guardrails, ...overrides.guardrails, perWake: { ...settings.guardrails.perWake, ...overrides.guardrails?.perWake } }),
+    verifier: VerifierConfigSchema.parse({ ...settings.verifier, ...overrides.verifier, model: { ...settings.verifier.model, ...overrides.verifier?.model } }),
+  };
 }
 
-export interface SimulationDraft {
-  projectId: string;
-  slug: string;
-  name: string;
-  description?: string;
-  populationId: string;
-  targetId: string;
-  /**
-   * The visit cap, which is also what decides the mode: a capped simulation ENDS on its own and is
-   * therefore ephemeral, an uncapped one runs until somebody stops it and is therefore longitudinal
-   * (`SimulationSchema` binds the two, so they cannot disagree).
-   */
-  visitsPerPerson: number | null;
-  cadence: Cadence;
-  seed: string;
-  autoSweep?: boolean;
-  requireFreshTarget?: boolean;
-}
-
-export async function createSimulation(store: Store, draft: SimulationDraft): Promise<Simulation> {
-  const at = now();
-  const simulation: Simulation = SimulationSchema.parse({
-    id: newSimulationId(),
-    projectId: draft.projectId,
-    slug: draft.slug,
-    name: draft.name,
-    description: draft.description ?? "",
-    populationId: draft.populationId,
-    targetId: draft.targetId,
-    mode: draft.visitsPerPerson === null ? "longitudinal" : "ephemeral",
-    visitsPerPerson: draft.visitsPerPerson,
-    cadence: draft.cadence,
-    seed: draft.seed,
-    ...(draft.autoSweep === undefined ? {} : { autoSweep: draft.autoSweep }),
-    ...(draft.requireFreshTarget === undefined ? {} : { requireFreshTarget: draft.requireFreshTarget }),
-    createdAt: at,
-    updatedAt: at,
-  });
-  await store.saveSimulation(simulation);
-  return simulation;
+/** A partial with its `undefined` entries dropped, so a spread of it never blanks a field. */
+function definedOnly<T extends object>(value: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const key of Object.keys(value) as (keyof T)[]) if (value[key] !== undefined) out[key] = value[key];
+  return out;
 }
 
 /**
- * Assembles the authored rows into the object `runWake()` already takes, FOR ONE SIMULATION.
+ * Assembles a study — saved or still a form — into the object `runWake()` already takes.
  *
- * Everything that decides what a run does is named by the simulation row: its target by id, its
- * population by id, and the plan (cadence, visit cap, seed, mode) that used to live on the
- * project's settings. Two simulations in one project pointing at different targets therefore
- * resolve to different targets, which the project-wide `listTargets(projectId)[0]` this replaces
- * could not do — it handed both of them whichever target had been edited most recently.
+ * READ-ONLY, and that is the contract (ADR-0041, D3): it writes no person, no settings row,
+ * nothing. The deal decides who is in (`dealFor`: the size across the population's weights, then
+ * each cohort's count across its mix), the roster is read once for the project, and a slot no
+ * writer has reached yet is filled IN MEMORY by `draftPerson` — the same draw `ensureRoster` makes
+ * for that slot, so the person a snapshot freezes is the person the next write puts in the row.
+ * That fill is walked the way the writer walks it, in mix order with the cohort's taken names, and
+ * it can differ from the write in exactly one case: rows missing while ANOTHER study sizes an
+ * earlier lane larger than this one does. Every writer materialises before anything resolves, so
+ * that case is a draft that was never saved, whose estimate freezes nothing.
  *
- * Throws `ConfigIncomplete` rather than returning a half-built config, because a run started on a
- * config with no target is a run that spends money to fail.
+ * Lanes with a count of nought are omitted. Throws `ConfigIncomplete` rather than returning a
+ * half-built config — a run started on a config with no target is a run that spends money to
+ * fail — and with `sendsNobody` when the rows are all there and the deal is empty.
+ *
+ * `context` is the saved row's identity (id, slug, name, mode…) when there is one; a draft gets
+ * the schema's placeholders, which nothing that reads an estimate looks at.
  */
-export async function resolveSimulationConfig(store: Store, process: ProcessConfig, simulationId: string): Promise<ResolvedSimulation> {
-  const simulation = await store.getSimulation(simulationId);
-  if (!simulation) throw new ConfigIncomplete([`there is no simulation ${simulationId}`]);
+export async function resolveDraft(store: Store, process: ProcessConfig, draft: StudyDraft, context: Partial<SimulationContext> = {}): Promise<ResolvedDraft> {
+  const who = context.name === undefined ? "this study" : `the ${context.name} study`;
   const missing: string[] = [];
-  const target = await store.getTarget(simulation.targetId);
-  if (!target) missing.push(`the ${simulation.name} simulation points at a target that no longer exists (${simulation.targetId})`);
-  const population = await store.getPopulation(simulation.populationId);
-  if (!population) missing.push(`the ${simulation.name} simulation points at a population that no longer exists (${simulation.populationId})`);
-  const settings = await ensureSettings(store, simulation.projectId);
-  const personas = await store.listPersonas(simulation.projectId);
-  const cohorts = population ? await cohortsOfPopulation(store, population) : [];
+  const target = await store.getTarget(draft.targetId);
+  if (!target) missing.push(`${who} points at a target that no longer exists (${draft.targetId})`);
+  const population = await store.getPopulation(draft.populationId);
+  if (!population) missing.push(`${who} points at a population that no longer exists (${draft.populationId})`);
+  if (!target || !population) throw new ConfigIncomplete(missing);
+
+  let deal: Deal;
+  try {
+    deal = await dealFor(store, population, draft.size);
+  } catch (err) {
+    if (!(err instanceof RosterIncomplete)) throw err;
+    throw new ConfigIncomplete([err.message]);
+  }
+  if (deal.sends === 0) throw new ConfigIncomplete([SENDS_NOBODY], { sendsNobody: true });
+
+  const settings = await settingsOf(store, draft.projectId);
+  const personas = await store.listPersonas(draft.projectId);
+  // One read of the project's people, archived included: an archived row within the deal is still
+  // that person (a write would restore them), and their name is still taken in the cohort.
+  const stored = new Map<string, Person[]>();
+  for (const person of await store.listPeople({ projectId: draft.projectId, includeArchived: true })) {
+    stored.set(person.cohortId, [...(stored.get(person.cohortId) ?? []), person]);
+  }
+  const at = now();
 
   const members: ResolvedMember[] = [];
-  for (const cohort of cohorts) {
-    const size = population ? sizeIn(population, cohort.id) : 0;
-    let lanes;
-    let roster;
-    try {
-      // The lanes at THIS population's size. The roster is written at the largest size any
-      // population gives the cohort, so it is a superset, and each lane takes its first `count`.
-      lanes = await lanesOf(store, cohort, size);
-      // Reading a cohort fills its empty slots, so a cohort sized a moment ago has a cast by the
-      // time anything asks who is going. It never overwrites a person who already exists.
-      roster = await ensureRoster(store, cohort.id);
-    } catch (err) {
-      if (!(err instanceof RosterIncomplete)) throw err;
-      missing.push(err.message);
-      continue;
-    }
-    for (const lane of lanes) {
+  for (const share of deal.cohorts) {
+    const { cohort } = share;
+    const rows = stored.get(cohort.id) ?? [];
+    const byId = new Map(rows.map((person) => [person.id, person]));
+    const used = new Set(rows.map((person) => person.name));
+    for (const lane of share.lanes) {
       if (lane.count === 0) continue;
+      const cast: Person[] = [];
+      for (let ordinal = 0; ordinal < lane.count; ordinal++) cast.push(byId.get(personIdFor(lane.laneSlug, ordinal)) ?? draftPerson(lane, ordinal, used, at));
       members.push({
         // The cohort slug and the persona's immutable slug are what lane slugs, and therefore
         // agent ids, are built from: a continuation matches on both, so neither may follow a
@@ -455,35 +389,34 @@ export async function resolveSimulationConfig(store: Store, process: ProcessConf
         seed: cohort.seed,
         // The cast is frozen into the snapshot, so a three-month-old execution still renders the
         // right names even if the cohort has been re-cast since.
-        people: rosterProfiles(roster.filter((person) => person.laneSlug === lane.laneSlug && person.ordinal < lane.count)),
+        people: rosterProfiles(cast),
         ...(cohort.cadence ? { cadence: cohort.cadence } : {}),
         ...(cohort.maxWakes === undefined ? {} : { maxWakes: cohort.maxWakes }),
       });
     }
   }
-  if (members.length === 0) missing.push("nobody is in the population yet");
-  if (missing.length || !target || !population) throw new ConfigIncomplete(missing);
 
-  const overrides = simulation.overrides;
+  const plan = planSettings(settings, draft.overrides);
   const config = PopulaceConfigSchema.parse({
     version: 2,
     simulation: {
-      id: simulation.id,
-      slug: simulation.slug,
-      name: simulation.name,
-      mode: simulation.mode,
-      visitsPerPerson: simulation.visitsPerPerson,
-      autoSweep: simulation.autoSweep,
+      // The plan as the draft has it, then the saved row's identity where there is one. The two
+      // agree by construction for a row (`draftOf` and `contextOf` read the same fields).
+      mode: draft.visitsPerPerson === null ? "longitudinal" : "ephemeral",
+      visitsPerPerson: draft.visitsPerPerson,
+      size: draft.size,
+      brief: draft.brief ?? "",
+      ...(draft.autoSweep === undefined ? {} : { autoSweep: draft.autoSweep }),
+      ...definedOnly(context),
     },
     // The target's tool policy is resolved into the config the runner sees, alongside the address
     // and the reset hook. The runner merges it with each persona's; nothing else may.
     target: { name: target.name, mcp: target.mcp, ...(target.webBaseUrl ? { webBaseUrl: target.webBaseUrl } : {}), ...(target.description ? { description: target.description } : {}), tools: target.tools, reset: target.reset },
     identity: target.identity,
-    // The simulation's overrides layer over the project's settings field-wise, exactly as a
-    // persona's model override layers over the global one. An unset field falls through.
-    model: resolveModel(settings.model, overrides.model),
-    guardrails: { ...settings.guardrails, ...overrides.guardrails, perWake: { ...settings.guardrails.perWake, ...overrides.guardrails.perWake } },
-    verifier: { ...settings.verifier, ...overrides.verifier, model: { ...settings.verifier.model, ...overrides.verifier.model } },
+    // The study's overrides layer over the project's settings field-wise (`planSettings`).
+    model: plan.model,
+    guardrails: plan.guardrails,
+    verifier: plan.verifier,
     daemon: settings.daemon,
     store: process.store,
     digestDir: process.digestDir,
@@ -491,14 +424,176 @@ export async function resolveSimulationConfig(store: Store, process: ProcessConf
       id: population.slug,
       name: population.name,
       members,
-      // The execution plan is the simulation's, not the project's: `maxWakes` IS
-      // `visitsPerPerson`, which is the whole mechanism by which an ephemeral run ends on its own.
-      cadence: simulation.cadence,
-      maxWakes: simulation.visitsPerPerson,
-      seed: simulation.seed,
+      // The execution plan is the study's, not the project's: `maxWakes` IS `visitsPerPerson`,
+      // which is the whole mechanism by which an ephemeral run ends on its own.
+      cadence: draft.cadence,
+      maxWakes: draft.visitsPerPerson,
+      seed: draft.seed,
     },
   });
-  return { config, simulation, target, population, cohorts, personas };
+  return { config, target, population, cohorts: deal.cohorts.map((share) => share.cohort), personas, deal };
+}
+
+/** A saved study as the draft it resolves through. */
+function draftOf(simulation: Simulation): StudyDraft {
+  return {
+    projectId: simulation.projectId,
+    targetId: simulation.targetId,
+    populationId: simulation.populationId,
+    size: simulation.size,
+    visitsPerPerson: simulation.visitsPerPerson,
+    cadence: simulation.cadence,
+    seed: simulation.seed,
+    autoSweep: simulation.autoSweep,
+    requireFreshTarget: simulation.requireFreshTarget,
+    overrides: simulation.overrides,
+    brief: simulation.brief,
+  };
+}
+
+/** The slice of a saved study that rides in the resolved config, so a snapshot says what ran. */
+function contextOf(simulation: Simulation): SimulationContext {
+  return {
+    id: simulation.id,
+    slug: simulation.slug,
+    name: simulation.name,
+    mode: simulation.mode,
+    visitsPerPerson: simulation.visitsPerPerson,
+    autoSweep: simulation.autoSweep,
+    reportCycle: simulation.reportCycle,
+    size: simulation.size,
+    brief: simulation.brief,
+  };
+}
+
+/**
+ * Assembles the authored rows into the object `runWake()` already takes, FOR ONE SAVED STUDY:
+ * `resolveDraft` over the row's own fields.
+ *
+ * Everything that decides what a run does is named by the row: its target by id, its population
+ * by id, its size, and the plan (cadence, visit cap, seed, mode) that used to live on the
+ * project's settings. Two studies in one project pointing at different targets therefore resolve
+ * to different targets, which the project-wide `listTargets(projectId)[0]` this replaced could not
+ * do — it handed both of them whichever target had been edited most recently.
+ *
+ * READ-ONLY, like everything it calls. Throws `ConfigIncomplete` when the row is gone, when its
+ * target or population is, or when the deal sends nobody.
+ */
+export async function resolveSimulationConfig(store: Store, process: ProcessConfig, simulationId: string): Promise<ResolvedSimulation> {
+  const simulation = await store.getSimulation(simulationId);
+  if (!simulation) throw new ConfigIncomplete([`there is no study ${simulationId}`]);
+  const resolved = await resolveDraft(store, process, draftOf(simulation), contextOf(simulation));
+  return { ...resolved, simulation };
+}
+
+/**
+ * THE write that follows a change to who goes (ADR-0041, D3): the roster of every cohort in the
+ * study's population, sized by `laneSizes` — which reads every study, so the row must be SAVED
+ * before this is called, or it sizes the roster at the numbers it is replacing. Called by
+ * `POST /studies`, `PUT /studies/:s`, a study's archive, an execution start (before the snapshot)
+ * and an import; a study whose population is gone has nothing to write.
+ */
+export async function materialise(store: Store, simulationId: string, now: Date = new Date()): Promise<void> {
+  const simulation = await store.getSimulation(simulationId);
+  if (!simulation) throw new Error(`no study ${simulationId}`);
+  await ensureRosterFor(store, simulation.populationId, now);
+}
+
+/**
+ * The study a project-scoped caller means when it has not been given one — FOR TESTS. The product
+ * never creates a study on a reader's behalf: `POST /studies` requires the ids the builder always
+ * has, and a GET creates nothing (ADR-0035, ADR-0041). A test that wants one row without walking
+ * the routes gets it here, from the project's first target and its oldest population, at
+ * `options.size` people (nought when not asked: a test that sends people says how many), and the
+ * roster is written for it. An existing study is returned as it is, resized when a different size
+ * is asked for.
+ *
+ * Oldest-first for the population, ties broken on id, so two rows written in the same millisecond
+ * still resolve the same way on every call.
+ */
+export async function ensureSimulation(store: Store, projectId = DEFAULT_PROJECT_ID, options: { size?: number } = {}): Promise<Simulation> {
+  const existing = (await store.listSimulations({ projectId })).find((simulation) => !simulation.archived);
+  if (existing) {
+    if (options.size === undefined || options.size === existing.size) return existing;
+    const resized: Simulation = { ...existing, size: options.size, updatedAt: now() };
+    await store.saveSimulation(resized);
+    await materialise(store, resized.id);
+    return resized;
+  }
+  const target = (await store.listTargets(projectId))[0];
+  if (!target) throw new ConfigIncomplete(["no target is set up yet"]);
+  const population = [...(await store.listPopulations(projectId))].sort((a, b) => (a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt)))[0];
+  if (!population) throw new ConfigIncomplete(["no population is composed yet"]);
+  const settings = await ensureSettings(store, projectId);
+  const simulation = await createSimulation(store, {
+    projectId,
+    slug: DEFAULT_SIMULATION_SLUG,
+    name: `${target.name} — ${population.name}`,
+    populationId: population.id,
+    targetId: target.id,
+    size: options.size ?? 0,
+    visitsPerPerson: settings.maxWakes,
+    cadence: settings.cadence,
+    seed: settings.seed,
+  });
+  await materialise(store, simulation.id);
+  return simulation;
+}
+
+export interface SimulationDraft {
+  projectId: string;
+  slug: string;
+  name: string;
+  description?: string;
+  populationId: string;
+  targetId: string;
+  /** How many people the study sends. Nought is legal, and a start refuses until it is raised. */
+  size: number;
+  /**
+   * The visit cap, which is also what decides the mode: a capped study ENDS on its own and is
+   * therefore ephemeral, an uncapped one runs until somebody stops it and is therefore longitudinal
+   * (`SimulationSchema` binds the two, so they cannot disagree).
+   */
+  visitsPerPerson: number | null;
+  cadence: Cadence;
+  seed: string;
+  autoSweep?: boolean;
+  requireFreshTarget?: boolean;
+  /** Absent overrides nothing; each block absent from it overrides nothing. */
+  overrides?: StudyOverrides;
+  /** What the study tells its people (D3b). Absent says nothing. */
+  brief?: string;
+}
+
+/**
+ * Writes the row and nothing else. The roster it sends is written by `materialise`, which the
+ * caller runs afterwards — kept apart so an import can create every study first and size the
+ * roster once, at the largest count any of them deals.
+ */
+export async function createSimulation(store: Store, draft: SimulationDraft): Promise<Simulation> {
+  const at = now();
+  const simulation: Simulation = SimulationSchema.parse({
+    id: newSimulationId(),
+    projectId: draft.projectId,
+    slug: draft.slug,
+    name: draft.name,
+    description: draft.description ?? "",
+    populationId: draft.populationId,
+    targetId: draft.targetId,
+    mode: draft.visitsPerPerson === null ? "longitudinal" : "ephemeral",
+    size: draft.size,
+    brief: draft.brief ?? "",
+    visitsPerPerson: draft.visitsPerPerson,
+    cadence: draft.cadence,
+    seed: draft.seed,
+    ...(draft.autoSweep === undefined ? {} : { autoSweep: draft.autoSweep }),
+    ...(draft.requireFreshTarget === undefined ? {} : { requireFreshTarget: draft.requireFreshTarget }),
+    ...(draft.overrides === undefined ? {} : { overrides: draft.overrides }),
+    createdAt: at,
+    updatedAt: at,
+  });
+  await store.saveSimulation(simulation);
+  return simulation;
 }
 
 /**
@@ -600,6 +695,12 @@ export async function frozenConfigForRun(store: Store, runId: string): Promise<P
  * Existing rows are left alone. Seeding is a first-run convenience, not a sync: a user who has
  * edited their target in the browser must not have it overwritten because a stale file is still
  * sitting in the working directory.
+ *
+ * A file writes LANE COUNTS and the rows hold WEIGHTS and one size (ADR-0041), and the import is
+ * lossless across that: a cohort's mix weights are its lane counts, a population member's weight
+ * is the sum of its cohort's counts, and the study's size is the plan's when it names one and the
+ * sum of every count otherwise. Sainte-Laguë returns a target vector exactly when the weights are
+ * proportional to it and sum to the size, so the deal gives back the numbers the file wrote.
  */
 export async function seedProjectFromConfig(
   store: Store,
@@ -637,6 +738,7 @@ export async function seedProjectFromConfig(
   const byCohort = new Map<string, PopulaceConfig["population"]["members"]>();
   for (const member of config.population.members) byCohort.set(member.cohort, [...(byCohort.get(member.cohort) ?? []), member]);
   const members: StoredPopulation["members"] = [];
+  let counted = 0;
   for (const [slug, lanes] of byCohort) {
     const mix: Cohort["mix"] = [];
     for (const member of lanes) {
@@ -671,13 +773,22 @@ export async function seedProjectFromConfig(
     };
     await store.saveCohort(cohort);
     existingCohorts.set(cohort.slug, cohort);
-    members.push({ cohortId: cohort.id, size: lanes.reduce((sum, member) => sum + member.count, 0) });
+    // The member's weight is the cohort's share of the file's people: its lane counts, summed. A
+    // weight has to be positive, and a cohort the file sends nobody from is not in its population.
+    const sent = lanes.reduce((sum, member) => sum + member.count, 0);
+    if (sent <= 0) continue;
+    members.push({ cohortId: cohort.id, weight: sent });
+    counted += sent;
   }
 
-  const population = await ensurePopulation(store, projectId);
-  const stored: StoredPopulation = { ...population, slug: config.population.id, name: config.population.name, members, updatedAt: at };
-  await store.savePopulation(stored);
-  for (const member of members) await ensureRoster(store, member.cohortId);
+  // The file's population is a row of its own, under the file's slug — de-duplicated against
+  // whatever the project already holds, because a slug is a URL and two rows cannot share one.
+  const taken = new Set((await store.listPopulations(projectId)).map((population) => population.slug));
+  const base = slugify(config.population.id) || "everyone";
+  let populationSlug = base;
+  for (let n = 2; taken.has(populationSlug); n++) populationSlug = `${base}-${n}`;
+  const population: StoredPopulation = { id: newPopulationId(), projectId, slug: populationSlug, name: config.population.name, members, createdAt: at, updatedAt: at };
+  await store.savePopulation(population);
 
   await store.saveSettings({
     projectId,
@@ -691,25 +802,27 @@ export async function seedProjectFromConfig(
     updatedAt: at,
   });
 
-  // One simulation per file, pointing at the target and the population this import just wrote.
+  // One study per plan, each pointing at the target and the population this import just wrote.
   // The cap decides the mode: a file that names a visit cap describes something that ENDS, which
-  // is what ephemeral means; one that does not describes a soak, which is longitudinal.
+  // is what ephemeral means; one that does not describes a soak, which is longitudinal. A plan
+  // with no size sends the people the file counted.
   const simulations = options.simulations ?? [simulationPlanOf(config)];
   const created: Simulation[] = [];
-  const taken = new Set<string>();
+  const takenSlugs = new Set<string>();
   for (const plan of simulations) {
-    const base = slugify(plan.slug) || DEFAULT_SIMULATION_SLUG;
-    let slug = base;
-    for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
-    taken.add(slug);
+    const slugBase = slugify(plan.slug) || DEFAULT_SIMULATION_SLUG;
+    let slug = slugBase;
+    for (let n = 2; takenSlugs.has(slug); n++) slug = `${slugBase}-${n}`;
+    takenSlugs.add(slug);
     created.push(
       await createSimulation(store, {
         projectId,
         slug,
         name: plan.name,
         ...(plan.description === undefined ? {} : { description: plan.description }),
-        populationId: stored.id,
+        populationId: population.id,
         targetId: target.id,
+        size: plan.size ?? counted,
         visitsPerPerson: plan.visitsPerPerson,
         cadence: plan.cadence,
         seed: plan.seed,
@@ -718,7 +831,9 @@ export async function seedProjectFromConfig(
       }),
     );
   }
-  return { seeded: true, reason: `imported ${members.length} cohort(s), ${created.length} simulation(s) and the ${config.target.name} target` };
+  // Once, after every study exists, so the roster is sized at the largest deal among them.
+  await ensureRosterFor(store, population.id, new Date(at));
+  return { seeded: true, reason: `imported ${members.length} cohort(s), ${created.length} study(ies) and the ${config.target.name} target` };
 }
 
 /** What a redacted secret is replaced by, so a reader can see that one was used. */
@@ -726,6 +841,22 @@ const REDACTED = "[redacted]";
 
 /** Header names that hold a credential. Deliberately broad: a false positive costs a reader a word. */
 const SECRETISH = /auth|token|key|secret|cookie/i;
+
+/**
+ * A `github` block carrying a token, if one is ever in a config on its way to a snapshot.
+ *
+ * Nothing puts one there today. The GitHub connection lives in its own table for exactly this
+ * reason, `PopulaceConfig` is assembled field by field below, and `PopulaceConfigSchema` has no
+ * passthrough — so three separate facts each independently keep this token out of a snapshot. That
+ * is why the clause is here: the protection is currently a coincidence of three things nobody
+ * wrote down as a guarantee, and the other four branches of `redactConfig` exist for the same
+ * reason. A local database gets copied around and attached to bug reports (see below), and the
+ * cost of a clause that never fires is nothing.
+ *
+ * Loose, and narrow to the one field: whatever else somebody hung off a `github` block passes
+ * through untouched, and only the credential is replaced.
+ */
+const GithubInConfigSchema = z.looseObject({ github: z.looseObject({ token: z.string().min(1) }) });
 
 /**
  * Strips credentials out of a config before it is written to a snapshot (`DATA-MODEL.md` §4). A
@@ -771,7 +902,20 @@ export function redactConfig(config: PopulaceConfig): { config: PopulaceConfig; 
     identity = { ...identity, apiKey: REDACTED };
     redacted.push("identity.apiKey");
   }
-  return { config: { ...config, target: { ...config.target, mcp, reset }, model, identity }, redacted };
+  // And the third class of credential (ADR-0044): the token populace files issues with, which
+  // points at github.com rather than at the target. It is not a field of `PopulaceConfig` and no
+  // code path puts it in one, so this is a clause about a shape the type does not describe —
+  // detected by parsing rather than by reading a property, and spread back in so the compiler is
+  // not asked to believe in a key it does not know. Dead until somebody makes it live, which is
+  // the whole point: this file redacts what a snapshot must never carry, and it should not first
+  // learn about a new secret from a bug report somebody attached a database to.
+  let stray: { github?: { token: string } } = {};
+  const found = GithubInConfigSchema.safeParse(config);
+  if (found.success) {
+    stray = { github: { ...found.data.github, token: REDACTED } };
+    redacted.push("github.token");
+  }
+  return { config: { ...config, ...stray, target: { ...config.target, mcp, reset }, model, identity }, redacted };
 }
 
 /**

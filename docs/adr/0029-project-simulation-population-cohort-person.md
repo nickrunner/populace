@@ -135,3 +135,32 @@ else; it has no size of its own"**: a population is which cohorts go and how man
 that size is the only headcount there is. The reason the seed stays on the cohort is unchanged and
 now does more work: people are numbered per lane (one persona's share of a cohort), so the same
 cohort in two populations is the same people up to the smaller size. The chain is untouched.
+
+## Amendment — the study owns the size, and every noun has a list and a builder (ADR-0041, ADR-0042, ADR-0043)
+
+*Added 2026-09-25.* Three things here are superseded, and the chain is touched for the first time.
+
+**The size moves up one link.** The amendment of 2026-09-23 said *"a population is which cohorts
+go and how many of each, and that size is the only headcount there is."* A population is which
+cohorts go and in what ratio — `members[{cohortId, weight}]` — and the only headcount is
+`Simulation.size`, dealt across the population's weights and then each cohort's mix by
+`dealStudy` (ADR-0041). The chain reads **project → study → population → cohort → person**, and
+the study is where the number lives; a persona, a cohort and a population are conceptual and
+reusable, and people are met through a study.
+
+**The noun is called a study** on the wire and on every screen (ADR-0042). The rows keep the name
+`Simulation`, exactly as ADR-0032 keeps `Agent` and `Wake`, so every identifier this record names is
+still spelled the way it is spelled here.
+
+**The rail amendment's mitigation is withdrawn, not narrowed further.** It said Populations
+appears at `counts.cohorts > 1 || counts.populations > 1`, that adopting a starter still made the
+persona, the cohort, the roster and the "Everyone" population in one request, and that *"a
+population wizard standing in front of a first run would abandon it, and that was considered and
+refused."* ADR-0043 removes the count gates, removes the one-request path — it hid the model and
+produced the confusion a user reported — and puts a list page and a builder in front of every noun,
+chaining forward when the thing to pick from does not exist yet. A starter is a starting point
+inside the persona builder. "Containment is not authoring order" stands and is now what the chain
+of builders enacts.
+
+Every id format, `expandPopulation`, and the rule that anything keyed by agent id alone leaks
+between executions are untouched.

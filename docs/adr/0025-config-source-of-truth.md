@@ -65,3 +65,27 @@ mitigation is currently in place.
 The decision itself stands — the database is the source of truth and YAML is an import, which is
 what D3 settled and what shipped. What needs to change is either the code or these two sentences,
 and until one of them moves this ADR overstates what exists.
+
+## Amendment (2026-09-25): resolution is a deal of the study's size, and it never writes
+
+The amendment of 2026-09-18 said *"A cohort's `size` is the only number that decides headcount, so
+resolution is a join over cohorts."* ADR-0039 moved that number to the population and ADR-0041 moves
+it to the study: resolution is `dealStudy(simulation.size, population weights, cohort mixes)`, one
+lane per cohort × persona with its dealt `count`, and the roster inlined as before.
+
+**Resolution is read-only.** `resolveSimulationConfig` — and `resolveDraft`, which it is a case of,
+and which the project-level estimate uses for a study that does not exist yet — reads the roster
+with `listPeople` and fills a missing ordinal in memory from the seeded draw. It writes nothing; the
+writers are the explicit ones ADR-0041 §3 lists, and an execution materialises its people before it
+snapshots. The seam is unchanged: the runner still consumes a resolved `PopulaceConfig`.
+
+Two things ride in the snapshot that did not: `SimulationContext.size` and `SimulationContext.brief`
+(what the study tells its people). Snapshot hashes therefore change across the upgrade, and the
+first "Apply to the running execution" after it re-snapshots and reconciles to the same cast — the
+same cast because the store backfills a legacy study's `size` from its population's summed member
+sizes, and Sainte-Laguë over those sizes as weights returns them exactly.
+
+**The import side is lossless.** A YAML file keeps lane counts, because the CLI daemon runs the file
+directly; import turns them into mix weights, member weights (a cohort's counts summed) and a study
+`size` (the plan's, else every count summed). The export side is as the amendment of 2026-09-20
+left it: not built.

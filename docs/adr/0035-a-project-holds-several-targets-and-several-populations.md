@@ -162,3 +162,27 @@ which cohorts go and how many of each, `members[{cohortId, size}]`, and it is th
 headcount lives. What that section was actually protecting — that the cap, the cadence and the seed
 are not the population's, because the cap decides a simulation's mode — still holds. Everything
 else here stands.
+
+## Amendment — the study carries the headcount, and the guessing is gone (ADR-0041, ADR-0042, ADR-0043)
+
+*Added 2026-09-25.* The amendment above is superseded in turn: a population is `members[{cohortId,
+weight}]`, a ratio, and the one headcount is the study's `size` (ADR-0041). What the original
+section protected still holds — the cap, the cadence and the seed are not the population's.
+
+"The default population is the oldest" is gone with the default: `ensurePopulation`'s creating
+branch, `DEFAULT_POPULATION_SLUG` and the last-and-default delete refusals are deleted, and
+`POST /studies` REQUIRES both `populationId` and `targetId`, refusing with a 400 that names the
+choices and creates nothing — which is the rule "refuse to guess, and name the choices" applied to
+the case this record left as a fallback. Population delete keeps only the referenced refusal.
+
+Two open items close. *"`GET /setup` and `GET /populations` still write rows"*: neither does, and
+nor does any other GET; the estimate that "takes a target and a population" is
+`POST /projects/:p/estimate`, which resolves a study draft without writing. *"ADR-0032 is violated
+in the wire today … `RunEstimateSchema` carries `agents`, `assumedWakesPerAgent`…"*: `EstimateView`
+replaces it in the product's words (ADR-0042); `wakeId` on the live and trace views remains and is
+carried there.
+
+The noun this record calls a simulation is called a **study** on the wire and every screen
+(ADR-0042). Its rows keep the name. And the setup panel described here — shown on a project that
+has not begun and never again — is a needs panel now, shown whenever there is a leftover and linking
+to the builder that clears it (ADR-0043 §6).

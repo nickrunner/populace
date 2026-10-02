@@ -68,7 +68,6 @@ export const STARTER_PERSONAS: StarterPersona[] = [
     constraints: ["Never destroys a whole workspace by accident"],
     patience: 3,
     budgetUsd: 20,
-    tools: { destructive: "confirm" },
   }),
   starter("sceptic", "Checks the claims, searches for edge cases, trusts nothing it is told", "You have been asked to give a verdict on this product by the end of the week, and the verdict is yours alone.", {
     name: "Sceptical evaluator",

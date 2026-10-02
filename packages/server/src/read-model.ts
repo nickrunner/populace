@@ -94,7 +94,9 @@ export class ReadModel {
       id: runId,
       label: stored?.label || labelFor(runId, agents, stored?.startedAt ?? derived.startedAt),
       projectId: stored?.projectId ?? "",
-      simulationId: stored?.simulationId ?? agents[0]?.simulationId ?? "",
+      // The row says `simulationId`; the wire says study (ADR-0032, ADR-0042). The translation is
+      // here, at the boundary, and the row and every store method keep their names.
+      studyId: stored?.simulationId ?? agents[0]?.simulationId ?? "",
       populationId: stored?.populationId || agents[0]?.populationId || wakes[0]?.populationId || "",
       status,
       startedAt: stored?.startedAt ?? derived.startedAt,
@@ -107,10 +109,11 @@ export class ReadModel {
   /**
    * Newest run first. Run ids embed a base36 timestamp, so a reverse sort is chronological.
    *
-   * A filter is honoured IN SQL — `runs` carries `project_id` and `simulation_id`, and the store
-   * has accepted that filter since M2 while this method ignored it and loaded every run in the
-   * database to build a list of one project's. A run with no row at all predates M2 and belongs
-   * to no project, so a filtered list is exactly the filtered rows.
+   * A filter is honoured IN SQL — `runs` carries `project_id` and `simulation_id` (the study's
+   * column, under the row's own name), and the store has accepted that filter since M2 while this
+   * method ignored it and loaded every run in the database to build a list of one project's. A run
+   * with no row at all predates M2 and belongs to no project, so a filtered list is exactly the
+   * filtered rows.
    */
   async listRuns(filter: { projectId?: string; simulationId?: string } = {}): Promise<RunSummary[]> {
     const scoped = filter.projectId !== undefined || filter.simulationId !== undefined;

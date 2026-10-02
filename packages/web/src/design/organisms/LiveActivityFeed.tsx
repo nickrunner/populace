@@ -61,7 +61,13 @@ export type FeedEventKind =
   | "finding.filed"
   | "guardrail.tripped"
   | "identity.created"
-  | "job.updated";
+  | "job.updated"
+  // Filing is something that happens DURING an execution — a report cycle and the terminal flush
+  // both enqueue off a run — so it is this feed's news and not a separate log. `issue` is the
+  // reader's word for the thing in their tracker, and populace opening one on their behalf is an
+  // outbound write they should be able to watch happen.
+  | "issue.opened"
+  | "issue.commented";
 
 export interface FeedEvent {
   id: string;

@@ -155,11 +155,13 @@ const CLUSTER: ClusterCardView = {
     { slug: "early-adopters", name: "Early adopters", hit: 5, total: 6 },
     { slug: "reluctant-switchers", name: "Reluctant switchers", hit: 4, total: 6 },
   ],
+  inLatest: true,
   state: "open",
   seenIn: [1, 2, 4],
   firstSeenAt: new Date(Date.now() - 51 * HOUR).toISOString(),
   lastSeenAt: new Date(Date.now() - 2 * HOUR).toISOString(),
   triage: null,
+  filedIssue: null,
 };
 
 /**

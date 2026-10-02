@@ -1,9 +1,9 @@
 import { Fragment, useId } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { api, type LiveEvent, type SimulationResults } from "../api.js";
+import { api, type LiveEvent, type StudyResults } from "../api.js";
 import { q } from "../queries.js";
-import { useProject, useSimulation } from "../context.jsx";
+import { useProject, useStudy } from "../context.jsx";
 import { lasted, payloadNumber, payloadText, plural } from "../format.js";
 import {
   AlertDialog,
@@ -32,11 +32,11 @@ import {
 } from "../design/index.js";
 
 /**
- * How a simulation's past is presented, and it is not one thing (SPEC §4.3).
+ * How a study's past is presented, and it is not one thing (SPEC §4.3).
  *
- * An ephemeral simulation has EXECUTIONS: independent peers, each a clean slate, each with its
+ * An ephemeral study has EXECUTIONS: independent peers, each a clean slate, each with its
  * own cast and its own numbers, and the interesting question is what moved between two of them.
- * A longitudinal simulation has ONE execution and the interesting question is what happened TO
+ * A longitudinal study has ONE execution and the interesting question is what happened TO
  * it — when it was paused, when it was picked back up, when its config was replaced. Those are
  * events, and nothing else records them, which is why this screen reads the event log.
  *
@@ -46,7 +46,7 @@ import {
  * what §4's `InstrumentPage` reserves that band for.
  */
 
-type Execution = SimulationResults["history"][number];
+type Execution = StudyResults["history"][number];
 
 /**
  * The honesty note under an ephemeral history. It is not a disclaimer in small print: two
@@ -85,6 +85,13 @@ const comparePath = (earlier: string, later: string): string =>
 const digestPath = (runId: string): string => `executions/${encodeURIComponent(runId)}/digest`;
 
 /**
+ * Who went on one execution, by cohort and by name. It used to be the study's own "Population"
+ * screen reading the latest execution; a study's people have a page of their own now (ADR-0041),
+ * and the cast of an execution is addressed by the execution it was the cast of.
+ */
+const castPath = (runId: string): string => `executions/${encodeURIComponent(runId)}/cohorts`;
+
+/**
  * Where a row goes, and where it does not.
  *
  * An execution has no page of its own — the thing a reader wants when they open one is it beside
@@ -108,10 +115,10 @@ function beside(history: readonly Execution[], index: number, href: (path?: stri
 }
 
 /** The band on the results screen: the last few executions, and the way to compare two. */
-export function ExecutionHistory({ results, limit }: { results: SimulationResults; limit?: number }) {
-  const { href, runId } = useSimulation();
+export function ExecutionHistory({ results, limit }: { results: StudyResults; limit?: number }) {
+  const { href, runId } = useStudy();
   const queries = useQueryClient();
-  const mode = results.simulation.mode;
+  const mode = results.study.mode;
   const newestFirst = [...results.history].sort((a, b) => b.seq - a.seq);
   const shown = limit === undefined ? newestFirst : newestFirst.slice(0, limit);
 
@@ -128,7 +135,7 @@ export function ExecutionHistory({ results, limit }: { results: SimulationResult
   const removeErrorId = useId();
 
   const dropping = (execution: (typeof newestFirst)[number]): string =>
-    `Execution ${String(execution.seq)} goes, and so does everything in it: ${plural(execution.visits, "visit")}, ${plural(execution.findings, "finding")} and what the people in it remembered. The other executions of this simulation are untouched — they were independent of this one to begin with.`;
+    `Execution ${String(execution.seq)} goes, and so does everything in it: ${plural(execution.visits, "visit")}, ${plural(execution.findings, "finding")} and what the people in it remembered. The other executions of this study are untouched — they were independent of this one to begin with.`;
 
   const deleteControl = (execution: (typeof newestFirst)[number]) =>
     execution.status === "running" ? null : (
@@ -153,12 +160,17 @@ export function ExecutionHistory({ results, limit }: { results: SimulationResult
     );
 
   /**
-   * What sits outside the row's link: its digest, and the way to delete it. Both go to
-   * `LedgerRow`'s `aside`, because a control or a second link inside an anchor is an element that
-   * navigates somewhere other than where it says.
+   * What sits outside the row's link: who went on it, its digest, and the way to delete it. All
+   * three go to `LedgerRow`'s `aside`, because a control or a second link inside an anchor is an
+   * element that navigates somewhere other than where it says. The cast is linked from here and
+   * nowhere else in the study's navigation (ADR-0043): who went is a fact about ONE execution,
+   * frozen in its snapshot, and the rail's People item is the study as it stands today.
    */
   const rowControls = (execution: (typeof newestFirst)[number]) => (
     <Inline gap={3} align="center">
+      <Link size="ui" to={href(castPath(execution.runId))}>
+        Who went
+      </Link>
       <Link size="ui" to={href(digestPath(execution.runId))}>
         Digest
       </Link>
@@ -168,8 +180,8 @@ export function ExecutionHistory({ results, limit }: { results: SimulationResult
 
   if (results.history.length === 0)
     return (
-      <StateBlock kind="empty" what="this simulation's executions">
-        This simulation has never been run.
+      <StateBlock kind="empty" what="this study's executions">
+        This study has never been run.
       </StateBlock>
     );
 
@@ -250,7 +262,7 @@ export function ExecutionHistory({ results, limit }: { results: SimulationResult
  * to it, in order.
  */
 function OneLife({ entry }: { entry: Execution }) {
-  const { href } = useSimulation();
+  const { href } = useStudy();
   const events = useQuery(q.runEvents(entry.runId));
   const moments = (events.data?.items ?? []).filter(isMoment);
   const pauses = moments.filter((event) => event.type === "run.status" && payloadText(event, "action") === "paused").length;
@@ -346,12 +358,15 @@ function OneLife({ entry }: { entry: Execution }) {
         )}
 
         {/*
-          A longitudinal execution is the one this simulation has, so there is no row to hang its
+          A longitudinal execution is the one this study has, so there is no row to hang its
           report off. It wants a digest for exactly the same reason an ephemeral one does — more
           so, since pausing it is a normal thing to do and a paused execution digests like any
           other.
         */}
         <Inline gap={4} wrap>
+          <Link size="ui" to={href(castPath(entry.runId))}>
+            Who went
+          </Link>
           <Link size="ui" to={href(digestPath(entry.runId))}>
             Digest what it has found so far
           </Link>
@@ -386,8 +401,8 @@ function momentWords(event: LiveEvent): string {
 /** The whole history, on a page of its own, with a way to pick any two executions to compare. */
 export function Executions() {
   const { key } = useProject();
-  const { key: sim, simulation, href } = useSimulation();
-  const results = useQuery(q.results(key, sim));
+  const { key: studyKey, study, href } = useStudy();
+  const results = useQuery(q.results(key, studyKey));
   const [params, setParams] = useSearchParams();
 
   const history = [...(results.data?.history ?? [])].sort((a, b) => b.seq - a.seq);
@@ -403,7 +418,7 @@ export function Executions() {
         : undefined;
 
   const crumbs: Crumb[] = [{ label: "Results", to: href() }, { label: "Executions" }];
-  const ephemeral = simulation.mode === "ephemeral";
+  const ephemeral = study.mode === "ephemeral";
   const meta: MetaFact[] = ephemeral && history.length > 0 ? [{ key: "count", node: plural(history.length, "execution") }] : [];
 
   return (
@@ -415,8 +430,8 @@ export function Executions() {
           meta={meta}
           lede={
             ephemeral
-              ? "Every time this simulation has been run, newest first. Open one to put it beside the execution before it."
-              : "A longitudinal simulation is one execution with a life: what interrupted it, when it was picked back up, and what it has cost."
+              ? "Every time this study has been run, newest first. Open one to put it beside the execution before it."
+              : "A longitudinal study is one execution with a life: what interrupted it, when it was picked back up, and what it has cost."
           }
         />
       }
@@ -440,12 +455,12 @@ export function Executions() {
       loading={
         <StateBlock
           kind="loading"
-          what="this simulation's history"
-          skeleton={<Skeleton variant="row" count={5} height={56} label="Reading this simulation's history" />}
+          what="this study's history"
+          skeleton={<Skeleton variant="row" count={5} height={56} label="Reading this study's history" />}
         />
       }
       error={
-        <StateBlock kind="failed" what="this simulation's history" error={results.error}>
+        <StateBlock kind="failed" what="this study's history" error={results.error}>
           <Button
             variant="secondary"
             onClick={() => {
@@ -457,8 +472,8 @@ export function Executions() {
         </StateBlock>
       }
       empty={
-        <StateBlock kind="empty" what="this simulation's executions">
-          This simulation has never been run.{" "}
+        <StateBlock kind="empty" what="this study's executions">
+          This study has never been run.{" "}
           <Link to={href("preflight")}>See who would go, and what it would cost</Link>.
         </StateBlock>
       }

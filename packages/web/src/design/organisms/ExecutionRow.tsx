@@ -10,7 +10,7 @@ import { LedgerRow } from "./Ledger.js";
 /**
  * ExecutionRow — one time somebody pressed go (ATOMIC-INVENTORY §3, organism 30).
  *
- * An **execution** is one execution of a simulation; the word "run" survives only in `runId` and
+ * An **execution** is one execution of a study; the word "run" survives only in `runId` and
  * in the CLI (§7.1). The number in the stub is the one a reader recognises — *execution 3* — and
  * it is the row's locator, which is why this is a `LedgerRow`: the 72px right-aligned column, the
  * one continuous spine, the selection gutter and the collapse below `--breakpoint-md` are the

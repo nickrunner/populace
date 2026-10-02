@@ -31,8 +31,14 @@ const priority = z.enum(["low", "normal", "high"]);
 /**
  * Builds the Tasklet MCP server. Auth is a bearer token from `sign_up`/`log_in`,
  * surfaced to handlers as `extra.authInfo.token`.
+ *
+ * `callerToken` is the bearer the HTTP request arrived with, and it is here because the TOOL LIST
+ * depends on who is asking: a Pro account is shown `export_tasks` and a free one is not. Tasklet is
+ * stateless over HTTP, so a server is built per request and the listing is simply a function of the
+ * caller — which is what makes `upgrade_plan` a tool that changes the tool list, and therefore one
+ * that has to say so with `notifications/tools/list_changed`.
  */
-export function buildMcpServer(app: TaskletApp): McpServer {
+export function buildMcpServer(app: TaskletApp, callerToken?: string): McpServer {
   const server = new McpServer({ name: "tasklet", version: "0.1.0" });
 
   server.registerTool(
@@ -63,7 +69,16 @@ export function buildMcpServer(app: TaskletApp): McpServer {
   server.registerTool(
     "upgrade_plan",
     { description: "Upgrade to the Pro plan ($6/month, unlimited projects). Billing is simulated; no card is charged." },
-    (extra) => guard(() => app.upgradePlan(app.userForToken(extra.authInfo?.token))),
+    async (extra) => {
+      const result = guard(() => app.upgradePlan(app.userForToken(extra.authInfo?.token)));
+      // The upgrade unlocks `export_tasks`, so the list the caller was handed at connect is now
+      // wrong. It goes out through `extra.sendNotification` rather than `server.sendToolListChanged`
+      // because this server has no standalone stream to notify on — it is built for this one
+      // request — so the notification has to ride the response stream of this very call, ahead of
+      // the result below. That is the shape a client has to cope with, and the reason it is here.
+      if (result.isError !== true) await extra.sendNotification({ method: "notifications/tools/list_changed" });
+      return result;
+    },
   );
 
   server.registerTool(
@@ -178,6 +193,15 @@ export function buildMcpServer(app: TaskletApp): McpServer {
         return { deleted: true };
       }),
   );
+
+  // Pro only, and therefore not in every caller's listing: this is the tool `upgrade_plan` adds.
+  if (app.isPro(callerToken)) {
+    server.registerTool(
+      "export_tasks",
+      { description: "Export every task you own as JSON. Pro plan only.", annotations: { readOnlyHint: true } },
+      (extra) => guard(() => app.exportTasks(app.userForToken(extra.authInfo?.token))),
+    );
+  }
 
   // Intentionally missing: `delete_task`. The product info and landing page both promise it.
   return server;

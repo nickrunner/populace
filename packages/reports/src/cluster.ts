@@ -111,8 +111,13 @@ export function clusterFindings(findings: Finding[], options: ClusterOptions = {
     const verdicts = group.members.map((f) => f.verification?.verdict ?? null);
     return {
       id: `cluster-${index + 1}`,
-      // Written at file time by the runner (`signatureOf`), required by `FindingSchema`, and taken
-      // from the representative as-is: recomputing here would be a second definition of the key.
+      // The representative's own signature, written at file time by the runner (`signatureOf`) and
+      // taken as-is: recomputing here would be a second definition of it. But note what this makes
+      // the cluster's `signature` — a display key and an anchor, not an identity. `pickRepresentative`
+      // above sorts on `verdictScore` first, so the moment the digest writes a verdict this field
+      // can point at a different member and the cluster presents under a different signature,
+      // within one execution. A durable record keyed off it is a record filed twice; the identity
+      // of a problem over time is the member signature SET (`FiledIssueSchema.signatures`).
       signature: representative.signature,
       kind: representative.kind,
       title: representative.title,

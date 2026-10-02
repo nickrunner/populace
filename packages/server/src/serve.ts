@@ -3,16 +3,19 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve, type ServerType } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { DEFAULT_PROJECT_ID, type Job, type PopulaceConfig, type Store } from "@populace/core";
+import { DEFAULT_PROJECT_ID, type Job, type PopulaceConfig, type Run, type Store } from "@populace/core";
+import { createTypesafeClient, type TypesafeClient } from "@populace/reports";
 import type { ModelProvider } from "@populace/runner";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
-import { ensureProject, ensureSettings, ensureSimulation, liveConfigForRun, resolveSimulationConfig, seedProjectFromConfig, type ProcessConfig, type SimulationPlan } from "./config-store.js";
+import { ensureProject, ensureSettings, liveConfigForRun, materialise, resolveSimulationConfig, seedProjectFromConfig, type ProcessConfig, type SimulationPlan } from "./config-store.js";
 import type { ControlDeps } from "./deps.js";
 import { EventHub, RecordingStore } from "./events.js";
 import { JobRunner } from "./jobs.js";
 import { releaseLock, takeLock, type ServeLock } from "./lock.js";
-import { RunController } from "./runs.js";
+import { ProjectReadModel } from "./project-read-model.js";
+import { reportIssuesWith } from "./report-cycle.js";
+import { RunController, type ReportHandle, type ReportTrigger } from "./runs.js";
 import { sweepRun, type SweepOptions } from "./sweep.js";
 
 export interface ServeOptions {
@@ -33,8 +36,9 @@ export interface ServeOptions {
    */
   seedConfig?: PopulaceConfig;
   /**
-   * The simulations that `populace.yaml` describes, imported alongside it. Absent means the file
-   * named none and one is implied from its visit cap.
+   * The studies that `populace.yaml` describes (its `simulations:` or `studies:` block), imported
+   * alongside it. Absent means the file named none and one is implied from its visit cap, at the
+   * size of the people it counted.
    */
   seedSimulations?: readonly SimulationPlan[];
   /**
@@ -94,10 +98,23 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
   let jobs: JobRunner | undefined;
   let runs: RunController | undefined;
   let store = options.store;
+  /*
+   * The typed judge's client, built once from `TYPESAFE_API_KEY`.
+   *
+   * Its ABSENCE is the flag everywhere downstream — there is no `hasTypesafeKey()` beside
+   * `hasApiKey()` — because building one is reading a string, where `provider()` has to be a thunk
+   * that can throw. Without it, `verifier.judge: "typesafe"` threw from inside the verifier once
+   * per finding; with it, every place that verifies refuses at its pre-flight with one sentence
+   * naming the key. Read here rather than passed in because this is the process that owns the
+   * environment, and the key goes into no config, no snapshot, no trace and no log.
+   */
+  const typesafeKey = process.env.TYPESAFE_API_KEY;
+  const typesafe: TypesafeClient | undefined = typesafeKey === undefined || typesafeKey === "" ? undefined : createTypesafeClient({ apiKey: typesafeKey });
 
   /**
-   * The live config of one simulation, credentials and all. Secrets live in the rows and nowhere
-   * else, so this is the only place the redacted halves of a snapshot can be filled back in from.
+   * The live config of one study, credentials and all. Secrets live in the rows and nowhere else,
+   * so this is the only place the redacted halves of a snapshot can be filled back in from. It
+   * reads and never writes (ADR-0041): the roster it freezes is written by `materialise`, below.
    */
   const resolveLive = async (simulationId: string): Promise<PopulaceConfig> => (await resolveSimulationConfig(store, processConfig, simulationId)).config;
 
@@ -123,6 +140,30 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     // without the wake loop knowing the log exists (ADR-0026).
     store = new RecordingStore(options.store, hub.publish);
     jobs = new JobRunner(store, log);
+    const queue = jobs;
+    /*
+     * The automatic report: a digest and then the filing, for a window a cycle closed inside an
+     * execution or that an execution ended.
+     *
+     * A hoisted function declaration on purpose. It reads `configForRun`, which is a `const`
+     * further down, and the controller has to exist before that — nothing in here runs until a
+     * visit lands or an execution settles, long after both are defined. And it deliberately does
+     * not reach for `control`, which does not exist at this point either.
+     *
+     * No `githubClient`: absent means the real one, which is what production wants.
+     */
+    function reportIssues(run: Run, trigger: ReportTrigger): Promise<ReportHandle> {
+      return reportIssuesWith({
+        store,
+        jobs: queue,
+        readModel: new ProjectReadModel(store, { runningRunIds: () => runs?.runningIds ?? [] }),
+        configForRun: (runId: string) => configForRun(runId),
+        hasApiKey: () => options.provider !== undefined,
+        ...(options.provider ? { provider: options.provider } : {}),
+        ...(typesafe ? { typesafe: () => typesafe } : {}),
+        log,
+      })(run, trigger);
+    }
     runs = new RunController({
       store,
       provider: () => {
@@ -132,6 +173,13 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
       // Resuming an execution needs the live credentials a snapshot does not carry, and applying
       // changes to one is a re-resolve by definition.
       resolve: resolveLive,
+      // A start writes the roster its study deals before freezing the cast (D3): the one writer
+      // that is not a route.
+      materialise: (simulationId: string) => materialise(store, simulationId),
+      // Automatic filing, both halves: the last window of an execution that ended, and a window a
+      // cycle closed inside a longitudinal one. Nothing happens unless the project's connection
+      // says `autoFile`, which the controller checks before anything is enqueued.
+      reportIssues,
       log,
     });
 
@@ -169,8 +217,11 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
       const live = await liveConfigForRun(store, runId, resolveLive);
       if (live) return live;
       const run = await store.getRun(runId);
-      // No such run at all: the project's own simulation, as before.
-      if (!run) return resolveLive((await ensureSimulation(store, projectId)).id);
+      // No such run at all is an error, not a cue to invent a study. This used to fall back to the
+      // project's default study — creating one, with a population it also created, on a request
+      // that only asked to connect as a run — and nothing that asks for a run's config has any
+      // business writing rows (ADR-0041, D3).
+      if (!run) throw new Error(`no run ${runId}`);
       // The run is there but its rows no longer resolve, so there are no live credentials to
       // restore. `resolveLive` is asked again for the reason, which names what is missing.
       return resolveLive(run.simulationId);
@@ -181,6 +232,7 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
       processConfig,
       hasApiKey: () => options.provider !== undefined,
       ...(options.provider ? { provider: options.provider } : {}),
+      ...(typesafe ? { typesafe: () => typesafe } : {}),
       jobs,
       runs,
       hub,
@@ -207,7 +259,7 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
 
   /**
    * The config ONE RUN executed, for the read routes that cannot render without one. It resolves
-   * that run's SIMULATION — there is no process-wide "the config" any more, because there is no
+   * that run's STUDY — there is no process-wide "the config" any more, because there is no
    * process-wide project (SPEC §6).
    */
   const configForRunRead = (runId: string): Promise<PopulaceConfig | undefined> => liveConfigForRun(store, runId, resolveLive);
@@ -218,6 +270,7 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     version: options.version,
     configForRun: configForRunRead,
     ...(options.provider ? { verifier: options.provider() } : {}),
+    ...(typesafe ? { typesafe } : {}),
     ...(control ? { control } : {}),
   });
 

@@ -46,7 +46,8 @@ import {
  * **What the wire cannot tell us, this component does not claim.** `ClusterCardView` carries one
  * incidence — the headcount the problem was reported with — and not one per execution. The dots
  * are drawn from it, and the group that holds problems reported either side says so out loud
- * rather than implying two separate measurements.
+ * rather than implying two separate measurements. **Which group a problem is in is the server's
+ * answer, passed through** — `compareReadings` below says why that is not a detail.
  *
  * The contract has no `ExecutionCompareSideView`; `ExecutionHistoryEntry` is the record an
  * execution is summarised by, and it is the only one that carries the `seq` a reader recognises.
@@ -63,9 +64,109 @@ const CAVEAT =
 const INDEPENDENT =
   "Executions are independent. Different people do different things, so expect the numbers to move even when nothing about your product changed.";
 
-/** Was this problem reported in that execution? The `seenIn` list is the only record of it. */
-function reportedIn(cluster: ClusterCardView, seq: number): boolean {
-  return cluster.seenIn.includes(seq);
+/** The three readings, in the order they are read. The key is React's and nothing else reads it. */
+export type CompareReadingKey = "both" | "only-earlier" | "only-later";
+
+/** The server's partition of the problems, exactly as `ExecutionCompareView` carries it. */
+export interface ComparePartition {
+  a: ExecutionHistoryEntry;
+  b: ExecutionHistoryEntry;
+  /** What both executions reported. */
+  persisting: readonly ClusterCardView[];
+  /** What `a` reported and `b` did not. The wire's field name, kept so the hand-off is visible. */
+  fixed: readonly ClusterCardView[];
+  /** What `b` reported and `a` did not. */
+  appeared: readonly ClusterCardView[];
+}
+
+/** One group of problems, with the copy that says what being in it means. */
+export interface CompareReading {
+  key: CompareReadingKey;
+  title: string;
+  sub: string;
+  note: string | undefined;
+  empty: string;
+  clusters: readonly ClusterCardView[];
+  /** Did the earlier execution report these? A property of the GROUP, not of any card in it. */
+  reportedEarlier: boolean;
+  reportedLater: boolean;
+}
+
+/**
+ * The three readings, taken from the partition the SERVER sent rather than re-derived here.
+ *
+ * This component used to compute the partition itself, asking each card whether its `seenIn` list
+ * contained an execution's `seq`. It went wrong first in a way nothing on the screen showed: when
+ * ADR-0045 scoped the signature history to report WINDOWS, `seenIn` briefly carried window
+ * ordinals, so the filter compared two different countings and cards fell out of all three at once
+ * and were dropped on the floor. `seenIn` counts executions again and `seenInWindows` carries the
+ * ordinals (`ClusterCardView`), so that particular arithmetic no longer misfires.
+ *
+ * The re-derivation is still the defect, because the two questions were never the same question.
+ * `compare()` partitions by RUN ID — it clusters each execution's own findings and asks which
+ * representative signatures the two sets share — while `seenIn` is the study-wide GROUP's history
+ * (`historiesOf(windows, groupsOf(findings))`), and a group deliberately holds every wording of
+ * one problem. So the same bug worded one way in the earlier execution and another way in the
+ * later one is two cards, one an absence and one an arrival, whose shared group was reported in
+ * both: asked of `seenIn` each lands under "Reported in both", which is the opposite of what the
+ * server's own record says and the very confusion `resultClusters` exists to prevent. A client
+ * that recomputes an answer the server sent authoritatively can only ever drift from it. So
+ * nothing here filters: the lists arrive and are rendered.
+ *
+ * What this DOES decide is which list is which. The server's `fixed` means "in `a`, not in `b`"
+ * and `appeared` the reverse, both keyed to the argument order, while this screen reads earlier
+ * and later off the sequence numbers so that a caller handing the pair over newest-first does not
+ * get copy saying the opposite. When that happens the two lists swap with the two sides. Getting
+ * it wrong would print "not reported in execution 7" over the problems only execution 7 reported,
+ * which is the reverse claim and the worst sentence this screen could say.
+ */
+export function compareReadings(partition: ComparePartition): {
+  earlier: ExecutionHistoryEntry;
+  later: ExecutionHistoryEntry;
+  readings: readonly CompareReading[];
+} {
+  const aIsEarlier = partition.a.seq <= partition.b.seq;
+  const earlier = aIsEarlier ? partition.a : partition.b;
+  const later = aIsEarlier ? partition.b : partition.a;
+  const onlyEarlier = aIsEarlier ? partition.fixed : partition.appeared;
+  const onlyLater = aIsEarlier ? partition.appeared : partition.fixed;
+
+  return {
+    earlier,
+    later,
+    readings: [
+      {
+        key: "both",
+        title: "Reported in both",
+        sub: "The same problem came up either side. This is the reliable half of the comparison.",
+        note: "The headcount is the incidence the problem was reported with. It is not measured separately for each execution.",
+        empty: "Nothing was reported in both executions.",
+        clusters: partition.persisting,
+        reportedEarlier: true,
+        reportedLater: true,
+      },
+      {
+        key: "only-earlier",
+        title: `Not reported in execution ${later.seq}`,
+        sub: "An absence, and only an absence. It may be gone, or it may have been described in different words this time.",
+        note: undefined,
+        empty: `Everything execution ${earlier.seq} reported came up again.`,
+        clusters: onlyEarlier,
+        reportedEarlier: true,
+        reportedLater: false,
+      },
+      {
+        key: "only-later",
+        title: `Only in execution ${later.seq}`,
+        sub: "Either genuinely new, or the same problem worded differently. Read one and see.",
+        note: undefined,
+        empty: `Execution ${later.seq} reported nothing execution ${earlier.seq} had not.`,
+        clusters: onlyLater,
+        reportedEarlier: false,
+        reportedLater: true,
+      },
+    ],
+  };
 }
 
 /**
@@ -95,9 +196,18 @@ function LatticeSide({
   scale: RosterScale;
 }): ReactNode {
   const filled = reported ? Math.min(hit, total) : 0;
+  /**
+   * The figure names NO execution, and that is the fix for a real defect rather than a style
+   * choice. One `ClusterCardView` is drawn on both sides, and its incidence belongs to whichever
+   * execution's census built it: a `persisting` card comes from execution B, a `fixed` card from
+   * execution A. So "Reported in execution 7, by 3 of 12" put one execution's number above the
+   * other's roster — a second, invented measurement, which this component's own header says it
+   * will not imply. The `execution ${seq}` stub beside the row still says WHICH side this is;
+   * only the reach is left unattributed, because reach is the half that is not per-side.
+   */
   const sentence = reported
-    ? `Reported in execution ${seq}, by ${filled} of ${people(total)}.`
-    : `Not reported in execution ${seq}.`;
+    ? `Reported here, by ${filled} of ${people(total)}.`
+    : `Not reported here.`;
 
   const dots: LatticeDot[] = Array.from({ length: total }, (_, index) => ({
     id: `${seq}-${index}`,
@@ -129,10 +239,18 @@ function PairedProblem({
   cluster,
   earlier,
   later,
+  reportedEarlier,
+  reportedLater,
 }: {
   cluster: ClusterCardView;
   earlier: number;
   later: number;
+  /**
+   * Which side reported it, from the GROUP this card is in — the server's own partition by run
+   * id — and never asked of the card itself. See `compareReadings`.
+   */
+  reportedEarlier: boolean;
+  reportedLater: boolean;
 }): ReactNode {
   const scale = rosterScale(cluster.peopleTotal);
   const facts: readonly MetaFact[] = [
@@ -160,14 +278,14 @@ function PairedProblem({
       <div className="grid gap-1">
         <LatticeSide
           seq={earlier}
-          reported={reportedIn(cluster, earlier)}
+          reported={reportedEarlier}
           hit={cluster.peopleHit}
           total={cluster.peopleTotal}
           scale={scale}
         />
         <LatticeSide
           seq={later}
-          reported={reportedIn(cluster, later)}
+          reported={reportedLater}
           hit={cluster.peopleHit}
           total={cluster.peopleTotal}
           scale={scale}
@@ -185,47 +303,41 @@ function PairedProblem({
  * and on this screen what it means is the whole point.
  */
 function Group({
-  title,
-  sub,
-  note,
-  empty,
-  clusters,
+  reading,
   earlier,
   later,
 }: {
-  title: string;
-  sub: string;
-  note?: string;
-  empty: string;
-  clusters: readonly ClusterCardView[];
+  reading: CompareReading;
   earlier: number;
   later: number;
 }): ReactNode {
   return (
-    <Section title={title} level={3} trailing={clusters.length}>
+    <Section title={reading.title} level={3} trailing={reading.clusters.length}>
       <Measure width="read" as="div">
         <Text as="p" size="read-sm" tone="soft">
-          {sub}
+          {reading.sub}
         </Text>
-        {note === undefined ? null : (
+        {reading.note === undefined ? null : (
           <Text as="p" size="meta" tone="muted" className="mt-1">
-            {note}
+            {reading.note}
           </Text>
         )}
       </Measure>
 
-      {clusters.length === 0 ? (
+      {reading.clusters.length === 0 ? (
         <StateBlock kind="empty" what="this comparison">
-          {empty}
+          {reading.empty}
         </StateBlock>
       ) : (
         <ul className="mt-2 divide-y divide-rule">
-          {clusters.map((cluster) => (
+          {reading.clusters.map((cluster) => (
             <PairedProblem
               key={cluster.signature}
               cluster={cluster}
               earlier={earlier}
               later={later}
+              reportedEarlier={reading.reportedEarlier}
+              reportedLater={reading.reportedLater}
             />
           ))}
         </ul>
@@ -270,32 +382,19 @@ function SideSummary({
   );
 }
 
-export interface ExecutionCompareProps {
-  a: ExecutionHistoryEntry;
-  b: ExecutionHistoryEntry;
-  /**
-   * Every problem either execution reported. The component partitions them by `seenIn`; a problem
-   * neither execution reported is not part of this comparison and is dropped.
-   */
-  clusters: readonly ClusterCardView[];
-}
+/**
+ * The props are the partition itself: `ExecutionCompareView`'s three lists and the two executions
+ * they were computed over. There is deliberately no single `clusters` prop — one list plus a rule
+ * for splitting it is what made this component re-derive the server's own answer.
+ */
+export type ExecutionCompareProps = ComparePartition;
 
 export const ExecutionCompare = forwardRef<HTMLDivElement, ExecutionCompareProps>(
-  function ExecutionCompare({ a, b, clusters }, ref) {
+  function ExecutionCompare({ a, b, persisting, fixed, appeared }, ref) {
     // Which is earlier is read off the sequence rather than off the argument order, so a screen
-    // that hands them over the other way round does not get copy that says the opposite.
-    const earlier = a.seq <= b.seq ? a : b;
-    const later = a.seq <= b.seq ? b : a;
-
-    const both = clusters.filter(
-      (cluster) => reportedIn(cluster, earlier.seq) && reportedIn(cluster, later.seq),
-    );
-    const onlyEarlier = clusters.filter(
-      (cluster) => reportedIn(cluster, earlier.seq) && !reportedIn(cluster, later.seq),
-    );
-    const onlyLater = clusters.filter(
-      (cluster) => !reportedIn(cluster, earlier.seq) && reportedIn(cluster, later.seq),
-    );
+    // that hands them over the other way round does not get copy that says the opposite — and the
+    // three lists are the server's own, not a partition taken again here.
+    const { earlier, later, readings } = compareReadings({ a, b, persisting, fixed, appeared });
 
     return (
       <div ref={ref} className="grid gap-8">
@@ -320,33 +419,9 @@ export const ExecutionCompare = forwardRef<HTMLDivElement, ExecutionCompareProps
           </Measure>
         </Card>
 
-        <Group
-          title="Reported in both"
-          sub="The same problem came up either side. This is the reliable half of the comparison."
-          note="The headcount is the incidence the problem was reported with. It is not measured separately for each execution."
-          empty="Nothing was reported in both executions."
-          clusters={both}
-          earlier={earlier.seq}
-          later={later.seq}
-        />
-
-        <Group
-          title={`Not reported in execution ${later.seq}`}
-          sub="An absence, and only an absence. It may be gone, or it may have been described in different words this time."
-          empty={`Everything execution ${earlier.seq} reported came up again.`}
-          clusters={onlyEarlier}
-          earlier={earlier.seq}
-          later={later.seq}
-        />
-
-        <Group
-          title={`Only in execution ${later.seq}`}
-          sub="Either genuinely new, or the same problem worded differently. Read one and see."
-          empty={`Execution ${later.seq} reported nothing execution ${earlier.seq} had not.`}
-          clusters={onlyLater}
-          earlier={earlier.seq}
-          later={later.seq}
-        />
+        {readings.map((reading) => (
+          <Group key={reading.key} reading={reading} earlier={earlier.seq} later={later.seq} />
+        ))}
       </div>
     );
   },

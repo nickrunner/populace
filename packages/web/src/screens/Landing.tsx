@@ -64,7 +64,7 @@ const HERO_ENDS: readonly FanEnd[] = [
  * **The example finding — illustrative, and the section rule says so.** A search that promises a
  * case-insensitive match and delivers a case-sensitive one is a shape any app can have; no
  * number here was counted off anything (§9.6). The shape is `ClusterCardView` as it arrives on
- * the wire, so `FindingCard` does here what it does on `SimulationResults`. The timestamps are
+ * the wire, so `FindingCard` does here what it does on `StudyResults`. The timestamps are
  * relative to load: a frozen ISO string would drift into "8 months ago" (§4.5).
  */
 const HOUR = 60 * 60 * 1000;
@@ -85,11 +85,13 @@ const FINDING: ClusterCardView = {
     { slug: "first-timers", name: "First-timers", hit: 5, total: 6 },
     { slug: "power-users", name: "Power users", hit: 4, total: 6 },
   ],
+  inLatest: true,
   state: "open",
   seenIn: [1, 2, 3],
   firstSeenAt: FIRST_SEEN,
   lastSeenAt: LAST_SEEN,
   triage: null,
+  filedIssue: null,
 };
 
 /**

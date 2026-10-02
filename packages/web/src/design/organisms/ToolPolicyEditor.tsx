@@ -47,7 +47,7 @@ import { Ledger, LedgerRow } from "./Ledger.js";
 /**
  * What this editor needs to know about a tool, which is less than any one caller holds. A target's
  * check returns a description, an endpoint and a `readOnly` flag as well; a persona editing against
- * a simulation's pre-flight has only names. Both are this, and a list of names is not a poorer
+ * a study's pre-flight has only names. Both are this, and a list of names is not a poorer
  * version of a checked tool — it is what is known before anybody has asked.
  */
 export interface PolicyTool {
@@ -65,9 +65,14 @@ const DESTRUCTIVE_WORDS: Record<ToolPolicy["destructive"], string> = {
   deny: "never",
 };
 
+/**
+ * `allow` leads and carries the recommendation (ADR-0013 amendment). A study is pointed at a
+ * disposable environment, real people delete things, and the two settings below it both buy their
+ * safety by putting something in the transcript that no real user would ever meet.
+ */
 const DESTRUCTIVE_OPTIONS = [
-  { value: "confirm", label: "Ask them to confirm first (recommended)" },
-  { value: "allow", label: "Let them do it" },
+  { value: "allow", label: "Let them do it (recommended)" },
+  { value: "confirm", label: "Ask them to confirm first" },
   { value: "deny", label: "Never" },
 ] as const;
 

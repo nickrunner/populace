@@ -43,7 +43,7 @@ import { Icon, Text } from "../../atoms/index.js";
  *
  * **There are no arrowheads, because the brand has no diagonals** (§8.6). Direction is carried by
  * the one sequential device the system already sanctions: the `chevron-right` utility glyph, the
- * same one the landing's project → simulation → … chain is set with. It is a tier-2 glyph, so it
+ * same one the landing's project → study → … chain is set with. It is a tier-2 glyph, so it
  * carries affordance and never meaning, and the headings on either side say the sequence in
  * words. It is `aria-hidden`, because the reading order already carries the direction and a
  * screen reader announcing "chevron" between two stages is noise.

@@ -298,7 +298,7 @@ export function Projects() {
  */
 function consequence(project: ProjectSummary): string {
   const parts = [
-    plural(project.counts.simulations, "simulation"),
+    plural(project.counts.studies, "study", "studies"),
     people(project.counts.people),
     plural(project.counts.personas, "persona"),
   ];
@@ -314,11 +314,11 @@ function consequence(project: ProjectSummary): string {
  * column, and neither is a promise about what the next execution will do.
  */
 function factsFor(
-  counts: { simulations: number; people: number; personas: number },
+  counts: { studies: number; people: number; personas: number },
   lastActivityAt: string | null,
 ): readonly MetaFact[] {
   return [
-    { key: "simulations", node: plural(counts.simulations, "simulation") },
+    { key: "studies", node: plural(counts.studies, "study", "studies") },
     { key: "people", node: people(counts.people) },
     { key: "personas", node: plural(counts.personas, "persona") },
     {

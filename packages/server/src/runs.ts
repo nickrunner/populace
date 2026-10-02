@@ -1,9 +1,62 @@
 import { identityProviderFor } from "@populace/adapters";
-import { expandPopulation, newRunId, tagForRun, type JsonValue, type PauseReason, type PopulaceConfig, type Run, type Store } from "@populace/core";
+import { expandPopulation, newRunId, tagForRun, type JsonValue, type PauseReason, type PopulaceConfig, type ReportCycle, type Run, type Store } from "@populace/core";
 import { LocalDaemon, type ModelProvider, type WakeResult } from "@populace/runner";
 import { snapshotConfig, withLiveSecrets } from "./config-store.js";
+import { cycleDue, firstCycleAt, nextCycleAt, type CycleTrigger } from "./report-windows.js";
 import { sweepRun } from "./sweep.js";
 import { resetTarget } from "./target-reset.js";
+
+/**
+ * What made a report due, and what is about to happen to the evidence behind it.
+ *
+ * `because` is `"final"` for an execution that has ENDED, and one of `cycleDue`'s triggers for a
+ * window closing inside one that is still going. `sweeping` is read off the same frozen flag
+ * `autoSweep` is, and it is PASSED rather than looked up because only this file holds the config
+ * an execution is running: the report has to be able to say that the accounts behind it are being
+ * torn down, and by the time the job runs they are already gone.
+ */
+export interface ReportTrigger {
+  because: CycleTrigger | "final";
+  sweeping: boolean;
+  /**
+   * The teardown this report has to get IN FRONT OF, handed over so the job queue does the
+   * ordering instead of this file hoping for it.
+   *
+   * Present only when `sweeping` is true, and it is the same `autoSweep` the controller would have
+   * run itself. The reason it is passed rather than run here: the flush only ENQUEUES a digest and
+   * a filing, so a sweep run on the next line tore the accounts down while the digest was still
+   * draining — `replayFinding` refuses outright once an identity is torn down, so verdicts came
+   * out refused or not depending on which of the two won a race nobody could see. A report that
+   * takes this on puts it on the same serial FIFO behind its own jobs (ADR-0027), which makes the
+   * ordering structural. A report that does not take it on says so through `ReportHandle.sweeps`
+   * and the controller sweeps itself, exactly as before.
+   */
+  sweep?: () => Promise<void>;
+}
+
+/**
+ * A report that has been enqueued.
+ *
+ * The call resolves once the work is QUEUED and `finished` once it has run, and that split is the
+ * whole contract. The terminal flush may only ever wait for the first — `stop()` and `shutdown()`
+ * await `drive()`, so waiting on a slow publish would stall a stop request and the process exit —
+ * while the cycle waits for the second, because "skip, never stack" is read off it: the job queue
+ * is a strictly serial FIFO with no delay or cancellation (ADR-0027), so a second cycle would sit
+ * in front of every sweep and target check waiting to repeat work the first one is doing.
+ */
+export interface ReportHandle {
+  finished: Promise<void>;
+  /**
+   * True when this report took `ReportTrigger.sweep` on, so the caller must NOT run it as well.
+   *
+   * Absent or false means the accounts are still the controller's to remove — which is the case
+   * for every process that files nowhere, every execution whose project has no repository, and
+   * any report implementation that declines the teardown. Two sweeps of one execution is not a
+   * disaster (the second finds nothing tagged) but it is two passes over somebody's product, and
+   * the flag costs nothing.
+   */
+  sweeps?: boolean;
+}
 
 export interface RunControllerDeps {
   store: Store;
@@ -15,7 +68,51 @@ export interface RunControllerDeps {
    * definition. A process without it can still start and stop runs.
    */
   resolve?(simulationId: string): Promise<PopulaceConfig>;
+  /**
+   * Writes the roster a study's deal calls for (`materialise`, ADR-0041). A start calls it before
+   * the snapshot, because the snapshot freezes the cast and the cast has to be rows by then: an
+   * execution start is one of the writers D3 names. Absent in a process that only ever starts
+   * runs on configs it built itself (a test), which is also the process that has no rows to write.
+   */
+  materialise?(simulationId: string): Promise<void>;
+  /**
+   * Files what an execution has found, as jobs: a digest and then the filing, in that order.
+   *
+   * Injected rather than imported for the reason `resolve` and `materialise` are — this file must
+   * not know the job queue exists — and because a process that cannot file anywhere simply does
+   * not pass one, which is every test that is not about filing.
+   *
+   * Two things reach it, and they are the two ends of one mechanism. An execution that has ENDED
+   * reports its last window; a LONGITUDINAL execution, which never ends, closes a window on a
+   * rhythm while it runs. Without the second, the study type the product's loop is built around
+   * would never file anything automatically at all; without the first, an ephemeral one would not.
+   */
+  /*
+   * A property and not a method signature, deliberately: both places that use it lift it into a
+   * local first, so that narrowing `undefined` away survives the awaits underneath, and a method
+   * signature lifted off its object is the `unbound-method` lint error.
+   */
+  reportIssues?: (run: Run, trigger: ReportTrigger) => Promise<ReportHandle>;
   log?: (line: string) => void;
+}
+
+/**
+ * The report cycle of one execution in flight, and the only state the trigger keeps.
+ *
+ * None of it is the record of anything. A window's real boundary is the end time of the succeeded
+ * `issues.cycle` job that reported on it (`report-windows.ts`), which outlives this process; these
+ * three numbers only decide WHEN TO ASK NEXT, so a restart re-arming them from the run's start is
+ * correct rather than a lost edge.
+ */
+interface CycleState {
+  /** The rhythm, off the frozen snapshot. `applyChanges` replaces it. */
+  cycle: ReportCycle;
+  /** The deadline, rolled once per window so the jitter is a schedule and not a coin flip. */
+  dueAt: Date;
+  /** Visits that have ended since this window opened. */
+  visitsSince: number;
+  /** A cycle enqueued and not yet finished. Skip, never stack. */
+  inFlight: boolean;
 }
 
 export interface StartRunOptions {
@@ -42,6 +139,8 @@ interface ActiveRun {
   stopping: "drain" | "now" | null;
   /** Why it is draining, written onto the row when it settles. */
   pauseReason: PauseReason;
+  /** The report cycle, or null when this execution has none armed. See `armCycle`. */
+  cycle: CycleState | null;
   finished: Promise<void>;
 }
 
@@ -128,28 +227,36 @@ export class RunController {
     const identityProblems = identityProviderFor(config.identity).checkPopulation?.(expandPopulation(config.population, "preflight", options.simulationId).map((e) => e.agent)) ?? [];
     if (identityProblems.length > 0) throw new Error(`this run cannot start — every person needs their own account: ${identityProblems.join("; ")}`);
 
+    // The roster is written HERE, before the snapshot, and not re-resolved afterwards — and the
+    // two agree by construction. Resolution filled any slot no writer had reached with the same
+    // draw the writer makes (`draftPerson`), so the cast this config freezes is the cast these
+    // rows now hold. Every route that changes who goes has already materialised, which makes this
+    // the guarantee for a study that reached a start by another door: an import, or a test's
+    // `ensureSimulation`.
+    await this.deps.materialise?.(options.simulationId);
+
     const snapshot = await snapshotConfig(this.store, config);
     const runId = newRunId();
     const startedAt = new Date().toISOString();
-    // Executions of one simulation are numbered within it: "execution 3" is how the user names a
-    // run, and it is independent of the `parentRunId` lineage a carry-forward creates. It is the
+    // Executions of one study are numbered within it: "execution 3" is how the user names a run,
+    // and it is independent of the `parentRunId` lineage a carry-forward creates. It is the
     // highest `seq` so far plus one rather than a count, so deleting an execution never hands its
     // number to the next one.
     const siblings = await this.store.listRuns({ simulationId: options.simulationId });
-    // One execution of a simulation at a time. An ephemeral start RESETS THE TARGET (below), so a
-    // second execution begun while the first is still going wipes the database out from under the
-    // people already in it, and every report they file afterwards is against a state nobody asked
-    // for. Pause or stop the one that is going, or carry it forward when it has ended.
+    // One execution of a study at a time. An ephemeral start RESETS THE TARGET (below), so a second
+    // execution begun while the first is still going wipes the database out from under the people
+    // already in it, and every report they file afterwards is against a state nobody asked for.
+    // Pause or stop the one that is going, or carry it forward when it has ended.
     const live = siblings.find((run) => run.status === "running" || run.status === "pending" || this.active.has(run.id));
-    if (live) throw new Error(`execution ${live.seq} of this simulation is still going (${live.id}); pause or stop it before starting another`);
+    if (live) throw new Error(`execution ${live.seq} of this study is still going (${live.id}); pause or stop it before starting another`);
     const seq = siblings.reduce((highest, run) => Math.max(highest, run.seq), 0) + 1;
     const run: Run = {
       id: runId,
       projectId: options.projectId,
       simulationId: options.simulationId,
       seq,
-      // Copied, never read back from the simulation: changing a simulation's mode afterwards must
-      // not rewrite what an execution already was.
+      // Copied, never read back from the study: changing a study's mode afterwards must not
+      // rewrite what an execution already was.
       mode: config.simulation.mode,
       targetId: options.targetId,
       populationId: config.population.id,
@@ -193,7 +300,8 @@ export class RunController {
         label: running.label,
         agents: agents.length,
         populationId: running.populationId,
-        simulationId: running.simulationId,
+        // The payload is wire content and speaks the user's word for the row (ADR-0042).
+        studyId: running.simulationId,
         seq: running.seq,
         mode: running.mode,
         parentRunId: running.parentRunId,
@@ -202,7 +310,7 @@ export class RunController {
     });
 
     const finished = this.drive(runId, daemon, config);
-    this.active.set(runId, { daemon, config, stopping: null, pauseReason: "user", finished });
+    this.active.set(runId, { daemon, config, stopping: null, pauseReason: "user", cycle: this.armCycle(running, config), finished });
     return running;
   }
 
@@ -216,6 +324,10 @@ export class RunController {
         onWake: (result: WakeResult) => {
           onProgress?.(daemon.wakesRun);
           this.deps.log?.(`[run ${runId}] ${result.wake.agentId} ${result.wake.status} $${result.wake.costUsd.toFixed(4)}`);
+          // The only thing that can make a report cycle due, and the reason there is no timer for
+          // one anywhere: a report window has nothing to say until somebody has visited, so the
+          // question is asked as each visit lands and nothing happens in a study nobody is using.
+          this.onVisit(runId);
         },
       },
       {
@@ -252,15 +364,188 @@ export class RunController {
       const settled: Run = { ...run, status, endedAt: ended, pauseReason: status === "paused" ? (entry?.pauseReason ?? "user") : null };
       await this.store.saveRun(settled);
       await this.store.appendEvent({ runId, wakeId: null, type: "run.ended", payload: { status, error, wakes: daemon.wakesRun, pauseReason: settled.pauseReason } });
-      if (status === "completed" || status === "killed") await this.autoSweep(settled, config);
+      // The terminal flush, and the sweep is BEHIND it rather than beside it.
+      //
+      // `completed` only. A `paused` run is a drain somebody asked for and can be picked back up,
+      // so its last window is not over; `killed` is the kill switch, which is the one state in
+      // which populace should be doing nothing at all; and `failed` is not evidence of anything
+      // about the product under study.
+      //
+      // "Enqueued before the sweep" was never the same thing as "runs before the sweep": the
+      // flush only queues a digest and a filing, and the sweep on the next line then tore the
+      // accounts down while the digest was still draining. So the flush is offered the teardown
+      // and, when it takes it, the queue orders digest → filing → sweep and this line does
+      // nothing. Every other path — no reporter, nothing to report to, a flush that threw —
+      // sweeps here exactly as it always did.
+      const sweptByTheReport = status === "completed" && (await this.finalReport(settled, config, daemon.wakesRun));
+      if (!sweptByTheReport && (status === "completed" || status === "killed")) await this.autoSweep(settled, config);
     } finally {
       this.active.delete(runId);
     }
   }
 
   /**
+   * Arms the report cycle for an execution, or does not.
+   *
+   * **Longitudinal only, and that is the point of the pair.** A longitudinal execution never
+   * reaches a terminal status, so the flush below would leave it with no automatic filing for its
+   * whole life; an ephemeral one ends, and its end is already a window boundary, so the flush IS
+   * its report. Neither substitutes for the other (the plan's §6c).
+   *
+   * The rhythm is read off the FROZEN snapshot, exactly as `autoSweep` reads its flag: editing the
+   * study while it runs must not change the rhythm of an execution already in flight, and
+   * `applyChanges` is the explicit thing that replaces it.
+   *
+   * Off entirely without `reportIssues` — a process that cannot file anywhere has nothing to arm.
+   */
+  private armCycle(run: Run, config: PopulaceConfig): CycleState | null {
+    if (run.mode !== "longitudinal" || this.deps.reportIssues === undefined) return null;
+    const cycle = config.simulation.reportCycle;
+    // A row with no start time cannot have a deadline measured off one, and a run that is starting
+    // is starting now.
+    return { cycle, dueAt: firstCycleAt(cycle, run.startedAt === null ? new Date() : new Date(run.startedAt)), visitsSince: 0, inFlight: false };
+  }
+
+  /**
+   * A visit landed: count it against the open window, and ask whether that was the one that closed
+   * it.
+   *
+   * `onWake` is synchronous and is called from inside the tick loop, so this returns nothing and
+   * the async half is deliberately detached — a report cycle that cannot be enqueued must not fail
+   * the visit that happened to trigger it, which is why `maybeReportCycle` swallows everything.
+   */
+  private onVisit(runId: string): void {
+    const state = this.active.get(runId)?.cycle;
+    if (!state) return;
+    state.visitsSince += 1;
+    void this.maybeReportCycle(runId);
+  }
+
+  private async maybeReportCycle(runId: string): Promise<void> {
+    const entry = this.active.get(runId);
+    const state = entry?.cycle;
+    const reportIssues = this.deps.reportIssues;
+    if (!entry || !state || reportIssues === undefined) return;
+    const decision = cycleDue({ cycle: state.cycle, dueAt: state.dueAt, visitsSince: state.visitsSince, inFlight: state.inFlight, now: new Date() });
+    if (!decision.due || decision.trigger === null) return;
+
+    // Closed from HERE, synchronously, before the first await. `daemon.concurrency` is more than
+    // one, so two visits can land inside a single tick and both would otherwise walk past the
+    // guard while the first was still reading the run row — two cycles on a serial queue,
+    // reporting on the same stretch of time.
+    state.inFlight = true;
+    state.visitsSince = 0;
+    state.dueAt = nextCycleAt(state.cycle, new Date());
+    try {
+      const run = await this.store.getRun(runId);
+      if (run === undefined) return;
+      if (!(await this.filingArmed(run))) return;
+      const handle = await reportIssues(run, { because: decision.trigger, sweeping: false });
+      this.deps.log?.(`[run ${runId}] a report cycle is queued (${decision.trigger})`);
+      // Held until the cycle has finished: this promise IS the skip-never-stack flag. Nothing here
+      // is in a request path, so waiting costs a pending promise and nothing else.
+      await handle.finished;
+    } catch (err) {
+      // A cycle must never take the execution down with it. `configForRun` throws when the live
+      // credentials behind a snapshot cannot be restored, which is a state a long-lived study
+      // reaches by somebody deleting a target — and it should go on visiting.
+      this.deps.log?.(`[run ${runId}] the report cycle could not run: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      state.inFlight = false;
+    }
+  }
+
+  /**
+   * The last report of an execution that has ended — the final window, which no cycle will close.
+   *
+   * **Enqueue only, and never the outcome.** `stop()` and `shutdown()` both await `entry.finished`,
+   * which is `drive()`, so waiting here for a publish to forty issues would stall a stop request
+   * and the process exit; and a throw escaping here rejects `entry.finished`, which arrives at the
+   * dashboard as a 500 on stop. Hence the same try/catch/log shape `autoSweep` has below.
+   *
+   * Returns whether the report took the TEARDOWN on as well, which is how `drive()` knows not to
+   * run it itself. Every `false` path leaves the accounts to the caller, including the throw.
+   */
+  private async finalReport(run: Run, config: PopulaceConfig, visits: number): Promise<boolean> {
+    const reportIssues = this.deps.reportIssues;
+    // An execution nobody visited is not evidence of anything: `signatureHistories` reads an
+    // unvisited window as no evidence either way, so reporting on one spends two jobs to say
+    // nothing at all.
+    if (reportIssues === undefined || visits === 0) return false;
+    try {
+      if (!(await this.filingArmed(run))) return false;
+      const sweeping = run.mode === "ephemeral" && config.simulation.autoSweep && run.sweptAt === null;
+      const handle = await reportIssues(run, {
+        because: "final",
+        sweeping,
+        // Offered only when there is a teardown to order. A report that takes it puts it on the
+        // queue behind its own jobs; one that does not hands it straight back.
+        ...(sweeping ? { sweep: (): Promise<void> => this.autoSweep(run, config) } : {}),
+      });
+      // Deliberately dropped — see above — but a rejection still has to be taken, or a failed
+      // report is an unhandled rejection that can end the process. The job row records why it
+      // failed, which is where somebody reads it from.
+      void handle.finished.catch(() => undefined);
+      this.deps.log?.(`[run ${run.id}] filing what this execution found`);
+      if (!sweeping) return false;
+      if (handle.sweeps === true) {
+        // Still worth saying at every completion, because the accounts DO go — just not until
+        // after the digest has had its look. The sentence says what will be true afterwards and
+        // claims nothing about what the verdicts turned out to be.
+        this.deps.log?.(`[run ${run.id}] the accounts this execution made are queued for removal behind the report, so what was found is checked first and cannot be checked again afterwards`);
+        return true;
+      }
+      // The old shape, for a reporter that declined the teardown: the accounts go within seconds
+      // of here (`SWEEP-AND-VERIFY.md` measured eleven) and `replayFinding` refuses outright once
+      // an identity is torn down, so every verdict in this report will say the account that filed
+      // it was removed and the issues go out with nothing checked. Said loudly rather than left
+      // in the docs, which is where it used to live.
+      this.deps.log?.(
+        `[run ${run.id}] WARNING: this study files issues automatically AND removes its accounts when it finishes. They go now, so nothing filed from this execution can be checked against the target again. Turn auto-sweep off for a study that files issues.`,
+      );
+      return false;
+    } catch (err) {
+      this.deps.log?.(`[run ${run.id}] what this execution found could not be filed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Is there anywhere to file, and has anybody asked for it?
+   *
+   * Asked before a job is enqueued, for the reason the bulk route asks it before enqueueing: "you
+   * have not set up a repository" is not a thing to learn from a failed job row on a live feed,
+   * and the automatic path has no reader at all — it would be one failed job per execution, for
+   * ever, on a study nobody had connected.
+   *
+   * `autoFile` is the opt-in and it defaults to OFF: filing is an outbound write to somebody
+   * else's server, so nothing here happens merely because a token was pasted. The publisher
+   * refuses on its own terms as well (`requireConnection`), which is what makes it safe for the
+   * automatic path to have no route in front of it.
+   *
+   * **The global stop is asked FIRST, and it is the one guard here that is about safety rather
+   * than about setup.** A killed visit still fires `onWake`, so the visit that tripped the
+   * threshold asks this question with the stop engaged — and without this line the answer was
+   * yes: cycles went on firing, digests went on spending model money and replaying against
+   * somebody's product, and issues and comments went on being written into somebody's repository
+   * while the one control a user reaches for when something is wrong was pressed. Stopping
+   * everything has to stop the writing too, not only the visiting. The two halves of a cycle ask
+   * again for themselves once queued (`report-cycle.ts`), because the queue has no cancellation.
+   */
+  private async filingArmed(run: Run): Promise<boolean> {
+    const kill = await this.store.getKillSwitch();
+    if (kill.engaged) {
+      this.deps.log?.(`[run ${run.id}] everything is stopped${kill.reason ? ` (${kill.reason})` : ""}; nothing was reported and nothing was filed`);
+      return false;
+    }
+    const connection = await this.store.getGithubConnection(run.projectId);
+    if (connection === undefined || !connection.autoFile) return false;
+    return connection.repo !== "" && connection.token !== undefined && connection.token !== "";
+  }
+
+  /**
    * An ephemeral execution that has ended takes its accounts with it (SPEC §2.7). Without this, a
-   * simulation run ten times leaves ten cohorts of abandoned accounts on somebody's product.
+   * study run ten times leaves ten cohorts of abandoned accounts on somebody's product.
    *
    * Only the accounts: `keepData` is always true here, because the evidence is the point of having
    * run at all, and the digest is read after the run ends.
@@ -361,7 +646,7 @@ export class RunController {
     await this.store.saveRun(resumed);
     await this.store.appendEvent({ runId, wakeId: null, type: "run.status", payload: { action: "resumed", resumes: resumed.resumes, agents: agents.length } });
     const finished = this.drive(runId, daemon, config);
-    this.active.set(runId, { daemon, config, stopping: null, pauseReason: "user", finished });
+    this.active.set(runId, { daemon, config, stopping: null, pauseReason: "user", cycle: this.armCycle(resumed, config), finished });
     return resumed;
   }
 
@@ -397,8 +682,8 @@ export class RunController {
   async applyChanges(runId: string): Promise<Run> {
     const run = await this.store.getRun(runId);
     if (!run) throw new Error(`no run ${runId}`);
-    if (run.mode !== "longitudinal") throw new Error("only a longitudinal execution takes changes while it runs; edit the simulation and run it again");
-    if (!this.deps.resolve) throw new Error("this process cannot re-resolve a simulation's config");
+    if (run.mode !== "longitudinal") throw new Error("only a longitudinal execution takes changes while it runs; edit the study and run it again");
+    if (!this.deps.resolve) throw new Error("this process cannot re-resolve a study's config");
     const config = await this.deps.resolve(run.simulationId);
     const snapshot = await snapshotConfig(this.store, config);
     if (snapshot.id === run.configSnapshotId) return run;
@@ -415,6 +700,11 @@ export class RunController {
     try {
       if (entry) {
         entry.config = config;
+        // The rhythm too, or `armCycle`'s promise that "apply changes is what replaces it" is
+        // false. The OPEN window keeps its deadline and its count — it was opened under the old
+        // rhythm, and closing it early would report on a stretch nothing agreed to — and the next
+        // one is rolled from the new `every`.
+        if (entry.cycle) entry.cycle.cycle = config.simulation.reportCycle;
         entry.daemon.applyConfig(config);
         // Added cohorts get fresh participants at visit 1, removed ones retire as `scaled-down`, and
         // everybody else keeps their memory — which is what `reconcile()` has always done.
@@ -505,10 +795,24 @@ export class RunController {
   }
 }
 
-/** What an "apply changes" actually changed about who is going, for the `run.config` event. */
-function cohortChanges(before: PopulaceConfig | undefined, after: PopulaceConfig): { added: JsonValue; removed: JsonValue; resized: JsonValue } {
-  const was = new Map((before?.population.members ?? []).map((member) => [member.cohort, member.count]));
-  const now = new Map(after.population.members.map((member) => [member.cohort, member.count]));
+/** A config's headcount per COHORT: the lanes summed, since a resolved member is one lane. */
+function countsByCohort(members: readonly PopulaceConfig["population"]["members"][number][]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const member of members) counts.set(member.cohort, (counts.get(member.cohort) ?? 0) + member.count);
+  return counts;
+}
+
+/**
+ * What an "apply changes" actually changed about who is going, for the `run.config` event.
+ *
+ * Per cohort, and the lanes are SUMMED: a resolved member is one (cohort, persona) lane, so a
+ * cohort mixing two personas is two members sharing a `cohort`. Keying a map on that field alone
+ * kept whichever lane came last and reported a cohort grown from 3 to 5 as, say, "2 → 3" — the
+ * second lane's numbers — or as no change at all when only the first lane grew.
+ */
+export function cohortChanges(before: PopulaceConfig | undefined, after: PopulaceConfig): { added: JsonValue; removed: JsonValue; resized: JsonValue } {
+  const was = countsByCohort(before?.population.members ?? []);
+  const now = countsByCohort(after.population.members);
   return {
     added: [...now.keys()].filter((cohort) => !was.has(cohort)),
     removed: [...was.keys()].filter((cohort) => !now.has(cohort)),

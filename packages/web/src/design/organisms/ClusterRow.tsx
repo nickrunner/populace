@@ -1,7 +1,7 @@
 import { forwardRef } from "react";
 import type { ClusterCardView, ClusterState } from "@populace/contract";
 
-import { ago, people, plural } from "../../format.js";
+import { ago, executionScoped, people, plural } from "../../format.js";
 import type { Density, SeverityLevel, VerdictValue } from "../tokens.js";
 import { Badge, Spacer, Text, VisuallyHidden } from "../atoms/index.js";
 import {
@@ -88,25 +88,38 @@ const STACK_SIZE = {
  * measured reason is in ADR-0028's amendment — identical wording recurs every time and a reworded
  * complaint recurs never, so a signature that stops appearing may be a silence in the language
  * rather than a change in the product.
+ *
+ * **Which of the two it is depends on the card, not on the branch.** A number is allowed to name
+ * an execution only where the card's own scopes agree that it is about one, and that judgement
+ * lives in exactly one place for the whole dashboard — `executionScoped` in `../../format.js`,
+ * which `stateOfCluster` reads too. It used to be asked here as "are the two lists the same
+ * length", which passed a longitudinal card reported in exactly one window and let this row say
+ * *"last reported in execution 1"* about a study whose only execution was still running.
+ *
+ * Exported for the test that holds it: the sentence is the only place a wrong scope becomes a
+ * wrong claim, so it is asserted directly rather than through a render.
  */
-function stateDetail(cluster: ClusterCardView, currentSeq: number | undefined): string {
+export function stateDetail(cluster: ClusterCardView, currentSeq: number | undefined): string {
   const lastSeenIn = cluster.seenIn.at(-1);
   const firstSeenIn = cluster.seenIn.at(0);
+  const byExecution = executionScoped(cluster, currentSeq);
   switch (cluster.state) {
     case "new":
-      return firstSeenIn === undefined
+      return firstSeenIn === undefined || !byExecution
         ? `first reported ${ago(cluster.firstSeenAt)}`
         : `first reported in execution ${firstSeenIn}`;
     case "regressed":
-      return currentSeq === undefined
+      return currentSeq === undefined || !byExecution
         ? `reported again ${ago(cluster.lastSeenAt)}`
         : `absent, and reported again in execution ${currentSeq}`;
     case "fixed":
-      return lastSeenIn === undefined
+      return lastSeenIn === undefined || !byExecution
         ? `not reported since ${ago(cluster.lastSeenAt)}`
         : `last reported in execution ${lastSeenIn}`;
     default:
-      return `reported in ${plural(cluster.seenIn.length, "execution")}`;
+      return byExecution
+        ? `reported in ${plural(cluster.seenIn.length, "execution")}`
+        : `first ${ago(cluster.firstSeenAt)} · last ${ago(cluster.lastSeenAt)}`;
   }
 }
 
@@ -115,7 +128,12 @@ export interface ClusterRowProps {
   /** Where the problem's own page is. The whole row is the link. */
   to: string;
   density?: Density;
-  /** The execution being read, so "back" can name the one it came back in. */
+  /**
+   * The execution being read, so "back" can name the one it came back in — and the witness that an
+   * absence is an absence from a later EXECUTION rather than from another report cycle of the one
+   * the card already names (`executionScoped`). A screen that leaves it out gets the time-based
+   * sentence for every absence, which is the safe direction.
+   */
   currentSeq?: number;
   /** The one that matters on this screen: its incidence figure takes the marker band (§5.4). */
   theOne?: boolean;

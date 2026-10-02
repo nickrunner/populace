@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { CadenceSchema, PersonaSpecSchema, PopulaceConfigSchema, apportion, type PersonaSpec, type PopulaceConfig } from "@populace/core";
+import { CadenceSchema, PersonaSpecSchema, PopulaceConfigSchema, SimulationContextSchema, apportion, type PersonaSpec, type PopulaceConfig } from "@populace/core";
 import type { SimulationPlan } from "@populace/server";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -8,9 +8,11 @@ import { z } from "zod";
 export interface LoadedConfig {
   config: PopulaceConfig;
   /**
-   * The file's `simulations:` block, for the import that turns a file into rows. The FIRST one is
-   * the plan `config` carries, because a CLI command runs one simulation; the rest are created as
-   * rows by `populace serve` and picked in the browser.
+   * The file's `simulations:` block (`studies:` is the same block under the product's word for it,
+   * ADR-0042), for the import that turns a file into rows. The FIRST one is the plan `config`
+   * carries, because a CLI command runs one simulation; the rest are created as rows by
+   * `populace serve` and picked in the browser. A plan's `size` is for that import: the CLI daemon
+   * runs the file's lane counts whatever it says (ADR-0041).
    */
   simulations: SimulationPlan[];
   path: string;
@@ -35,8 +37,14 @@ const RawMemberSchema = z.looseObject({ persona: RawPersonaSchema });
 
 /**
  * A cohort as the file writes it (ADR-0039): what its people share, which personas they are drawn
- * from and in what ratio, and how many of them the file's population sends. `persona:` alone is
- * the mix of one. `population.members` is still accepted — a member is a lane, and always was.
+ * from and in what ratio, and how many of them the file's study sends. `persona:` alone is the mix
+ * of one. `population.members` is still accepted — a member is a lane, and always was.
+ *
+ * The file keeps a `size` per cohort where the dashboard has ONE size on the study and weights
+ * everywhere else (ADR-0041), because a file is run by the CLI daemon as written: its lane counts
+ * are the deal. The import turns them into the dashboard's shape losslessly — each count becomes
+ * the mix weight, their sum the population member's weight, and the sum of all of them the study's
+ * size unless the plan names one — and Sainte-Laguë hands the same counts back.
  */
 const RawMixEntrySchema = z.object({ persona: RawPersonaSchema, weight: z.number().positive().optional() });
 
@@ -48,7 +56,7 @@ const RawCohortSchema = z.object({
   /** Which personas, in what ratio. Either this or `persona`. */
   mix: z.array(RawMixEntrySchema).min(1).optional(),
   persona: RawPersonaSchema.optional(),
-  /** How many people this file's population sends from the cohort. There is no `scale`. */
+  /** How many people this file's study sends from the cohort. There is no `scale`. */
   size: z.number().int().positive().optional(),
   traits: z.record(z.string(), z.json()).optional(),
   tools: z.record(z.string(), z.json()).optional(),
@@ -58,16 +66,33 @@ const RawCohortSchema = z.object({
   maxWakes: z.number().int().positive().optional(),
 });
 
-/** A simulation as the file writes it: the population against the target, in one of two modes. */
+/** A study as the file writes it: the population against the target, in one of two modes. */
 const RawSimulationSchema = z.object({
   slug: z.string().optional(),
   name: z.string().optional(),
   description: z.string().optional(),
+  /**
+   * The study's size on import (ADR-0041). Left out, the cohorts' sizes add up to it, which is
+   * what they add up to for the daemon anyway; given and different, `populace validate` says so.
+   */
+  size: z.number().int().nonnegative().optional(),
   mode: z.enum(["ephemeral", "longitudinal"]).optional(),
   /** Required for `ephemeral` (it is what makes the execution end), absent for `longitudinal`. */
   visitsPerPerson: z.number().int().positive().nullable().optional(),
   cadence: z.record(z.string(), z.json()).optional(),
   seed: z.string().optional(),
+  /**
+   * How often a run of this study stops to report — and so how often populace writes into whatever
+   * tracker the project is connected to (ADR-0045). Left out, the study runs the schema's own
+   * rhythm.
+   *
+   * It is here for the reason the whole block is here: a project in version control sets its own
+   * timings in the file rather than in a browser, and the one dial on the rate at which populace
+   * writes into somebody's repository is the last one that should be dashboard-only. Validated by
+   * `ReportCycleSchema` further down, so `every: 6h` and a bare number of milliseconds are both
+   * accepted and `every: soon` is a load error rather than a surprise at run time.
+   */
+  reportCycle: z.record(z.string(), z.json()).optional(),
   autoSweep: z.boolean().optional(),
   requireFreshTarget: z.boolean().optional(),
 });
@@ -76,7 +101,19 @@ const RawConfigSchema = z.looseObject({
   population: z.looseObject({ members: z.array(RawMemberSchema).optional() }).optional(),
   cohorts: z.array(RawCohortSchema).optional(),
   simulations: z.array(RawSimulationSchema).optional(),
+  /** The same block as `simulations:`, under the word the product uses (ADR-0042). One or the other. */
+  studies: z.array(RawSimulationSchema).optional(),
 });
+
+/**
+ * `studies:` is `simulations:` spelled the way the dashboard spells it. A file that writes both is
+ * refused rather than merged, because two lists whose first entries each claim to be THE plan the
+ * CLI runs is exactly the ambiguity ADR-0035 says not to guess through.
+ */
+function plansIn(raw: z.infer<typeof RawConfigSchema>): z.infer<typeof RawSimulationSchema>[] {
+  if (raw.simulations !== undefined && raw.studies !== undefined) throw new Error("say it once: `studies:` and `simulations:` are the same block, and this file has both");
+  return raw.simulations ?? raw.studies ?? [];
+}
 
 /** Loads YAML, substitutes env, resolves `persona: file.yaml` references and validates. */
 export function loadConfig(path = "populace.yaml"): LoadedConfig {
@@ -121,8 +158,19 @@ export function loadConfig(path = "populace.yaml"): LoadedConfig {
     }),
   ];
 
-  const simulations = (raw.simulations ?? []).map(planOf);
+  const plans = plansIn(raw);
+  const simulations = plans.map(planOf);
   const first = simulations[0];
+  /*
+   * The report cycle is read off the RAW entry rather than off the plan, because it belongs to the
+   * run and not to the import: `SimulationPlan` is the shape `populace serve` writes rows from,
+   * while the cycle rides the resolved `SimulationContext` — which is what a run reads it out of
+   * and what a snapshot freezes it into, exactly as `autoSweep` does.
+   *
+   * Left undefined, `ReportCycleSchema`'s own defaults apply, which is what a study nobody has set
+   * this on actually runs.
+   */
+  const reportCycle = plans[0]?.reportCycle;
   // The execution plan belongs to the simulation now. A file with no `simulations:` block keeps
   // saying it on the population, and the cap it names there is what decides the mode on import.
   const population = {
@@ -130,7 +178,7 @@ export function loadConfig(path = "populace.yaml"): LoadedConfig {
     members,
     ...(first === undefined ? {} : { cadence: first.cadence, maxWakes: first.visitsPerPerson, seed: first.seed }),
   };
-  const config = PopulaceConfigSchema.parse({
+  const parsed = PopulaceConfigSchema.parse({
     ...raw,
     ...(first === undefined
       ? {}
@@ -141,27 +189,34 @@ export function loadConfig(path = "populace.yaml"): LoadedConfig {
             mode: first.visitsPerPerson === null ? "longitudinal" : "ephemeral",
             visitsPerPerson: first.visitsPerPerson,
             ...(first.autoSweep === undefined ? {} : { autoSweep: first.autoSweep }),
+            ...(reportCycle === undefined ? {} : { reportCycle }),
           },
         }),
     population,
   });
+  // The daemon runs the file's lane counts, so the study's size IS their sum — whatever a plan's
+  // `size` says, which is for the import (ADR-0041). Set here rather than left at the schema's
+  // nought so a snapshot of a CLI run says how many went, the same as one the dashboard started.
+  const size = parsed.population.members.reduce((sum, member) => sum + member.count, 0);
+  const config: PopulaceConfig = { ...parsed, simulation: SimulationContextSchema.parse({ ...parsed.simulation, size }) };
   return { config, simulations, path: absolute, dir };
 }
 
 /**
- * One `simulations:` entry as a plan the importer can write as a row. `mode` and `visitsPerPerson`
- * are bound to each other — an ephemeral simulation has to end, a longitudinal one does not — so a
- * file that sets one and not the other is refused here rather than half-applied.
+ * One `simulations:` (or `studies:`) entry as a plan the importer can write as a row. `mode` and
+ * `visitsPerPerson` are bound to each other — an ephemeral study has to end, a longitudinal one
+ * does not — so a file that sets one and not the other is refused here rather than half-applied.
  */
 function planOf(raw: z.infer<typeof RawSimulationSchema>, index: number): SimulationPlan {
-  const slug = raw.slug ?? `simulation-${index + 1}`;
+  const slug = raw.slug ?? `study-${index + 1}`;
   const visitsPerPerson = raw.visitsPerPerson ?? null;
-  if (raw.mode === "ephemeral" && visitsPerPerson === null) throw new Error(`simulation ${slug}: an ephemeral simulation has to end — give it visitsPerPerson`);
-  if (raw.mode === "longitudinal" && visitsPerPerson !== null) throw new Error(`simulation ${slug}: a longitudinal simulation does not end — remove visitsPerPerson`);
+  if (raw.mode === "ephemeral" && visitsPerPerson === null) throw new Error(`study ${slug}: an ephemeral study has to end — give it visitsPerPerson`);
+  if (raw.mode === "longitudinal" && visitsPerPerson !== null) throw new Error(`study ${slug}: a longitudinal study does not end — remove visitsPerPerson`);
   return {
     slug,
     name: raw.name ?? slug,
     ...(raw.description === undefined ? {} : { description: raw.description }),
+    ...(raw.size === undefined ? {} : { size: raw.size }),
     visitsPerPerson,
     cadence: CadenceSchema.parse(raw.cadence ?? {}),
     seed: raw.seed ?? "populace",

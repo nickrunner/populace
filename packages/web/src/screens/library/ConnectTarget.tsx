@@ -4,9 +4,10 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 
 import type { StoredTargetView, TargetInput } from "@populace/contract";
 import { api, type FirstContact, type SignInStatus, type TargetCheck } from "../../api.js";
+import { useThen } from "../../builders.js";
 import { useProject } from "../../context.jsx";
 import { plural } from "../../format.js";
-import { q } from "../../queries.js";
+import { keys, q } from "../../queries.js";
 import {
   EMPTY_IDENTITY,
   identityDraftFrom,
@@ -51,10 +52,11 @@ import {
  *
  * It was two places before this. `Target.tsx` had a `:t === "new"` branch — the full editor, every
  * field at once, including identity fields nobody can fill in before they have seen a tool list —
- * and `FirstRun`'s step 1 had a second, better one that guessed the identity strategy from the
- * check. Two different target-creation UIs were reachable from the same screen. This is the
- * second one, promoted and finished; `Target.tsx` keeps the saved-target editor and loses its
- * branch, and `FirstRun` step 1 links here.
+ * and the dashboard's since-removed first-run panel had a second, better one that guessed the
+ * identity strategy from the check. Two different target-creation UIs were reachable from the
+ * same screen. This is the second one, promoted and finished; `Target.tsx` keeps the saved-target
+ * editor and loses its branch, and the studies dashboard's "What needs doing" row for a missing
+ * target leads here (ADR-0043, D7).
  *
  * **The order is: ask nothing, then ask one thing.** Nothing is sent anywhere until Check is
  * pressed, and the address is still the reader's to fix if it fails. A check that succeeds IS the
@@ -76,6 +78,12 @@ import {
  * saves the target then and there, the id goes in the URL, a reload reads the row back, and the
  * secret is written the moment it is made rather than at Save. Save becomes "finish", and until
  * it is pressed the row honestly says `undecided`.
+ *
+ * **It is the one builder that saves at the start, and it chains anyway** (ADR-0043). The study
+ * builder with no target to pick sends the reader here with `?then=`, and the row a check writes
+ * is what they came for — so from the moment it exists, "Go back to the study" is offered, and it
+ * returns with `?picked=<id>` so the study takes it. The `then` rides in the URL beside `t`, and
+ * the write that puts `t` there must not drop it.
  */
 
 /**
@@ -97,6 +105,8 @@ export function ConnectTarget() {
    */
   const [params, setParams] = useSearchParams();
   const openOn = params.get("t");
+  /** Where the reader came from, when it was another builder; the target's own page otherwise. */
+  const { returnTo, fromBuilder } = useThen();
 
   const [url, setUrl] = useState("");
   /**
@@ -177,8 +187,26 @@ export function ConnectTarget() {
       filled.current = target.id;
       setSaved(target);
       if (target.mcp[0]?.authenticated) setBearerStored(true);
-      if (openOn !== target.id) setParams({ t: target.id }, { replace: true });
-      await queries.invalidateQueries();
+      // Set on the params that are there, not in place of them: `then` is how this page knows
+      // to offer the way back to the study, and replacing the whole query would drop it.
+      if (openOn !== target.id) {
+        setParams(
+          (prev) => {
+            prev.set("t", target.id);
+            return prev;
+          },
+          { replace: true },
+        );
+      }
+      // The targets list is what a study builder picks from, and it is invalidated BEFORE the
+      // reader can go back so that `picked` finds the new row waiting (ADR-0043). The overview
+      // and the setup needs count targets too. Specific keys, never a bare invalidation.
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: keys.targets(key) }),
+        queries.invalidateQueries({ queryKey: keys.target(key, target.id) }),
+        queries.invalidateQueries({ queryKey: keys.project(key) }),
+        queries.invalidateQueries({ queryKey: keys.setup(key) }),
+      ]);
     },
   });
 
@@ -299,7 +327,12 @@ export function ConnectTarget() {
     mutationFn: () => api.firstContact(key, saved?.id ?? ""),
     onSuccess: async (result) => {
       setContact(result);
-      await queries.invalidateQueries();
+      // First contact is stored on the row and summarised on the overview's target list.
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: keys.targets(key) }),
+        queries.invalidateQueries({ queryKey: keys.project(key) }),
+        queries.invalidateQueries({ queryKey: keys.setup(key) }),
+      ]);
     },
   });
 
@@ -319,7 +352,7 @@ export function ConnectTarget() {
       header={
         <PageHeader
           title="Connect a target"
-          lede="An address your product answers on. Dev and qa are two targets in one project, not two projects — a simulation names the one it visits."
+          lede="An address your product answers on. Dev and qa are two targets in one project, not two projects — a study names the one it visits."
           crumbs={[{ label: "Targets", to: href("library/targets") }, { label: "Connect" }]}
         />
       }
@@ -377,7 +410,7 @@ export function ConnectTarget() {
                   <Text size="read-sm" tone="soft" as="p">
                     Signed in as you{signedIn.resourceName ? ` to ${signedIn.resourceName}` : ""}
                     {signedIn.renewable ? ", and it will stay signed in" : ", until that session expires"}. That
-                    is how populace reads this list. The people a simulation sends need accounts of
+                    is how populace reads this list. The people a study sends need accounts of
                     their own, which is the target&rsquo;s identity setting and comes later.
                   </Text>
                 ) : null}
@@ -428,6 +461,21 @@ export function ConnectTarget() {
               <Text size="read-sm" tone="soft" as="p">
                 Kept as {saved.name}. Reload this page and it will still be here — and so will the
                 provisioning secret below, if you make one.
+                {/*
+                  Offered from the moment there is a row, because the row is what the study
+                  builder sent the reader here for (ADR-0043). It goes back with this target
+                  picked; the open question below can be answered on the target itself later,
+                  and the study's own page says so while it is.
+                */}
+                {fromBuilder ? (
+                  <>
+                    {" "}
+                    <Link to={returnTo(saved.id, href(`library/targets/${encodeURIComponent(saved.id)}`))} size="read-sm">
+                      Go back to the study
+                    </Link>
+                    {finished ? "" : " — it will take this target as it is, and the open question below can be answered later."}
+                  </>
+                ) : null}
               </Text>
             )}
             {failure !== null && failedAt === "connected" ? (
@@ -470,7 +518,7 @@ export function ConnectTarget() {
             <Stack gap={4}>
               <Text size="read-sm" tone="soft" as="p">
                 Not the sign-in above — that one is yours, and it is how populace reads this tool
-                list. This is how the people a simulation sends get accounts of their{" "}
+                list. This is how the people a study sends get accounts of their{" "}
                 <em>own</em>, which is the whole point of sending them.
               </Text>
               {result === null ? null : <WhatTheCheckLearned check={result} gated={bearer.trim() !== "" || bearerStored} />}
@@ -589,9 +637,24 @@ export function ConnectTarget() {
                   }}
                 />
               </Card>
+              {/*
+                The way out, and which one is primary depends on where the reader came from: a
+                study builder that sent them here gets them back with this target picked
+                (ADR-0043); anybody else opens the target they just made.
+              */}
               <Inline gap={3} align="center">
+                {fromBuilder ? (
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      void navigate(returnTo(saved.id, href(`library/targets/${encodeURIComponent(saved.id)}`)));
+                    }}
+                  >
+                    Go back to the study
+                  </Button>
+                ) : null}
                 <Button
-                  variant="primary"
+                  variant={fromBuilder ? "secondary" : "primary"}
                   onClick={() => {
                     void navigate(href(`library/targets/${encodeURIComponent(saved.id)}`));
                   }}
@@ -718,7 +781,7 @@ function WouldNotAnswer({
  * perfectly. The sentence names the resource in its own words when it published a name.
  *
  * **It says whose sign-in this is, every time.** The credential this gets is the reader's own,
- * and it is what populace connects with to read a tool list. It is not how the people a simulation
+ * and it is what populace connects with to read a tool list. It is not how the people a study
  * sends get in — they are supposed to be strangers with accounts of their own — and the one place
  * that could be misread into "signed in, therefore ready to run" is right here.
  */
@@ -760,7 +823,7 @@ function SignInNeeded({
         </Text>
         <Text size="read-sm" tone="soft" as="p">
           This signs in <em>you</em>, at {hostOf(status.authorizationServer ?? status.url)}, so
-          populace can read the tool list. The people a simulation sends need accounts of their
+          populace can read the tool list. The people a study sends need accounts of their
           own — that is the target&rsquo;s identity setting, and it comes after this.
         </Text>
         {status.scopes.length === 0 ? null : (

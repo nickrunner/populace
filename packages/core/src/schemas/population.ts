@@ -70,7 +70,7 @@ const PopulationMemberFields = z.object({
     .optional(),
   cohortName: z.string().min(1).optional(),
   persona: PersonaSpecSchema,
-  /** How many people are in this lane. Apportioned from the population's size for the cohort. */
+  /** How many people are in this lane. Dealt from the study's size: cohort weight first, then mix weight (ADR-0041). */
   count: z.number().int().positive().default(1),
   /** The cohort's shared condition, in prose. Handed to every person under the backstory. */
   context: z.string().default(""),

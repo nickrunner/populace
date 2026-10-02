@@ -12,14 +12,20 @@ function traitsLine(persona: Persona): string {
  * The cached system prefix for one participant.
  *
  * It takes the agent rather than the persona because line 1 is now the PERSON: a persona is a kind
- * of person and has no name, the line under the backstory is what their cohort shares, and the
- * one under that is this person's alone. Per-agent variance in the cached prefix is already the norm (traits are sampled per
+ * of person and has no name, the line under the backstory is what their cohort shares, then what
+ * the STUDY tells everyone it sends, and the one under that is this person's alone — the general
+ * before the particular, at every level. `brief` is `Simulation.brief` (ADR-0041, D3b): the one
+ * per-study text handed to the people, frozen into the snapshot as `SimulationContext.brief`, so
+ * it is constant for a run and belongs in this prefix rather than in the per-wake context; empty,
+ * it adds no line at all, and the prefix is byte-identical to one built without it.
+ *
+ * Per-agent variance in the cached prefix is already the norm (traits are sampled per
  * agent), so this costs no prompt-cache hit rate — `wake.test.ts` checks that rather than assuming
  * it, against the prefix the provider was actually handed: the system blocks and the last tool
  * carry a breakpoint, the rolling one sits on the last message every turn, and the prefix is
  * byte-identical between turns of one wake, which is what earns the cache read (ADR-0006).
  */
-export function personaSystemPrompt(agent: Agent, target: Target): string {
+export function personaSystemPrompt(agent: Agent, target: Target, brief = ""): string {
   const persona = agent.persona;
   const patience: Record<number, string> = {
     1: "You have almost no patience: one confusing step and you leave.",
@@ -32,8 +38,10 @@ export function personaSystemPrompt(agent: Agent, target: Target): string {
   return [
     `You are ${agent.name}, ${persona.role}.`,
     persona.backstory,
-    // What the cohort shares, then what is this person's alone: the general before the particular.
+    // What the cohort shares, then what the study says to everyone it sends, then what is this
+    // person's alone: the general before the particular.
     ...(agent.context ? [agent.context] : []),
+    ...(brief ? [brief] : []),
     ...(agent.details ? [agent.details] : []),
     `Your goals: ${persona.goals.map((g) => `- ${g}`).join("\n")}`,
     persona.constraints.length ? `Your constraints:\n${persona.constraints.map((c) => `- ${c}`).join("\n")}` : "",

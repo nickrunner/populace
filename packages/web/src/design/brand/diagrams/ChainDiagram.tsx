@@ -14,8 +14,8 @@ import type { BrandTone } from "../Ring.js";
 import { DiagramFigure, type DiagramDetail, type DiagramSize } from "./Figure.js";
 
 /**
- * ChainDiagram — the product's spine, drawn: **project → simulation → population → cohort →
- * person → visit → finding** (ADR-0029, CLAUDE.md "The chain").
+ * ChainDiagram — the product's spine, drawn: **project → study → population → cohort →
+ * person → visit → finding** (ADR-0029, ADR-0041, ADR-0042, CLAUDE.md "The chain").
  *
  * This is an explanation, not an ornament. A reader who has never seen the product should be
  * able to take the mechanism off the figure alone: what each link is, what it holds, and which
@@ -31,16 +31,21 @@ import { DiagramFigure, type DiagramDetail, type DiagramSize } from "./Figure.js
  * **Two kinds of link, and the figure says which is which.** From `population` down, every link
  * is people, so it is drawn in the mark's own grammar (§8.6): a filled circle is one person, a
  * stadium of fused cells is a cohort, a lattice at pitch 31 is a population, a dashed 2/7 stroke
- * is a thing that has not happened yet. `project` and `simulation` are **containers** — a scope
- * you author inside and a thing you press go on — and there is no people-shape for either, so
+ * is a thing that has not happened yet. `project` and `study` are **containers** — a scope you
+ * author inside and a thing you press go on — and there is no people-shape for either, so
  * they take the system's own container radius (§5.2, §1.2 M6) and are drawn as frames. Inventing
  * a brand glyph for them would have said "cohort" or "population" about something that is
  * neither, which is the one mistake this figure cannot afford.
  *
- * **`execution` is not a link and is not drawn as one.** A run is one *execution of a
- * simulation*, so it belongs inside the `simulation` row's sentence rather than in the chain —
- * and because outcomes vary between executions by design (ADR-0028/0030), the caption says so.
- * Nothing in this figure promises a repeatable result.
+ * **`execution` is not a link and is not drawn as one.** A run is one *execution of a study*,
+ * so it belongs inside the `study` row's sentence rather than in the chain — and because outcomes
+ * vary between executions by design (ADR-0028/0030), the caption says so. Nothing in this figure
+ * promises a repeatable result.
+ *
+ * **The study is the only headcount** (ADR-0041). A cohort is personas with weights, a population
+ * is cohorts with weights, and the study gives the population a size; the weights decide how
+ * many of each. The `population` and `cohort` sentences below say composition and never a
+ * count, because the count is not theirs to state.
  *
  * **`on="forest"`** is §9.3/§9.9's one inverted band, and it is a *ground*, not a theme (the
  * `Logo` idiom). It is drawn by `ornamentSurface` from `LatticeField.js`, which is the one place
@@ -56,7 +61,7 @@ import { DiagramFigure, type DiagramDetail, type DiagramSize } from "./Figure.js
 /** The seven links, in order. Exported so a page can build its own anchors from the same list. */
 export type ChainLink =
   | "project"
-  | "simulation"
+  | "study"
   | "population"
   | "cohort"
   | "person"
@@ -65,7 +70,7 @@ export type ChainLink =
 
 export const CHAIN_LINKS: readonly ChainLink[] = [
   "project",
-  "simulation",
+  "study",
   "population",
   "cohort",
   "person",
@@ -84,26 +89,26 @@ export const CHAIN_LINKS: readonly ChainLink[] = [
 const COPY: Record<ChainLink, { name: string; relation: string; definition: string }> = {
   project: {
     name: "Project",
-    relation: "holds simulations",
+    relation: "holds studies",
     definition:
-      "Everything you author lives in one project — targets, personas, cohorts, populations, simulations, settings, triage. None of it is shared across two.",
+      "Everything you author lives in one project — targets, personas, cohorts, populations, studies, settings, triage. None of it is shared across two.",
   },
-  simulation: {
-    name: "Simulation",
+  study: {
+    name: "Study",
     relation: "holds a population",
     definition:
-      "A population, a target and a mode. It is the thing you press go on, and each time you do it produces an execution.",
+      "A population, a target, a mode and a size — the only place a headcount lives. It is the thing you press go on, and each time you do it produces an execution.",
   },
   population: {
     name: "Population",
     relation: "holds cohorts",
-    definition: "Composition and nothing else: an ordered set of cohorts.",
+    definition: "Composition and nothing else: cohorts, each with a weight that says its share.",
   },
   cohort: {
     name: "Cohort",
     relation: "holds people",
     definition:
-      "People cast from one persona. It owns the headcount, the seed, and how often its people come back.",
+      "People who share a condition, drawn from personas by weight. It owns what they are told they share, the seed, and how often its people come back.",
   },
   person: {
     name: "Person",
@@ -192,10 +197,10 @@ function glyphOf(link: ChainLink, tone: BrandTone | undefined): ReactNode {
           <span className={cn(FRAME, "h-4 w-6 border-rule")} />
         </span>
       );
-    case "simulation":
+    case "study":
       return (
         <span className={cn(FRAME, "p-1")}>
-          <Lattice dots={crowd("sim", 6, tone)} rows={2} size="sm" />
+          <Lattice dots={crowd("study", 6, tone)} rows={2} size="sm" />
         </span>
       );
     case "population":
@@ -247,7 +252,7 @@ export interface ChainDiagramProps {
  * its own prose beside the figure.
  */
 const DEFAULT_CAPTION =
-  "Everything from the population down is people, and is drawn in the mark's own grammar. A project and a simulation are frames people are authored and run inside, so they are drawn as frames. Pressing go on a simulation produces an execution, and what the people in it do varies between executions by design.";
+  "Everything from the population down is people, and is drawn in the mark's own grammar. A project and a study are frames people are authored and run inside, so they are drawn as frames. The study says how many go; pressing go on it produces an execution, and what the people in it do varies between executions by design.";
 
 export const ChainDiagram = forwardRef<HTMLElement, ChainDiagramProps>(function ChainDiagram(
   { size = "panel", detail = "full", on = "paper", hrefs, id, className },

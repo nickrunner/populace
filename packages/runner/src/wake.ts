@@ -18,6 +18,7 @@ import {
   tagForRun,
   truncate,
   type Agent,
+  type EffectiveToolPolicy,
   type Effort,
   type Finding,
   type Identity,
@@ -170,6 +171,69 @@ function lastUserText(messages: Anthropic.Beta.BetaMessageParam[]): string {
       .join("\n"),
     2000,
   );
+}
+
+/** One target tool as this wake offers it: the name the model calls, the tool, and where it lives. */
+interface ToolEntry {
+  key: string;
+  tool: TargetTool;
+  session: McpSession;
+}
+
+/**
+ * Everything about a wake that is a function of the target's current tool list.
+ *
+ * It is a value rather than a set of `const`s because the list is not fixed for the length of a
+ * visit: a target may send `notifications/tools/list_changed` and a person who was shown fifteen
+ * tools at the door can be shown twenty after they create an organisation. Rebuilding is the whole
+ * surface at once — the dispatch table, the tool schemas the model is given, AND the system
+ * prompt's "The product exposes these tools" paragraph — because a person told about a tool they
+ * cannot call, or handed a tool nobody told them about, is a worse bug than a stale list.
+ */
+interface ToolSurface {
+  byKey: Map<string, ToolEntry>;
+  modelTools: Anthropic.Beta.BetaTool[];
+  system: Anthropic.Beta.BetaTextBlockParam[];
+}
+
+/**
+ * Builds the surface from whatever the sessions currently list.
+ *
+ * The policy is applied HERE, which is what makes a mid-visit refresh safe: a tool the target adds
+ * later goes through the same `isToolPermitted` gate as one listed at connect, so a refresh can
+ * only ever re-narrow the surface and never widen what the policy permits. The destructive
+ * handling needs nothing extra — it reads `destructiveHint` off the freshly listed tool at call
+ * time.
+ */
+function buildToolSurface(
+  sessions: Iterable<McpSession>,
+  policy: EffectiveToolPolicy,
+  context: { multi: boolean; webFetch: boolean; personaPrompt: string },
+): ToolSurface {
+  const entries: ToolEntry[] = [];
+  for (const session of sessions) {
+    for (const tool of session.listTools()) {
+      const key = context.multi ? `${session.endpoint.name}__${tool.name}` : tool.name;
+      if (!isToolPermitted(tool.name, policy)) continue;
+      entries.push({ key, tool, session });
+    }
+  }
+  entries.sort((a, b) => a.key.localeCompare(b.key));
+
+  const modelTools: Anthropic.Beta.BetaTool[] = [
+    ...entries.map(({ key, tool }) => ({
+      name: key,
+      description: tool.description,
+      input_schema: tool.inputSchema as Anthropic.Beta.BetaTool.InputSchema,
+      eager_input_streaming: true,
+    })),
+    ...reporterTools({ webFetch: context.webFetch }),
+  ];
+  const lastTool = modelTools[modelTools.length - 1];
+  if (lastTool) lastTool.cache_control = { type: "ephemeral" };
+
+  const systemText = `${context.personaPrompt}\n\nThe product exposes these tools:\n${describeTargetTools(entries.map((e) => ({ ...e.tool, name: e.key })))}`;
+  return { byKey: new Map(entries.map((e) => [e.key, e])), modelTools, system: systemBlocks(systemText) };
 }
 
 /**
@@ -365,33 +429,13 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
   // — in the config assembler, in a UI — would leave a wake built by hand (the CLI, a test, a
   // future cloud job) running on the persona's policy alone.
   const policy = effectiveToolPolicy(config.target.tools, agent.persona.tools, agent.cohortTools);
-  const multi = sessions.size > 1;
-  const targetTools: { key: string; tool: TargetTool; session: McpSession }[] = [];
-  for (const session of sessions.values()) {
-    for (const tool of session.listTools()) {
-      const key = multi ? `${session.endpoint.name}__${tool.name}` : tool.name;
-      if (!isToolPermitted(tool.name, policy)) continue;
-      targetTools.push({ key, tool, session });
-    }
-  }
-  targetTools.sort((a, b) => a.key.localeCompare(b.key));
-  const targetByKey = new Map(targetTools.map((t) => [t.key, t]));
-
   const webBaseUrl = config.guardrails.webFetch ? config.target.webBaseUrl : undefined;
-  const modelTools: Anthropic.Beta.BetaTool[] = [
-    ...targetTools.map(({ key, tool }) => ({
-      name: key,
-      description: tool.description,
-      input_schema: tool.inputSchema as Anthropic.Beta.BetaTool.InputSchema,
-      eager_input_streaming: true,
-    })),
-    ...reporterTools({ webFetch: webBaseUrl !== undefined }),
-  ];
-  const lastTool = modelTools[modelTools.length - 1];
-  if (lastTool) lastTool.cache_control = { type: "ephemeral" };
-
-  const systemText = `${personaSystemPrompt(agent, config.target)}\n\nThe product exposes these tools:\n${describeTargetTools(targetTools.map((t) => ({ ...t.tool, name: t.key })))}`;
-  const system = systemBlocks(systemText);
+  const surfaceContext = {
+    multi: sessions.size > 1,
+    webFetch: webBaseUrl !== undefined,
+    personaPrompt: personaSystemPrompt(agent, config.target, config.simulation.brief),
+  };
+  let surface = buildToolSurface(sessions.values(), policy, surfaceContext);
   const messages: Anthropic.Beta.BetaMessageParam[] = [
     {
       role: "user",
@@ -463,7 +507,7 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
 
   const shown = (ref: string, text: string): string => `[${ref}] ${truncate(text, config.guardrails.maxToolResultChars)}`;
 
-  const handleTargetTool = async (block: Anthropic.Beta.BetaToolUseBlock, entry: { key: string; tool: TargetTool; session: McpSession }): Promise<ToolResultParam> => {
+  const handleTargetTool = async (block: Anthropic.Beta.BetaToolUseBlock, entry: ToolEntry): Promise<ToolResultParam> => {
     const parsedArgs = JsonObjectSchema.safeParse(block.input);
     if (!parsedArgs.success) {
       return { type: "tool_result", tool_use_id: block.id, is_error: true, content: `INVALID_JSON: arguments for ${entry.key} were not a JSON object` };
@@ -629,8 +673,8 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
         model: modelConfig.model,
         effort,
         maxTokens: modelConfig.maxTokens,
-        system,
-        tools: modelTools,
+        system: surface.system,
+        tools: surface.modelTools,
         messages,
         fallbacks: modelConfig.fallbacks,
         metadata: { wakeId, wakeNumber, agentId: agent.id, personaId: agent.persona.id, runId },
@@ -697,7 +741,7 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
         }
         if (isReporterTool(block.name)) results.push(await handleReporterTool(block));
         else {
-          const entry = targetByKey.get(block.name);
+          const entry = surface.byKey.get(block.name);
           if (!entry) {
             await trace.write({ type: "guardrail", rule: "tool-denied", tool: block.name, detail: "tool not offered in this wake" });
             results.push({ type: "tool_result", tool_use_id: block.id, is_error: true, content: `There is no tool called ${block.name}.` });
@@ -707,6 +751,26 @@ export async function runWake(options: WakeOptions, deps: WakeDeps): Promise<Wak
       // All tool results for one assistant turn go back in a single user message.
       messages.push({ role: "user", content: results });
       if (ended) break;
+
+      // A target may grow or shrink what it offers part-way through a visit — gaining host tools on
+      // creating an organisation, losing them on leaving one. A server with no standalone stream to
+      // notify on sends `notifications/tools/list_changed` down the response stream of the call that
+      // caused the change, ahead of that call's result, so the flag is already set by the time
+      // `call()` resolved: checking it here, between this turn's results and the next request, needs
+      // no polling and no timer. The rebuilt list invalidates the prompt cache from this turn on,
+      // which is the price of the model's next turn being told the truth.
+      for (const session of sessions.values()) {
+        if (!session.toolsStale) continue;
+        try {
+          const changed = await session.refreshTools();
+          surface = buildToolSurface(sessions.values(), policy, surfaceContext);
+          await trace.write({ type: "tools", event: "changed", endpoint: session.endpoint.name, added: changed.added, removed: changed.removed });
+        } catch (err) {
+          // A failed re-list is not a failed visit: the person keeps the list they had, which is the
+          // one every turn so far ran on, and the note says why it may be behind.
+          await trace.write({ type: "note", text: `${session.endpoint.name} said its tools changed but could not be re-listed: ${truncate(err instanceof Error ? err.message : String(err), 200)}` });
+        }
+      }
 
       const breach = budget.breach();
       if (breach) {

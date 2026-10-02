@@ -1,22 +1,29 @@
 import {
-  AddStarterBodySchema,
   CohortInputSchema,
   CompareQuerySchema,
   EventStreamQuerySchema,
   GeneratePeopleBodySchema,
+  GithubCheckBodySchema,
+  GithubCheckResultSchema,
+  GithubConnectionInputSchema,
+  GithubConnectionViewSchema,
   KillSwitchBodySchema,
   PersonaInputSchema,
+  PersonaPreviewBodySchema,
   PersonPatchSchema,
   PopulationCreateSchema,
   PopulationInputSchema,
+  ProjectEstimateBodySchema,
+  PublishIssuesBodySchema,
   ProjectInputSchema,
   SettingsInputSchema,
   ProvisioningCheckBodySchema,
   SignInQuerySchema,
   SignInStartBodySchema,
-  SimulationInputSchema,
   StartExecutionBodySchema,
   StopRunBodySchema,
+  StudyCreateInputSchema,
+  StudyUpdateInputSchema,
   SweepBodySchema,
   TargetCheckBodySchema,
   TargetInputSchema,
@@ -24,16 +31,29 @@ import {
   routes,
   type ParticipantLive,
   type CohortView,
+  type EventView,
+  type GithubCheckResult,
+  type GithubConnectionView,
   type IdentityConfigInput,
   type IdentityConfigView,
+  type PersonaSpecInput,
   type PersonaView,
   type PersonView,
+  type PublishIssueResult,
+  type PublishSkipReason,
   type PopulationView,
   type ProjectView,
   type RunLive,
   type SettingsView,
   type SetupStatus,
+  type StarterPersonaView,
   type StoredTargetView,
+  type PublishPreview,
+  type PublishPreviewEntry,
+  type ReportCycleInput,
+  type StudyOverridesInput,
+  type StudyPeopleView,
+  type StudySummaryView,
 } from "@populace/contract";
 import {
   blockedBecause,
@@ -51,13 +71,18 @@ import {
   newProjectId,
   newTargetId,
   normalizeEndpointUrl,
+  personIdFor,
   slugify,
   tagForRun,
+  GithubConnectionSchema,
   ReferencedError,
   StoredTargetSchema,
+  SEVERITY_RANK,
   type Agent,
   type Cohort,
   type Event,
+  type Finding,
+  type GithubConnection,
   type IdentityConfig,
   type McpEndpoint,
   type Person,
@@ -66,42 +91,235 @@ import {
   type Simulation,
   type StoredPersona,
   type StoredPopulation,
+  type Store,
   type StoredTarget,
+  type Target,
   type TraceEvent,
   type Triage,
+  type Wake,
 } from "@populace/core";
 import { identityProviderFor } from "@populace/adapters";
 import { buildDigest, verifyPending } from "@populace/reports";
 import { finishSignIn, personaSystemPrompt, startSignIn, type SignInProvider } from "@populace/runner";
 import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { ensureRoster, headcountOf, lanesOf, RosterIncomplete, sizeIn, type Lane } from "./cohort-store.js";
+import { dealFor, ensureRoster, ensureRosterFor, peopleSentBy, RosterIncomplete, type Deal, type Lane } from "./cohort-store.js";
 import { generatePeople, type GenerateOptions, type GeneratedRoster } from "./people-writer.js";
-import {
-  ConfigIncomplete,
-  cohortsOfPopulation,
-  createSimulation,
-  ensurePopulation,
-  ensureSettings,
-  ensureSimulation,
-  ensurePersonaCohort,
-  resolveSimulationConfig,
-  type ResolvedSimulation,
-} from "./config-store.js";
-import { estimateRun } from "./estimate.js";
+import { ConfigIncomplete, createSimulation, ensureSettings, materialise, planSettings, resolveDraft, resolveSimulationConfig, type ResolvedSimulation, type StudyDraft } from "./config-store.js";
+import { estimateRun, toEstimateView, zeroEstimate } from "./estimate.js";
 import { needsOf } from "./needs.js";
 import { fail, page, param, parseBody, parseQuery } from "./http.js";
 import type { JobHandler, JobReport, JobSpend } from "./jobs.js";
-import { ProjectReadModel } from "./project-read-model.js";
+import { ProjectReadModel, type PublishableCluster } from "./project-read-model.js";
 import { ReadModel } from "./read-model.js";
 import { STARTER_PERSONAS, starterBySlug } from "./starters.js";
 import { checkPromises, checkTarget, type CheckCredentials } from "./target-check.js";
 import { callbackPage, callbackUri, examine, isAddress, pendingFor, providerFor, signInStatus, statusOf } from "./sign-in.js";
 import { firstContact } from "./first-contact.js";
 import { checkProvisioning } from "./provisioning-check.js";
+import { GithubClient, type RepoCheck } from "./github.js";
+import { IssuesNotConnected, publishIssues, type PublishIssuesDeps } from "./publish-issues.js";
+import { reportWindows } from "./report-windows.js";
 import { resetTarget } from "./target-reset.js";
 import { targetView as liveTargetView } from "./target.js";
 import type { ControlDeps } from "./deps.js";
+
+/**
+ * Why the configured judge cannot run here, or null when it can.
+ *
+ * One definition for both places that verify — the digest job below, and
+ * `GET /runs/:id/digest?verify=true` in `app.ts` — because they were drifting: two judges each
+ * need a credential this process may not have, and a judge with no key is the one failure that
+ * must be a refusal rather than a surprise. Without this, `verifier.judge: "typesafe"` threw from
+ * inside `verifyFinding` once per finding, so an operator read a stack trace per problem instead
+ * of one sentence naming the key, and a heuristic-judge digest was never affected either way.
+ *
+ * Deliberately NOT a silent downgrade to the heuristic judge: the judge decides what reaches the
+ * digest, and answering a request to check with the strong judge by quietly checking with the weak
+ * one would be answering a different question than the one asked.
+ */
+export function judgeRefusal(judge: PopulaceConfig["verifier"]["judge"], available: { model: boolean; typesafe: boolean }): string | null {
+  if (judge === "model" && !available.model) return "the model judge needs an API key; set ANTHROPIC_API_KEY or configure verifier.judge: heuristic";
+  if (judge === "typesafe" && !available.typesafe) return "the typed judge needs its own API key; set TYPESAFE_API_KEY or configure verifier.judge: heuristic";
+  return null;
+}
+
+/**
+ * What `runDigest` needs, typed off `ControlDeps` rather than restated: the routes satisfy it by
+ * being it, and the report cycle's own deps satisfy it structurally, so a field renamed on one
+ * side is a compile error on the other.
+ */
+export type DigestDeps = Pick<ControlDeps, "store" | "configForRun" | "hasApiKey" | "provider" | "typesafe">;
+
+/**
+ * The verify-and-cluster body of a digest job, in ONE place.
+ *
+ * There are two callers and they are the same job under two triggers: `POST /runs/:id/digest/job`
+ * below, which a person presses, and the automatic report cycle (`report-cycle.ts`), which is this
+ * same digest on a clock for as long as a longitudinal study runs. It used to be written out in
+ * both, with a comment in one saying the two had to be kept in step — and the two things needing
+ * to be kept in step were the two about money:
+ *
+ * - **The pre-flight refusal.** A judge whose credential this process does not have refuses here,
+ *   out loud, and never downgrades to the free one: the judge decides what reaches the digest, so
+ *   checking with the weak one answers a different question than the one that was configured.
+ * - **The project's daily ceiling, read before anything is spent** and refused rather than
+ *   trimmed — a digest that quietly verified half of what was asked for is a bill nobody can
+ *   account for. The cycle is the caller this matters most for: a button press with no ceiling
+ *   over it is a mistake somebody notices once, and an unattended loop with no ceiling over it is
+ *   not.
+ */
+export async function runDigest(deps: DigestDeps, runId: string, report: JobReport, spend: JobSpend): Promise<void> {
+  const run = await deps.store.getRun(runId);
+  const config = await deps.configForRun(runId);
+  await report({ label: "checking the findings nobody has ruled on yet" });
+  const refusal = judgeRefusal(config.verifier.judge, { model: deps.hasApiKey(), typesafe: deps.typesafe !== undefined });
+  if (refusal !== null) throw new Error(refusal);
+  if (run !== undefined) {
+    const spent = await deps.store.costSince({ projectId: run.projectId }, new Date(Date.now() - 86_400_000));
+    if (spent >= config.guardrails.dailyUsd) {
+      throw new Error(`this project spent $${spent.toFixed(2)} in the last 24h, at or over its $${String(config.guardrails.dailyUsd)} ceiling; re-checking findings costs money, so nothing was checked`);
+    }
+  }
+  const verified = await verifyPending(
+    {
+      store: deps.store,
+      config,
+      identityProvider: identityProviderFor(config.identity),
+      ...(deps.provider ? { provider: deps.provider() } : {}),
+      ...(deps.typesafe ? { typesafe: deps.typesafe() } : {}),
+    },
+    { runIds: [runId] },
+  );
+  // Summed off the verifications that came back rather than off a running total inside the
+  // verifier: `verifyPending` returns the findings it wrote, each carrying what its own judge
+  // cost, and a heuristic judge's nought is nought here too (`JobSpend` ignores it).
+  await spend(verified.reduce((total, finding) => total + (finding.verification?.costUsd ?? 0), 0));
+  await report({ label: "clustering what came back" });
+  const wakes = await deps.store.listWakes({ runIds: [runId] });
+  const since = wakes[0]?.startedAt ? new Date(wakes[0].startedAt) : new Date(0);
+  await buildDigest({ store: deps.store, config, since, until: new Date(), runIds: [runId] });
+}
+
+/** What a preview needs: the ledger and the read model, and nothing that could write or spend. */
+export interface PreviewIssuesDeps {
+  store: Store;
+  readModel: ProjectReadModel;
+}
+
+/**
+ * What a bulk file WOULD do, with nothing written, nothing spent and nobody asked.
+ *
+ * It exists because the dialog that asks a reader to confirm forty issues was answering this
+ * question for itself: `StudyResults.tsx` carried hand-written copies of the hard skips and of the
+ * connection's filter, in the browser, with no shared module and nothing keeping them in step. A
+ * skip reason or a filter field added on the server left the dialog listing rows that the pass
+ * would pass over, which makes the count next to the button false — and the count next to a button
+ * that writes into somebody's repository is the last thing a reader has to go on.
+ *
+ * **The order of the tests below is `dealWith`'s order in `publish-issues.ts`, and it has to stay
+ * that way.** It is not the order the reasons are listed in: a problem that already has an issue
+ * gets its comment before the absence test, because a problem that has gone quiet SINCE it was
+ * filed is the whole point of the loop, while an absence never filed has nothing to say and nowhere
+ * to say it. The severity, kind and confirmed tests are `filterSkip`'s, off the same
+ * `SEVERITY_RANK` core exports to the publisher, and they are waived for a problem the caller named
+ * exactly as the publisher waives them — naming says which problems to consider, never which rules
+ * to waive.
+ *
+ * Two copies of one policy is one too many, and this is the lesser of the two evils available: the
+ * alternative is the browser's copy, which is the one with nothing to keep it honest. The right
+ * end state is one exported selector in `publish-issues.ts` that both this and the pass call, and
+ * `issues-preview.test.ts` pins the two together in the meantime by driving a real pass over the
+ * same rows and asserting it did what the preview said it would.
+ *
+ * **What a preview cannot know, and must not imply.** It asks github.com nothing, so the marker
+ * search that is the second line of defence against a duplicate has not run: `file` means "nothing
+ * here knows of an issue for this", never "no issue exists". And `comment` means the ledger matched
+ * — the repeat goes on the issue that exists rather than opening a second one — which is not a
+ * promise that a comment appears, since a repeat with nothing new to say deliberately writes
+ * nothing (`comment` in `publish-issues.ts`).
+ */
+export async function previewIssues(deps: PreviewIssuesDeps, options: { simulation: Simulation; signatures?: readonly string[] }): Promise<PublishPreview> {
+  const { simulation } = options;
+  const connection = await deps.store.getGithubConnection(simulation.projectId);
+  // A preview needs the FILTER and the ledger, and no token at all: a reader who has named a
+  // repository and not yet pasted a token can still be shown what pressing the button would do.
+  // No repository is the one case there is nothing to answer with, because the filter and the
+  // ledger are both per repository.
+  if (connection === undefined || connection.repo === "") {
+    throw new IssuesNotConnected("This project has no repository to file issues into. Add one in the project's settings, check it, and populace will file there.");
+  }
+
+  // The same four reads the publisher's own `studyRows` makes, minus the ones only an issue BODY
+  // needs (the roster and the target's hosts): the windows are computed off runs, visits, reports
+  // and the publish jobs, and the window is what every candidate below is scoped to. Bounded by how
+  // many times the study has been run, which is the one dimension a pass may grow a query along.
+  const runs = (await deps.store.listRuns({ simulationId: simulation.id })).sort((a, b) => a.seq - b.seq);
+  const runIds = runs.map((run) => run.id);
+  const [wakes, findings, jobs] = await Promise.all([
+    runIds.length === 0 ? Promise.resolve<Wake[]>([]) : deps.store.listWakes({ runIds }),
+    runIds.length === 0 ? Promise.resolve<Finding[]>([]) : deps.store.listFindings({ runIds }),
+    Promise.all(runs.map((run) => deps.store.listJobs({ runId: run.id }))).then((lists) => lists.flat()),
+  ]);
+  const windows = reportWindows({ runs, wakes, findings, jobs });
+  // The window this pass would report on, picked the way the publisher picks it: the newest one
+  // anybody visited. A window nobody visited is no evidence either way.
+  const current = [...windows].reverse().find((window) => window.visited) ?? windows.at(-1);
+  const problems = await deps.readModel.publishable(simulation, current);
+
+  // A named signature is looked up against every MEMBER of a cluster and not only against its
+  // representative, for the reason `select` gives: the screen the reader ticked boxes on is
+  // clustered over the whole execution and these candidates over one window, and the two
+  // clusterings need not pick the same representative.
+  const named = options.signatures;
+  const candidates: { signature: string; problem: PublishableCluster | undefined }[] =
+    named === undefined
+      ? problems.map((problem) => ({ signature: problem.card.signature, problem }))
+      : named.map((signature) => ({ signature, problem: problems.find((problem) => problem.card.signature === signature || problem.signatures.includes(signature)) }));
+
+  const ledger = await Promise.all(candidates.map((candidate) => (candidate.problem === undefined ? Promise.resolve([]) : deps.store.matchFiledIssues(simulation.projectId, "github", connection.repo, candidate.problem.signatures))));
+
+  /** Clusters this preview has already answered for, so two names on one cluster answer once each. */
+  const handled = new Set<PublishableCluster>();
+  const items = candidates.map((candidate, index): PublishPreviewEntry => {
+    // `issue` is null on a skip, as it is on the pass's own `skipped`: a problem that is being
+    // passed over is not one this answer is pointing anybody at.
+    const skip = (reason: PublishSkipReason): PublishPreviewEntry => ({ signature: candidate.signature, would: "skip", reason, issue: null });
+    const problem = candidate.problem;
+    if (problem === undefined) return skip("not-found");
+    if (handled.has(problem)) return skip("already-filed");
+    handled.add(problem);
+    const hard = problem.skip;
+    if (hard === "praise" || hard === "settled" || hard === "duplicate" || hard === "not-found") return skip(hard);
+    const matched = ledger[index] ?? [];
+    if (matched.length > 0) {
+      // The oldest that has not been absorbed, which is the issue a reader has been following and
+      // the one `comment` would write on.
+      const ordered = [...matched].sort((a, b) => a.filedAt.localeCompare(b.filedAt) || a.number - b.number);
+      const row = ordered.find((one) => one.supersededBy === null) ?? ordered[0];
+      if (row === undefined) return skip("already-filed");
+      return { signature: candidate.signature, would: "comment", reason: null, issue: { repo: row.repo, number: row.number, url: row.url, filedAt: row.filedAt } };
+    }
+    if (hard === "absent") return skip("absent");
+    if (named === undefined) {
+      if (!connection.filter.kinds.includes(problem.card.kind)) return skip("kind");
+      // Ranks ascend as severity descends, so "at least this severe" is a rank no greater than the
+      // floor's — `filterSkip`'s own arithmetic, off the same constant.
+      if (SEVERITY_RANK[problem.card.severity] > SEVERITY_RANK[connection.filter.minSeverity]) return skip("severity");
+      if (connection.filter.onlyConfirmed && problem.card.verdict !== "confirmed") return skip("unconfirmed");
+    }
+    return { signature: candidate.signature, would: "file", reason: null, issue: null };
+  });
+
+  return {
+    repo: connection.repo,
+    visibility: connection.visibility,
+    wouldFile: items.filter((item) => item.would === "file").length,
+    wouldComment: items.filter((item) => item.would === "comment").length,
+    wouldSkip: items.filter((item) => item.would === "skip").length,
+    items,
+  };
+}
 
 /**
  * Authoring config into rows (ADR-0025), driving runs (ADR-0027) and watching one happen
@@ -115,6 +333,15 @@ import type { ControlDeps } from "./deps.js";
  * Two rules from M1 hold everywhere. A credential goes up and never comes back down — a target
  * view reports `authenticated` and nothing else. And nothing that spends money happens as a side
  * effect of a GET: every model call is behind a POST that names it.
+ *
+ * A third rule arrived with ADR-0041: **a GET writes nothing at all.** Reading a cohort, listing
+ * the populations or asking what is left to set up used to materialise rows on the way past, and
+ * the row it made was whichever the reader happened not to have — a default population, a trial
+ * study. Every write below is behind a POST, a PUT or a DELETE that names the thing it writes.
+ *
+ * The wire speaks the user's words (ADR-0032, ADR-0042). The row is a `Simulation` and every
+ * store method still says so; the word on the wire, in a path and in every sentence emitted here
+ * is STUDY, and nothing below prints the row's own name, "agent", "wake" or "lane".
  */
 export function mountControl(app: Hono, deps: ControlDeps): void {
   const now = (): string => new Date().toISOString();
@@ -130,6 +357,23 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   const scope = async (c: Context): Promise<Scope> => {
     const project = await projects.project(param(c, "p"));
     return project ? { ok: true, project } : { ok: false, response: fail(c, "not_found", `no project ${param(c, "p")}`) };
+  };
+
+  /**
+   * The one slug no persona, cohort, population, target or study may take: it is the address of
+   * the builder that makes them (`/library/cohorts/new`, `/studies/new`), and a row called `new`
+   * would be unreachable by the URL that is supposed to open it. Refused on create, where the slug
+   * is decided; a slug never changes afterwards.
+   */
+  const RESERVED_SLUG = "new";
+  const reservedSlug = (c: Context, slug: string, noun: string): Response | null =>
+    slug === RESERVED_SLUG ? fail(c, "bad_request", `"${RESERVED_SLUG}" is where a ${noun} is made, so a ${noun} cannot be called that; give it another slug`) : null;
+
+  /** `base`, or `base-2`, `base-3`… — the first one nothing in `taken` already answers to. */
+  const uniqueSlug = (base: string, taken: ReadonlySet<string>): string => {
+    let slug = base;
+    for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
+    return slug;
   };
 
   const targetView = (target: StoredTarget): StoredTargetView => ({
@@ -228,6 +472,33 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   /** A row belonging to another project is not this project's to read, edit or delete. */
   const owned = <T extends { projectId: string }>(row: T | undefined, projectId: string): T | undefined => (row && row.projectId === projectId ? row : undefined);
 
+  /**
+   * The project's library, loaded once per request and joined in memory: the views below need a
+   * persona's name for a mix entry, a cohort for a population member, and how many populations or
+   * studies hold a thing, and a query per row is the shape SPEC §6.2 exists to forbid.
+   *
+   * `studies` includes the archived ones on purpose: the store refuses to delete a population that
+   * ANY study names, archived or not, and `usedBy` has to agree with the refusal it warns about.
+   */
+  interface Library {
+    personas: ReadonlyMap<string, StoredPersona>;
+    cohorts: ReadonlyMap<string, Cohort>;
+    populations: readonly StoredPopulation[];
+    studies: readonly Simulation[];
+  }
+  const libraryOf = async (projectId: string): Promise<Library> => {
+    const [personas, cohorts, populations, studies] = await Promise.all([
+      deps.store.listPersonas(projectId),
+      deps.store.listCohorts(projectId),
+      deps.store.listPopulations(projectId),
+      deps.store.listSimulations({ projectId, includeArchived: true }),
+    ]);
+    return { personas: new Map(personas.map((p) => [p.id, p])), cohorts: new Map(cohorts.map((c) => [c.id, c])), populations, studies };
+  };
+
+  /** `weight / Σ weights`, 0..1; nought when nothing weighs anything, so a screen never divides by zero. */
+  const shareOf = (weight: number, total: number): number => (total > 0 ? weight / total : 0);
+
   // ---- projects -----------------------------------------------------------
 
   app.get(routes.projects, async (c) => c.json({ items: await projects.listProjects(), nextCursor: null }));
@@ -238,8 +509,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const taken = new Set((await deps.store.listProjects()).map((p) => p.slug));
     const base = body.value.slug ?? (slugify(body.value.name) || "project");
     if (!/^[a-z0-9][a-z0-9-]*$/.test(base)) return fail(c, "bad_request", "a project needs a name that makes a slug, or an explicit one");
-    let slug = base;
-    for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
+    const slug = uniqueSlug(base, taken);
     const at = now();
     const project: Project = { id: newProjectId(), slug, name: body.value.name, description: body.value.description ?? "", archived: false, createdAt: at, updatedAt: at };
     await deps.store.saveProject(project);
@@ -267,13 +537,13 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
    * Gone, not archived. It used to set `archived` and answer 204, which the projects list reads
    * as "do not show this" — so the row survived, nothing in the product could ever see it again,
    * and the only thing a user could do about a project they did not want was accumulate more of
-   * them. Archiving is the right answer for a SIMULATION, whose executions are history worth
-   * keeping under a name; a project is the scope that history lives in, and a user deleting one
-   * is saying they want the scope gone.
+   * them. Archiving is the right answer for a STUDY, whose executions are history worth keeping
+   * under a name; a project is the scope that history lives in, and a user deleting one is saying
+   * they want the scope gone.
    *
    * `?archive=1` keeps the old behaviour for a caller that wants the row hidden and kept.
    *
-   * A running execution is the one refusal. Its process is mid-wake against somebody else's
+   * A running execution is the one refusal. Its process is mid-visit against somebody else's
    * product, and deleting the rows underneath it would leave accounts on that target with nothing
    * left in the database that knows they exist — the exact thing `sweep` is for.
    */
@@ -293,34 +563,24 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.body(null, 204);
   });
 
+  /**
+   * What is left to do, and whether the go button may be pressed. A GET, and it now CREATES
+   * NOTHING (ADR-0041): it used to write a trial study and a default population on the way past,
+   * so that the first-run panel would have a row to estimate against. The estimate takes a draft
+   * now (`POST /projects/:p/estimate`), the builders make the rows, and a project set up in the
+   * browser reaches `ready` when its own study says so.
+   */
   app.get(routes.projectSetup(":p"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
     const projectId = s.project.id;
-    const target = (await deps.store.listTargets(projectId))[0];
-    const personas = await deps.store.listPersonas(projectId);
-    // A project that CAN run has something to run. A simulation row is otherwise created only by a
-    // YAML import or by an explicit POST, so a project set up entirely in the browser reached
-    // `ready: true` with no simulation and its go button posted to `/simulations//runs` — a 404.
-    //
-    // KNOWN WART, deliberately left: this is a GET that writes a row, which is wrong, and it is
-    // not the only one (`GET /populations` calls `ensurePopulation` for the same sort of reason).
-    // Removing it costs more than it saves today: the first-run panel's cost estimate is keyed by
-    // simulation id, so with no row there is no estimate, and "3 people × 4 visits ≈ $1.44" is the
-    // most useful sentence on that step. The fix is an estimate that takes a target and a
-    // population rather than a simulation, and it belongs with that change, not here. The panel
-    // below no longer DEPENDS on this having happened — it creates the simulation itself when
-    // there is none — so this is now a convenience rather than the only path.
-    if (target) {
-      try {
-        await ensureSimulation(deps.store, projectId);
-      } catch (err) {
-        if (!(err instanceof ConfigIncomplete)) throw err;
-      }
-    }
-    const simulations = await deps.store.listSimulations({ projectId });
-    const peopleCount = headcountOf(await ensurePopulation(deps.store, projectId));
-    const killSwitch = await deps.store.getKillSwitch();
+    const [target, personas, studies, killSwitch, runs] = await Promise.all([
+      deps.store.listTargets(projectId).then((targets) => targets[0]),
+      deps.store.listPersonas(projectId),
+      deps.store.listSimulations({ projectId }),
+      deps.store.getKillSwitch(),
+      deps.store.listRuns({ projectId }),
+    ]);
     /*
       One builder, in `needs.ts`. `blockers` is derived from it rather than assembled beside it,
       so the flat list two older screens read and the scoped list the dashboard reads can never
@@ -333,9 +593,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       killSwitch: { engaged: killSwitch.engaged, reason: killSwitch.reason },
     });
     // Only the ones that actually stop an execution. `ready` is the go button's gate, and an
-    // advisory need — an unchecked target, an empty population nothing runs — must not close it.
+    // advisory need — an unchecked target, a population with no cohorts — must not close it.
     const blockers = needs.filter((need) => need.blocking).map((need) => need.sentence);
-    const runs = await deps.store.listRuns({ projectId });
     const running = new Set(deps.runs.runningIds);
     const status: SetupStatus = {
       ready: blockers.length === 0,
@@ -343,11 +602,12 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       needs,
       targetId: target?.id ?? null,
       personaCount: personas.length,
-      peopleCount,
       hasApiKey: deps.hasApiKey(),
       killSwitch,
       runningRunIds: runs.filter((run) => running.has(run.id)).map((run) => run.id),
-      simulationIds: simulations.map((simulation) => ({ id: simulation.id, slug: simulation.slug, name: simulation.name })),
+      // No headcount beside them: how many go is each study's own `size`, and there is no default
+      // population to count any more.
+      studyIds: studies.map((study) => ({ id: study.id, slug: study.slug, name: study.name })),
     };
     return c.json(status);
   });
@@ -369,8 +629,9 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     // legitimately be given the same name, so a taken slug is disambiguated rather than refused.
     const taken = new Set((await deps.store.listTargets(s.project.id)).map((t) => t.slug));
     const base = slugify(body.value.name) || "target";
-    let slug = base;
-    for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
+    const reserved = reservedSlug(c, base, "target");
+    if (reserved) return reserved;
+    const slug = uniqueSlug(base, taken);
     const target: StoredTarget = {
       id: newTargetId(),
       projectId: s.project.id,
@@ -380,7 +641,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       ...(body.value.webBaseUrl ? { webBaseUrl: body.value.webBaseUrl } : {}),
       ...(body.value.description ? { description: body.value.description } : {}),
       identity: mergeIdentity(body.value.identity, undefined),
-      tools: body.value.tools ?? { allow: [], deny: [], destructive: "confirm" },
+      tools: body.value.tools ?? { allow: [], deny: [], destructive: "allow" },
       firstContact: null,
       reset: { kind: "none" },
       createdAt: at,
@@ -453,8 +714,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const s = await scope(c);
     if (!s.ok) return s.response;
     if (!owned(await deps.store.getTarget(param(c, "t")), s.project.id)) return fail(c, "not_found", "no such target");
-    // A simulation still pointing at it is a refusal that names the simulation, not a 500 (SPEC
-    // §2.14): the user is being told which thing to take apart first.
+    // A study still pointing at it is a refusal that names the study, not a 500 (SPEC §2.14): the
+    // user is being told which thing to take apart first.
     try {
       await deps.store.deleteTarget(param(c, "t"));
     } catch (err) {
@@ -621,16 +882,16 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const target = owned(await deps.store.getTarget(param(c, "t")), s.project.id);
     if (!target) return fail(c, "not_found", "no such target");
-    const simulation = (await deps.store.listSimulations({ projectId: s.project.id, targetId: target.id }))[0];
-    if (!simulation) return fail(c, "conflict", "a target is reset through a simulation, and no simulation points at this one yet");
+    const study = (await deps.store.listSimulations({ projectId: s.project.id, targetId: target.id }))[0];
+    if (!study) return fail(c, "conflict", "a target is reset through a study, and no study points at this one yet");
     const job = await deps.jobs.enqueue(
       "target.reset",
       async () => {
-        const { config } = await resolveSimulationConfig(deps.store, deps.processConfig, simulation.id);
+        const { config } = await resolveSimulationConfig(deps.store, deps.processConfig, study.id);
         // No run: a reset somebody asked for by hand belongs to the PROJECT, and stamping it as
         // such is what keeps "I put the target back" on `GET /events?project=…` rather than on a
         // stream nothing can match.
-        await resetTarget(deps.store, config, { runId: null, projectId: s.project.id, simulationId: simulation.id });
+        await resetTarget(deps.store, config, { runId: null, projectId: s.project.id, simulationId: study.id });
         return undefined;
       },
       { projectId: s.project.id, label: `putting ${target.name} back` },
@@ -640,7 +901,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
 
   // ---- personas -----------------------------------------------------------
 
-  /** How many cohorts draw on a persona. Headcount is the population's business, not the persona's. */
+  /** How many cohorts draw on a persona. Headcount is the study's business, not the persona's. */
   const cohortsDrawingOn = async (projectId: string, personaId: string): Promise<number> =>
     (await deps.store.listCohorts(projectId)).filter((cohort) => cohort.mix.some((entry) => entry.personaId === personaId)).length;
 
@@ -652,28 +913,109 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     origin: persona.origin,
     updatedAt: persona.updatedAt,
     cohorts: await cohortsDrawingOn(persona.projectId, persona.id),
+    // The starter's own line about what people of its kind share, offered to the cohort builder
+    // as a first draft. Only for a persona that still IS the starter: an edit moves the origin to
+    // `authored`, and a starter the library no longer carries under this slug suggests nothing.
+    suggestedContext: persona.origin === "starter" ? (starterBySlug(persona.slug)?.context ?? null) : null,
   });
 
-  // Declared before `/personas/:x` so the literal path is not eaten by the parameter.
-  app.get(routes.personaStarters(":p"), (c) => c.json({ items: STARTER_PERSONAS.map((s) => ({ slug: s.slug, name: s.spec.name, role: s.spec.role, summary: s.summary })), nextCursor: null }));
+  /**
+   * The prebuilt personas, whole. Declared before `/personas/:x` so the literal path is not eaten
+   * by the parameter. A GET and nothing else: taking a starter used to be a POST here that made a
+   * persona, a cohort and a population member in one step behind the reader's back (ADR-0029),
+   * and that one-request path is what hid the model and produced the confusion ADR-0043 records.
+   * The builder now offers these INSIDE itself; choosing one fills the form, and saving the form
+   * is `POST /personas` with `origin: "starter"`.
+   */
+  app.get(routes.personaStarters(":p"), (c) => {
+    const items: StarterPersonaView[] = STARTER_PERSONAS.map((s) => {
+      // The spec without its `id`: the slug is the row's to give, and a draft has no row yet.
+      const { id: _id, ...spec } = s.spec;
+      return { slug: s.slug, name: s.spec.name, role: s.spec.role, summary: s.summary, spec, context: s.context };
+    });
+    return c.json({ items, nextCursor: null });
+  });
 
-  /** Copies a starter into this project and puts it in the population in one step. */
-  app.post(routes.personaStarters(":p"), async (c) => {
+  /**
+   * The system prompt a persona would produce, rendered by the runner's own code rather than by a
+   * second copy of it: a preview that drifts from what the model is actually given is worse than
+   * no preview at all (product judge gap #6).
+   *
+   * It takes a SPEC, not a row, so the builder can preview what it has not saved yet.
+   */
+  const renderPersonaPreview = (spec: PersonaSpecInput, slug: string, target: StoredTarget | undefined): string => {
+    const lane = laneSlugFor("preview", slug);
+    const seed = `preview:${lane}:0`;
+    const agent: Agent = {
+      id: `preview/${lane}#1`,
+      runId: "preview",
+      simulationId: "preview",
+      populationId: "preview",
+      cohortSlug: "preview",
+      personId: `${lane}#1`,
+      context: "",
+      cohortTools: { allow: [], deny: [], destructive: "allow" },
+      name: "Sample Person",
+      details: "",
+      handle: `${slug}-1`,
+      persona: instantiatePersona({ ...spec, id: slug }, seed),
+      ordinal: 0,
+      status: "active",
+      retiredReason: null,
+      continuedFrom: null,
+      identityId: null,
+      wakeCount: 0,
+      maxWakes: null,
+      nextWakeAt: null,
+      lastWakeAt: null,
+      createdAt: now(),
+    };
+    // With no target in the project the preview is rendered against a placeholder product, so a
+    // reader building their first persona still sees the shape of what will be said.
+    const rendered: Target = target
+      ? {
+          name: target.name,
+          mcp: target.mcp,
+          ...(target.webBaseUrl ? { webBaseUrl: target.webBaseUrl } : {}),
+          ...(target.description ? { description: target.description } : {}),
+          tools: target.tools,
+          reset: target.reset,
+        }
+      : { name: "your product", mcp: [], tools: { allow: [], deny: [], destructive: "allow" }, reset: { kind: "none" } };
+    return personaSystemPrompt(agent, rendered);
+  };
+
+  /*
+    A prompt preview is a preview OF A TARGET: the system prompt carries the target's own
+    description and its tool list, so which target it is changes what comes back. Picking
+    `listTargets[0]` meant the preview silently described whichever target was edited last.
+    `asked` says which; one target still defaults; several without it is a refusal that names
+    them, exactly as `POST /studies` does; none renders against the placeholder. The two routes
+    read `asked` from different places — the draft preview from `targetId` in its body, the saved
+    persona's from `?target=` — so the refusal is told which, and says the one the caller can use.
+  */
+  const previewTarget = async (c: Context, projectId: string, asked: string | undefined, sayWhichWith: string): Promise<{ ok: true; target: StoredTarget | undefined } | { ok: false; response: Response }> => {
+    const targets = await deps.store.listTargets(projectId);
+    if (asked !== undefined) {
+      const target = targets.find((t) => t.id === asked || t.slug === asked);
+      return target ? { ok: true, target } : { ok: false, response: fail(c, "not_found", `no target called ${asked} in this project`) };
+    }
+    if (targets.length > 1) {
+      return { ok: false, response: fail(c, "bad_request", `this project has ${targets.length} targets and a preview is of one of them — say which with ${sayWhichWith}: ${targets.map((t) => `${t.name} (${t.id})`).join(", ")}`) };
+    }
+    return { ok: true, target: targets[0] };
+  };
+
+  /** "How this reads to them", for a persona that may not be saved yet. Declared before `/personas/:x`. */
+  app.post(routes.personasPreview(":p"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const body = await parseBody(c, AddStarterBodySchema);
+    const body = await parseBody(c, PersonaPreviewBodySchema);
     if (!body.ok) return body.response;
-    const starter = starterBySlug(body.value.slug);
-    if (!starter) return fail(c, "not_found", `no starter called ${body.value.slug}`);
-    const at = now();
-    const existing = (await deps.store.listPersonas(s.project.id)).find((p) => p.slug === starter.slug);
-    const persona: StoredPersona = existing ?? { id: newPersonaId(), projectId: s.project.id, slug: starter.slug, spec: starter.spec, origin: "starter", createdAt: at, updatedAt: at };
-    if (!existing) await deps.store.savePersona(persona);
-    // The default population, explicitly. Adopting a starter is the first-run path and there is
-    // one population then; a project with several composes them on the Populations screen. The
-    // cohort it makes is the starter alone, and it arrives with the starter's own shared line.
-    await ensurePersonaCohort(deps.store, await ensurePopulation(deps.store, s.project.id), persona, body.value.count, starter.context);
-    return c.json(await personaView(persona), existing ? 200 : 201);
+    const target = await previewTarget(c, s.project.id, body.value.targetId, "targetId in the body");
+    if (!target.ok) return target.response;
+    const slug = slugify(body.value.spec.name) || "persona";
+    return c.json({ personaSlug: slug, text: renderPersonaPreview(body.value.spec, slug, target.target) });
   });
 
   app.get(routes.personas(":p"), async (c) => {
@@ -689,13 +1031,18 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const body = await parseBody(c, PersonaInputSchema);
     if (!body.ok) return body.response;
     const slug = body.value.slug ?? slugify(body.value.spec.name);
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) return fail(c, "bad_request", "a person needs a name that makes a slug, or an explicit one");
-    if ((await deps.store.listPersonas(s.project.id)).some((p) => p.slug === slug)) return fail(c, "conflict", `there is already someone called ${slug} here`);
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) return fail(c, "bad_request", "a persona needs a name that makes a slug, or an explicit one");
+    const reserved = reservedSlug(c, slug, "persona");
+    if (reserved) return reserved;
+    if ((await deps.store.listPersonas(s.project.id)).some((p) => p.slug === slug)) return fail(c, "conflict", `there is already a persona called ${slug} here`);
     const at = now();
-    const persona: StoredPersona = { id: newPersonaId(), projectId: s.project.id, slug, spec: { ...body.value.spec, id: slug }, origin: "authored", createdAt: at, updatedAt: at };
+    // `starter` is the builder saying it began from one of the prebuilt personas, and it is
+    // honoured as sent: it is what lets the cohort builder find the starter's suggested context
+    // later. Anything else is authored.
+    const persona: StoredPersona = { id: newPersonaId(), projectId: s.project.id, slug, spec: { ...body.value.spec, id: slug }, origin: body.value.origin ?? "authored", createdAt: at, updatedAt: at };
     await deps.store.savePersona(persona);
-    // A persona alone. Which cohorts draw on it, and how many go, are the cohort's and the
-    // population's decisions (ADR-0039); nothing is sent anywhere by writing a kind of person.
+    // A persona alone. Which cohorts draw on it, and how many go, are the cohort's and the study's
+    // decisions (ADR-0039, ADR-0041); nothing is sent anywhere by writing a kind of person.
     return c.json(await personaView(persona), 201);
   });
 
@@ -703,19 +1050,21 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const s = await scope(c);
     if (!s.ok) return s.response;
     const persona = owned(await deps.store.getPersona(param(c, "x")), s.project.id);
-    return persona ? c.json(await personaView(persona)) : fail(c, "not_found", "no such person");
+    return persona ? c.json(await personaView(persona)) : fail(c, "not_found", "no such persona");
   });
 
   app.put(routes.persona(":p", ":x"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
     const existing = owned(await deps.store.getPersona(param(c, "x")), s.project.id);
-    if (!existing) return fail(c, "not_found", "no such person");
+    if (!existing) return fail(c, "not_found", "no such persona");
     const body = await parseBody(c, PersonaInputSchema);
     if (!body.ok) return body.response;
-    // The slug is immutable and the spec's id follows it, whatever the body says. Agent ids are
-    // built from a cohort slug and continuations match on the persona's, so a slug that moved
-    // would silently break them — the one thing this product cannot afford to get wrong.
+    // The slug is immutable and the spec's id follows it, whatever the body says. Participant ids
+    // are built from a cohort slug and continuations match on the persona's, so a slug that moved
+    // would silently break them — the one thing this product cannot afford to get wrong. An
+    // edit also moves a starter to `authored`: it is the reader's persona now, and the origin is
+    // never moved back by an update.
     const updated: StoredPersona = { ...existing, spec: { ...body.value.spec, id: existing.slug }, origin: existing.origin === "starter" ? "authored" : existing.origin, updatedAt: now() };
     await deps.store.savePersona(updated);
     return c.json(await personaView(updated));
@@ -738,90 +1087,26 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.body(null, 204);
   });
 
-  /**
-   * The system prompt this persona would produce, rendered by the runner's own code rather than
-   * by a second copy of it: a preview that drifts from what the model is actually given is worse
-   * than no preview at all (product judge gap #6).
-   */
+  /** The saved persona's prompt: the same renderer, over the stored spec. `?target=` picks the target. */
   app.post(routes.personaPreview(":p", ":x"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
     const persona = owned(await deps.store.getPersona(param(c, "x")), s.project.id);
-    if (!persona) return fail(c, "not_found", "no such person");
-    /*
-      A prompt preview is a preview OF A TARGET: the system prompt carries the target's own
-      description and its tool list, so which target it is changes what comes back. Picking
-      `listTargets[0]` meant the preview silently described whichever target was edited last.
-      `?target=` says which; one target still defaults; several without it is a refusal that names
-      them, exactly as `POST /simulations` does.
-    */
-    const targets = await deps.store.listTargets(s.project.id);
-    const asked = c.req.query("target");
-    if (asked === undefined && targets.length > 1) {
-      return fail(c, "bad_request", `this project has ${targets.length} targets and a preview is of one of them — add ?target= : ${targets.map((t) => `${t.name} (${t.id})`).join(", ")}`);
-    }
-    const target = asked === undefined ? targets[0] : targets.find((t) => t.id === asked || t.slug === asked);
-    if (asked !== undefined && !target) return fail(c, "not_found", `no target called ${asked} in this project`);
-    const lane = laneSlugFor("preview", persona.slug);
-    const seed = `preview:${lane}:0`;
-    const agent: Agent = {
-      id: `preview/${lane}#1`,
-      runId: "preview",
-      simulationId: "preview",
-      populationId: "preview",
-      cohortSlug: "preview",
-      personId: `${lane}#1`,
-      context: "",
-      cohortTools: { allow: [], deny: [], destructive: "confirm" },
-      name: "Sample Person",
-      details: "",
-      handle: `${persona.slug}-1`,
-      persona: instantiatePersona({ ...persona.spec, id: persona.slug }, seed),
-      ordinal: 0,
-      status: "active",
-      retiredReason: null,
-      continuedFrom: null,
-      identityId: null,
-      wakeCount: 0,
-      maxWakes: null,
-      nextWakeAt: null,
-      lastWakeAt: null,
-      createdAt: now(),
-    };
-    const text = personaSystemPrompt(agent, {
-      name: target?.name ?? "the target",
-      mcp: target?.mcp ?? [],
-      ...(target?.webBaseUrl ? { webBaseUrl: target.webBaseUrl } : {}),
-      ...(target?.description ? { description: target.description } : {}),
-      tools: target?.tools ?? { allow: [], deny: [], destructive: "confirm" },
-      reset: target?.reset ?? { kind: "none" },
-    });
-    return c.json({ personaSlug: persona.slug, text });
+    if (!persona) return fail(c, "not_found", "no such persona");
+    const target = await previewTarget(c, s.project.id, c.req.query("target"), "?target=");
+    if (!target.ok) return target.response;
+    return c.json({ personaSlug: persona.slug, text: renderPersonaPreview(persona.spec, persona.slug, target.target) });
   });
 
-  // ---- cohorts and people -------------------------------------------------
+  // ---- cohorts ------------------------------------------------------------
 
-  /** The cohort's lanes at a size, or none when a persona in its mix is gone. */
-  const lanesIfWhole = async (cohort: Cohort, size: number): Promise<Lane[]> => {
-    try {
-      return await lanesOf(deps.store, cohort, size);
-    } catch (err) {
-      if (err instanceof RosterIncomplete) return [];
-      throw err;
-    }
-  };
-
-  const cohortView = async (projectId: string, cohort: Cohort): Promise<CohortView> => {
-    const [people, populations, personas] = await Promise.all([
-      deps.store.listPeople({ cohortId: cohort.id, includeArchived: true }),
-      deps.store.listPopulations(projectId),
-      deps.store.listPersonas(projectId),
-    ]);
-    const byId = new Map(personas.map((persona) => [persona.id, persona]));
-    // Sized by the populations that send it, at the largest of them (ADR-0039).
-    const size = populations.reduce((largest, population) => Math.max(largest, sizeIn(population, cohort.id)), 0);
-    const lanes = await lanesIfWhole(cohort, size);
-    const live = people.filter((person) => person.archivedAt === null);
+  /**
+   * A cohort as the wire says it: what its people share and who they are drawn from, in what
+   * ratio. No headcount and no people (ADR-0041) — how many go is a study's size dealt through a
+   * population's weights and then this mix, and a study's People page is where they are seen.
+   */
+  const cohortViewOf = (cohort: Cohort, lib: Library): CohortView => {
+    const total = cohort.mix.reduce((sum, entry) => sum + entry.weight, 0);
     return {
       id: cohort.id,
       slug: cohort.slug,
@@ -829,53 +1114,25 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       context: cohort.context,
       mix: cohort.mix.map((entry) => ({
         personaId: entry.personaId,
-        personaSlug: byId.get(entry.personaId)?.slug ?? "",
-        personaName: byId.get(entry.personaId)?.spec.name ?? entry.personaId,
+        personaSlug: lib.personas.get(entry.personaId)?.slug ?? "",
+        personaName: lib.personas.get(entry.personaId)?.spec.name ?? entry.personaId,
         weight: entry.weight,
-        people: lanes.find((lane) => lane.persona.id === entry.personaId)?.count ?? 0,
+        share: shareOf(entry.weight, total),
       })),
       traits: cohort.traits,
       tools: cohort.tools,
       model: cohort.model,
-      size,
-      generated: {
-        model: live.filter((p) => p.generatedBy === "model").length,
-        seeded: live.filter((p) => p.generatedBy === "seeded").length,
-        authored: live.filter((p) => p.generatedBy === "authored").length,
-      },
       cadence: cohort.cadence ?? null,
       // The row spells it `maxWakes`; the wire does not (ADR-0032).
       maxVisits: cohort.maxWakes ?? null,
       seed: cohort.seed,
       notes: cohort.notes,
-      usedByPopulations: populations.flatMap((population) => {
-        const held = sizeIn(population, cohort.id);
-        return held > 0 ? [{ id: population.id, name: population.name, size: held }] : [];
-      }),
+      // The populations holding it: what a delete is refused over, and what the builder warns
+      // about before a weight is moved.
+      usedBy: lib.populations.filter((population) => population.members.some((member) => member.cohortId === cohort.id)).length,
     };
   };
-
-  /** A person as the wire says them: effective values, and what was set by hand beside them. */
-  const personView = (person: Person, cohort: Cohort, personaNames: ReadonlyMap<string, string>): PersonView => ({
-    id: person.id,
-    laneSlug: person.laneSlug,
-    personaSlug: person.personaSlug,
-    personaName: personaNames.get(person.personaId) ?? person.personaSlug,
-    ordinal: person.ordinal,
-    name: person.name,
-    details: person.details,
-    handle: person.handle,
-    generatedBy: person.generatedBy,
-    // The same layering expansion does (`individuate`): the sample, the cohort, then the hand.
-    patience: person.overrides.patience ?? person.persona.patience,
-    budgetUsd: person.overrides.budgetUsd ?? person.persona.budgetUsd,
-    traits: { ...person.persona.traits, ...cohort.traits, ...person.overrides.traits },
-    overrides: person.overrides,
-    archived: person.archivedAt !== null,
-  });
-
-  const personaNamesOf = async (projectId: string): Promise<Map<string, string>> =>
-    new Map((await deps.store.listPersonas(projectId)).map((persona) => [persona.id, persona.spec.name]));
+  const cohortView = async (projectId: string, cohort: Cohort): Promise<CohortView> => cohortViewOf(cohort, await libraryOf(projectId));
 
   /** A mix as sent, checked against the project's personas. */
   const mixOf = async (
@@ -898,38 +1155,24 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   };
 
   /**
-   * Writing people is refused while anything is executing. A live run is reading this cast through
-   * its config snapshot and signing accounts up from these handles; re-casting underneath it would
-   * leave that run's own participants unexplainable.
+   * Re-lanes one cohort at the sizes the studies give it, and forgives the one thing that can
+   * stop it: a mix naming a persona that has since gone. The cohort row is already saved by the
+   * time this runs, and that gap is reported where it is read — a 409 on the study's People page,
+   * a missing lane in preflight — rather than by failing the save that did not cause it.
    */
-  const refuseWhileRunning = async (projectId: string, cohortName: string): Promise<string | null> => {
-    const live = [...(await deps.store.listRuns({ projectId, status: "running" })), ...(await deps.store.listRuns({ projectId, status: "pending" }))];
-    return live.length === 0 ? null : `${live.length} execution(s) are reading these people right now; pause or stop them before writing the ${cohortName} cohort`;
+  const relane = async (cohortId: string): Promise<void> => {
+    try {
+      await ensureRoster(deps.store, cohortId);
+    } catch (err) {
+      if (!(err instanceof RosterIncomplete)) throw err;
+    }
   };
-
-  /**
-   * The `people.generate` handler. Tier 1 fills every empty slot for free before a token is spent,
-   * so this succeeds with a complete cast even when there is no API key — what the model adds is
-   * names and individuating details, and what it cannot do is leave a cohort half-cast.
-   */
-  const runWriter = async (cohortId: string, options: GenerateOptions, report: JobReport, spend: JobSpend): Promise<GeneratedRoster> => {
-    const generated = await generatePeople({ store: deps.store, ...(deps.provider ? { provider: deps.provider } : {}), report, spend }, cohortId, options);
-    await report({ label: generated.fellBackBecause ?? `wrote ${generated.written} of ${generated.written + generated.seeded}` });
-    return generated;
-  };
-
-  const writePeople =
-    (cohortId: string, options: GenerateOptions = {}): JobHandler =>
-    async (_job, report, spend) => {
-      await runWriter(cohortId, options, report, spend);
-      return undefined;
-    };
 
   app.get(routes.cohorts(":p"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const cohorts = await deps.store.listCohorts(s.project.id);
-    return c.json({ items: await Promise.all(cohorts.map((cohort) => cohortView(s.project.id, cohort))), nextCursor: null });
+    const lib = await libraryOf(s.project.id);
+    return c.json({ items: [...lib.cohorts.values()].map((cohort) => cohortViewOf(cohort, lib)), nextCursor: null });
   });
 
   app.post(routes.cohorts(":p"), async (c) => {
@@ -947,8 +1190,9 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     const name = body.value.name ?? mix.names.join(" and ");
     const taken = new Set((await deps.store.listCohorts(s.project.id)).map((cohort) => cohort.slug));
     const base = body.value.slug ?? (slugify(name) || "cohort");
-    let slug = base;
-    for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
+    const reserved = reservedSlug(c, base, "cohort");
+    if (reserved) return reserved;
+    const slug = uniqueSlug(base, taken);
     const at = now();
     const cohort: Cohort = {
       id: newCohortId(),
@@ -958,7 +1202,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       context,
       mix: mix.mix,
       traits: body.value.traits ?? {},
-      tools: body.value.tools ?? { allow: [], deny: [], destructive: "confirm" },
+      tools: body.value.tools ?? { allow: [], deny: [], destructive: "allow" },
       model: body.value.model ?? {},
       seed: body.value.seed ?? "populace",
       notes: body.value.notes ?? "",
@@ -968,31 +1212,39 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       updatedAt: at,
     };
     await deps.store.saveCohort(cohort);
-    // No people yet, and that is right: a cohort has no size. The population that sends it says
-    // how many, and setting that number is what writes the roster (ADR-0039).
+    // A cohort has no size, so a new one is laned at whatever the studies already give it — which
+    // for a cohort nothing holds yet is nobody. The study that sends it is what writes the roster
+    // (ADR-0041); this keeps the one rule that every writer re-lanes the cohorts it touched.
+    await relane(cohort.id);
     return c.json(await cohortView(s.project.id, cohort), 201);
   });
+
+  /** `:c` is a row id or a slug, as `:s` is for a study: the slug is what a bookmark and a person id carry. */
+  const cohortOf = async (c: Context, projectId: string): Promise<Cohort | undefined> => {
+    const id = param(c, "c");
+    const direct = owned(await deps.store.getCohort(id), projectId);
+    if (direct) return direct;
+    return (await deps.store.listCohorts(projectId)).find((cohort) => cohort.slug === id);
+  };
 
   app.get(routes.cohort(":p", ":c"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const cohort = owned(await deps.store.getCohort(param(c, "c")), s.project.id);
-    if (!cohort) return fail(c, "not_found", "no such cohort");
-    // On first read of a cohort (SPEC §5.1): `generated` counts people, and counting rows nobody
-    // has written yet reports a cohort of twelve as nought of anything.
-    await ensureRoster(deps.store, cohort.id);
-    return c.json(await cohortView(s.project.id, cohort));
+    const cohort = await cohortOf(c, s.project.id);
+    // Nothing is materialised on read any more: a cohort view carries no people to count, and a
+    // GET writes nothing (ADR-0041).
+    return cohort ? c.json(await cohortView(s.project.id, cohort)) : fail(c, "not_found", "no such cohort");
   });
 
   app.put(routes.cohort(":p", ":c"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const existing = owned(await deps.store.getCohort(param(c, "c")), s.project.id);
+    const existing = await cohortOf(c, s.project.id);
     if (!existing) return fail(c, "not_found", "no such cohort");
     const body = await parseBody(c, CohortInputSchema);
     if (!body.ok) return body.response;
-    // The slug is immutable: it is the first half of every lane slug, and so of every agent id and
-    // person id, so renaming it would orphan memory and silently empty a continuation.
+    // The slug is immutable: it is the first half of every person id and every participant id,
+    // so renaming it would orphan memory and silently empty a continuation.
     const updated: Cohort = {
       ...existing,
       name: body.value.name ?? existing.name,
@@ -1018,175 +1270,104 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (body.value.maxVisits === null) delete updated.maxWakes;
     else if (body.value.maxVisits !== undefined) updated.maxWakes = body.value.maxVisits;
     await deps.store.saveCohort(updated);
-    // A changed mix re-lanes the cohort at the size it holds: a lane that shrank puts its tail
-    // aside, a lane that grew draws new people, and nobody who stays is touched.
-    await ensureRoster(deps.store, updated.id);
+    // A changed mix re-lanes the cohort — and only this cohort — at the sizes the studies give
+    // it: a persona whose share shrank puts its tail aside, one that grew draws new people, and
+    // nobody who stays is touched.
+    await relane(updated.id);
     return c.json(await cohortView(s.project.id, updated));
   });
 
   app.delete(routes.cohort(":p", ":c"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const cohort = owned(await deps.store.getCohort(param(c, "c")), s.project.id);
+    const cohort = await cohortOf(c, s.project.id);
     if (!cohort) return fail(c, "not_found", "no such cohort");
-    // The populations let go first: the store refuses to delete a cohort a population still holds,
-    // and naming the referrer is the point of that refusal (SPEC §2.14).
-    for (const population of await deps.store.listPopulations(s.project.id)) {
-      if (sizeIn(population, cohort.id) === 0) continue;
-      await deps.store.savePopulation({ ...population, members: population.members.filter((member) => member.cohortId !== cohort.id), updatedAt: now() });
+    // A cohort a population still holds is REFUSED, and the refusal names the populations (SPEC
+    // §2.14), exactly as a persona a cohort mixes and a population a study sends are. It used to
+    // strip the cohort out of every population on the reader's behalf first, which quietly moved
+    // people in every study sending those populations — the population builder is where a cohort
+    // is taken out, and the reader is told which ones to open.
+    try {
+      await deps.store.deleteCohort(cohort.id);
+    } catch (err) {
+      if (err instanceof ReferencedError) return fail(c, "conflict", err.message);
+      throw err;
     }
-    await deps.store.deleteCohort(cohort.id);
     return c.body(null, 204);
-  });
-
-  app.get(routes.cohortPeople(":p", ":c"), async (c) => {
-    const s = await scope(c);
-    if (!s.ok) return s.response;
-    const cohort = owned(await deps.store.getCohort(param(c, "c")), s.project.id);
-    if (!cohort) return fail(c, "not_found", "no such cohort");
-    // The roster is materialised on read (SPEC §5.1), not only on a size change: a cohort created
-    // through the API otherwise answers `{ items: [] }` until somebody posts the generate job.
-    await ensureRoster(deps.store, cohort.id);
-    const [roster, names] = await Promise.all([deps.store.listPeople({ cohortId: cohort.id, includeArchived: true }), personaNamesOf(s.project.id)]);
-    return c.json({ items: roster.map((person) => personView(person, cohort, names)), nextCursor: null });
-  });
-
-  /**
-   * Fills the slots nobody has written yet. A job, because tier 2 — a model writing them — is a
-   * model call, and it is the first model call this product makes outside a wake (SPEC §5.4).
-   */
-  app.post(routes.cohortPeople(":p", ":c"), async (c) => {
-    const s = await scope(c);
-    if (!s.ok) return s.response;
-    const cohort = owned(await deps.store.getCohort(param(c, "c")), s.project.id);
-    if (!cohort) return fail(c, "not_found", "no such cohort");
-    const refusal = await refuseWhileRunning(s.project.id, cohort.name);
-    if (refusal) return fail(c, "conflict", refusal);
-    const job = await deps.jobs.enqueue("people.generate", writePeople(cohort.id), { projectId: s.project.id, label: `writing the ${cohort.name} cohort` });
-    return c.json(job, 202);
-  });
-
-  /**
-   * Regeneration REPLACES people who already exist, which is why it needs `confirm`. Writing over
-   * a cast that past executions name is the one destructive thing in the people model.
-   */
-  app.post(routes.cohortPeopleRegenerate(":p", ":c"), async (c) => {
-    const s = await scope(c);
-    if (!s.ok) return s.response;
-    const cohort = owned(await deps.store.getCohort(param(c, "c")), s.project.id);
-    if (!cohort) return fail(c, "not_found", "no such cohort");
-    const body = await parseBody(c, GeneratePeopleBodySchema);
-    if (!body.ok) return body.response;
-    // A refusal, not a conflict: nothing about the cohort's state makes this impossible, the
-    // request is simply missing the acknowledgement that it rewrites who these people are and
-    // breaks comparison with every execution that already named them.
-    if (!body.value.confirm) return fail(c, "bad_request", "re-casting changes who these people are and breaks comparison with earlier executions; send confirm: true");
-    const refusal = await refuseWhileRunning(s.project.id, cohort.name);
-    if (refusal) return fail(c, "conflict", refusal);
-    const personIds = body.value.personIds;
-    const job = await deps.jobs.enqueue(
-      "people.generate",
-      async (_job, report, spend) => {
-        // Re-casting is the one path that lets go of people who already exist. The rows are not
-        // deleted — a past execution's participants still name them, and the id is the slot — they
-        // are put back to being placeholders, which is the one state the writer will write into.
-        //
-        // Put back PROPERLY: the name is re-drawn from the seeded bank as well. A reset that kept
-        // the old model-written name while stamping the row `seeded` with no details left a person
-        // who was neither re-cast nor intact — and if the model then could not be reached, that is
-        // what the cohort was left holding.
-        const at = now();
-        const roster = await deps.store.listPeople({ cohortId: cohort.id, includeArchived: true });
-        const recast = roster.filter((person) => person.archivedAt === null && (personIds === undefined || personIds.includes(person.id)));
-        const used = new Set(roster.filter((person) => !recast.includes(person)).map((person) => person.name));
-        for (const person of recast) {
-          const name = nameFrom(person.seed, used);
-          used.add(name);
-          // The handle follows the name here, unlike a hand rename: re-casting is refused while
-          // anything is running, so nobody has signed an account up as this person yet.
-          await deps.store.savePerson({ ...person, name, handle: handleFor(name, person.laneSlug, person.ordinal), details: "", generatedBy: "seeded", generatedByModel: "", archivedAt: null, updatedAt: at });
-        }
-        const generated = await runWriter(cohort.id, personIds ? { personIds } : {}, report, spend);
-        // A confirmed re-cast that wrote nobody is a failure, not a quiet success: the cast the
-        // user asked to replace is gone and what stands in its place is the free one.
-        if (generated.written === 0 && generated.fellBackBecause !== null) throw new Error(`nobody was re-cast: ${generated.fellBackBecause}`);
-        return undefined;
-      },
-      { projectId: s.project.id, label: `re-casting the ${cohort.name} cohort` },
-    );
-    return c.json(job, 202);
-  });
-
-  /**
-   * One person, by hand: a name, a blurb, and the sampled dimensions — patience, budget, traits —
-   * which is as much individuality as a person carries (ADR-0031 amendment). Goals, constraints
-   * and tool policy stay on the persona.
-   */
-  app.patch(routes.cohortPerson(":p", ":c", ":person"), async (c) => {
-    const s = await scope(c);
-    if (!s.ok) return s.response;
-    const cohort = owned(await deps.store.getCohort(param(c, "c")), s.project.id);
-    if (!cohort) return fail(c, "not_found", "no such cohort");
-    const body = await parseBody(c, PersonPatchSchema);
-    if (!body.ok) return body.response;
-    const person = await deps.store.getPerson(s.project.id, param(c, "person"));
-    if (!person || person.cohortId !== cohort.id) return fail(c, "not_found", "nobody by that id in the cohort");
-    // Null clears an override and the sample shows through again; absent leaves it alone.
-    const overrides: Person["overrides"] = { ...person.overrides, traits: { ...person.overrides.traits } };
-    if (body.value.patience === null) delete overrides.patience;
-    else if (body.value.patience !== undefined) overrides.patience = body.value.patience;
-    if (body.value.budgetUsd === null) delete overrides.budgetUsd;
-    else if (body.value.budgetUsd !== undefined) overrides.budgetUsd = body.value.budgetUsd;
-    if (body.value.traits === null) overrides.traits = {};
-    else if (body.value.traits !== undefined) overrides.traits = body.value.traits;
-    // The handle is NOT re-derived from a new name: it is what the account on the target was
-    // signed up with, and a rename must not orphan it (SPEC §5.3.5).
-    //
-    // And the row is stamped `authored`, which is what takes it out of the writer's reach. A
-    // rename that left it looking like a placeholder — seeded, no details — would be handed
-    // straight back to the next generate, which would overwrite the typed name AND re-derive the
-    // handle this line just refused to move.
-    const updated: Person = { ...person, name: body.value.name ?? person.name, details: body.value.details ?? person.details, overrides, generatedBy: "authored", updatedAt: now() };
-    await deps.store.savePerson(updated);
-    return c.json(personView(updated, cohort, await personaNamesOf(s.project.id)));
   });
 
   // ---- populations and settings -------------------------------------------
 
   /**
-   * The simulations that run this population. The execution plan — how often people come back, how
-   * many visits each gets, the jitter seed — lives on THEM (SPEC §2.6), so the composition screen
-   * reads it from there and writes it back there. Settings are only the defaults a NEW simulation
-   * is created with.
+   * A population as the wire says it: which cohorts, at what weights, and each cohort's own mix
+   * at ITS weights — every number a screen needs to preview the deal of any size with
+   * `dealStudy`, and no headcount anywhere (ADR-0041). The execution plan — how often people
+   * come back, how many visits each gets, the jitter seed — lives on the STUDY (SPEC §2.6), and
+   * the settings are only the defaults a new study is created with.
    */
+  const populationViewOf = (population: StoredPopulation, lib: Library): PopulationView => {
+    // A cohort id that no longer resolves is left out rather than thrown over: the row is
+    // composition, and a dangling reference is a display problem, not a reason to refuse a read.
+    const held = population.members.flatMap((member) => {
+      const cohort = lib.cohorts.get(member.cohortId);
+      return cohort ? [{ member, cohort }] : [];
+    });
+    const total = held.reduce((sum, { member }) => sum + member.weight, 0);
+    return {
+      id: population.id,
+      slug: population.slug,
+      name: population.name,
+      members: held.map(({ member, cohort }) => {
+        const mixTotal = cohort.mix.reduce((sum, entry) => sum + entry.weight, 0);
+        return {
+          cohortId: cohort.id,
+          cohort: cohort.slug,
+          cohortName: cohort.name,
+          context: cohort.context,
+          weight: member.weight,
+          share: shareOf(member.weight, total),
+          personas: cohort.mix.map((entry) => ({
+            personaId: entry.personaId,
+            slug: lib.personas.get(entry.personaId)?.slug ?? "",
+            name: lib.personas.get(entry.personaId)?.spec.name ?? entry.personaId,
+            weight: entry.weight,
+            share: shareOf(entry.weight, mixTotal),
+          })),
+          maxVisits: cohort.maxWakes ?? null,
+        };
+      }),
+      // The studies naming it, archived or not: the store refuses to delete a population any of
+      // them names, and this number is the warning for that refusal.
+      usedBy: lib.studies.filter((study) => study.populationId === population.id).length,
+    };
+  };
+  const populationView = async (population: StoredPopulation): Promise<PopulationView> => populationViewOf(population, await libraryOf(population.projectId));
 
-  const populationView = async (population: StoredPopulation): Promise<PopulationView> => {
-    const cohorts = await cohortsOfPopulation(deps.store, population);
-    const members: PopulationView["members"] = [];
-    for (const cohort of cohorts) {
-      const size = sizeIn(population, cohort.id);
-      // The same apportionment resolution does, so the screen's "6 first-timers and 4 power
-      // users" is the cast the next execution sends.
-      const lanes = await lanesIfWhole(cohort, size);
-      members.push({
-        cohortId: cohort.id,
-        cohort: cohort.slug,
-        cohortName: cohort.name,
-        context: cohort.context,
-        size,
-        personas: lanes.map((lane) => ({ personaId: lane.persona.id, slug: lane.persona.slug, name: lane.persona.spec.name, count: lane.count })),
-        maxVisits: cohort.maxWakes ?? null,
-      });
+  /**
+   * Members as sent, checked against the project's cohorts. A member at nought is taken out, so a
+   * browser can drop a row or send it at zero and mean the same; a cohort is in a population once.
+   */
+  const membersOf = (
+    input: readonly { cohortId: string; weight: number }[],
+    lib: Library,
+  ): { ok: true; members: StoredPopulation["members"] } | { ok: false; message: string } => {
+    const strangers = input.filter((member) => !lib.cohorts.has(member.cohortId)).map((member) => member.cohortId);
+    if (strangers.length) return { ok: false, message: `no such cohort: ${strangers.join(", ")}` };
+    const seen = new Set<string>();
+    for (const member of input) {
+      if (seen.has(member.cohortId)) return { ok: false, message: `a cohort goes into a population once (${lib.cohorts.get(member.cohortId)?.name ?? member.cohortId} is in it twice)` };
+      seen.add(member.cohortId);
     }
-    return { id: population.id, slug: population.slug, name: population.name, members, people: headcountOf(population) };
+    return { ok: true, members: input.filter((member) => member.weight > 0).map((member) => ({ cohortId: member.cohortId, weight: member.weight })) };
   };
 
   app.get(routes.populations(":p"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    await ensurePopulation(deps.store, s.project.id);
-    const populations = await deps.store.listPopulations(s.project.id);
-    return c.json({ items: await Promise.all(populations.map((population) => populationView(population))), nextCursor: null });
+    // Listing writes nothing (ADR-0041). It used to create a default "Everyone" population when
+    // the project had none, so an empty project answered with one row it had never been given.
+    const lib = await libraryOf(s.project.id);
+    return c.json({ items: lib.populations.map((population) => populationViewOf(population, lib)), nextCursor: null });
   });
 
   app.post(routes.populations(":p"), async (c) => {
@@ -1194,17 +1375,30 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const body = await parseBody(c, PopulationCreateSchema);
     if (!body.ok) return body.response;
+    const lib = await libraryOf(s.project.id);
+    // Composed in one request: the builder has the whole form at once, so the cohorts arrive with
+    // the name and there is no empty population to fill in afterwards.
+    const members = membersOf(body.value.members ?? [], lib);
+    if (!members.ok) return fail(c, "bad_request", members.message);
     const at = now();
-    const taken = new Set((await deps.store.listPopulations(s.project.id)).map((pop) => pop.slug));
+    const taken = new Set(lib.populations.map((pop) => pop.slug));
     const base = body.value.slug ?? (slugify(body.value.name) || "population");
-    let slug = base;
-    for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
-    const population: StoredPopulation = { id: newPopulationId(), projectId: s.project.id, slug, name: body.value.name, members: [], createdAt: at, updatedAt: at };
+    const reserved = reservedSlug(c, base, "population");
+    if (reserved) return reserved;
+    const slug = uniqueSlug(base, taken);
+    const population: StoredPopulation = { id: newPopulationId(), projectId: s.project.id, slug, name: body.value.name, members: members.members, createdAt: at, updatedAt: at };
     await deps.store.savePopulation(population);
-    return c.json(await populationView(population), 201);
+    // Nothing is written for the people: without a study sending it, a population is a recipe.
+    return c.json(populationViewOf(population, lib), 201);
   });
 
-  const populationOf = async (c: Context, projectId: string): Promise<StoredPopulation | undefined> => owned(await deps.store.getPopulation(param(c, "pop")), projectId);
+  /** `:pop` is a row id or a slug, as `:s` is for a study and `:c` for a cohort. */
+  const populationOf = async (c: Context, projectId: string): Promise<StoredPopulation | undefined> => {
+    const id = param(c, "pop");
+    const direct = owned(await deps.store.getPopulation(id), projectId);
+    if (direct) return direct;
+    return (await deps.store.listPopulations(projectId)).find((population) => population.slug === id);
+  };
 
   app.get(routes.population_(":p", ":pop"), async (c) => {
     const s = await scope(c);
@@ -1220,27 +1414,24 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!population) return fail(c, "not_found", "no such population");
     const body = await parseBody(c, PopulationInputSchema);
     if (!body.ok) return body.response;
+    const lib = await libraryOf(s.project.id);
     let current: StoredPopulation = population;
     if (body.value.name !== undefined) current = { ...current, name: body.value.name, updatedAt: now() };
     if (body.value.members) {
-      const known = new Set((await deps.store.listCohorts(s.project.id)).map((cohort) => cohort.id));
-      const strangers = body.value.members.filter((member) => !known.has(member.cohortId)).map((member) => member.cohortId);
-      if (strangers.length) return fail(c, "bad_request", `no such cohort: ${strangers.join(", ")}`);
-      const seen = new Set<string>();
-      for (const member of body.value.members) {
-        if (seen.has(member.cohortId)) return fail(c, "bad_request", `a cohort goes into a population once (${member.cohortId} is in it twice)`);
-        seen.add(member.cohortId);
-      }
-      // The member list REPLACES what is there: the whole ordered set, sizes and all. A member at
-      // nought is taken out, so a browser can drop a row or send it at zero and mean the same.
-      current = { ...current, members: body.value.members.filter((member) => member.size > 0).map((member) => ({ cohortId: member.cohortId, size: member.size })), updatedAt: now() };
+      // The member list REPLACES what is there: the whole ordered set, weights and all.
+      const members = membersOf(body.value.members, lib);
+      if (!members.ok) return fail(c, "bad_request", members.message);
+      current = { ...current, members: members.members, updatedAt: now() };
     }
     await deps.store.savePopulation(current);
-    // Setting a number is what writes the people (ADR-0039): every cohort this touched — put in,
-    // resized or taken out — has its roster brought to the largest size any population gives it.
-    const touched = new Set([...population.members, ...current.members].map((member) => member.cohortId));
-    for (const cohortId of touched) await ensureRoster(deps.store, cohortId);
-    return c.json(await populationView(current));
+    // Changing a weight moves people in every study that sends this population (ADR-0039 accepts
+    // this; the builder says so), so every cohort it now holds is re-laned at the sizes those
+    // studies give it — and so is every cohort that was taken OUT, whose lanes may have shrunk to
+    // whatever another population still gives them.
+    await ensureRosterFor(deps.store, current.id);
+    const stillHeld = new Set(current.members.map((member) => member.cohortId));
+    for (const member of population.members) if (!stillHeld.has(member.cohortId) && lib.cohorts.has(member.cohortId)) await relane(member.cohortId);
+    return c.json(populationViewOf(current, lib));
   });
 
   app.delete(routes.population_(":p", ":pop"), async (c) => {
@@ -1248,36 +1439,10 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     if (!s.ok) return s.response;
     const population = await populationOf(c, s.project.id);
     if (!population) return fail(c, "not_found", "no such population");
-    /*
-      The last one does not go, and neither does the default.
-
-      `ensurePopulation` resolves the row whose slug is `everyone` and falls back to
-      `populations[0]` when there is none (`config-store.ts`). Five surfaces lean on it — the
-      setup status, the persona-keyed composition path, `cohortsOf`, `ensureSimulation` and the
-      first-run panel — so deleting the default silently retargets every one of them at whichever
-      population happens to be first, and deleting the last one leaves them creating a fresh empty
-      "Everyone" behind the reader's back. Neither is a thing a Remove button should be able to do
-      quietly, and the Populations screen puts a Remove button on exactly this row.
-
-      A project always has somewhere for a cohort to go. Rename it if you do not like the name.
-    */
-    const all = await deps.store.listPopulations(s.project.id);
-    if (all.length <= 1) {
-      return fail(c, "conflict", `${population.name} is the only population in ${s.project.name}; a project keeps one. Compose another first, or empty this one.`);
-    }
-    /*
-      Asked the way `ensurePopulation` answers it, not by comparing the slug. The default is the
-      row slugged `everyone` OR, when there is none — which is every YAML-seeded project, since an
-      import names its population whatever the file says — `populations[0]`. A slug comparison
-      guards the first case and misses the second entirely, which is the case a real install is
-      most likely to be in.
-    */
-    const fallback = await ensurePopulation(deps.store, s.project.id);
-    if (fallback.id === population.id) {
-      return fail(c, "conflict", `${population.name} is this project's default population — new cohorts land in it, and anything that has not been told which cast to use reads it. Empty it instead, or make another the default by removing this one's cohorts.`);
-    }
-    // The store refuses a population a simulation still names, and naming the referrer is the
-    // point of that refusal (SPEC §2.14). Uncaught it was a 500, which tells the user nothing.
+    // The one refusal: the store refuses a population a study still names, and naming the
+    // referrer is the point of that refusal (SPEC §2.14). Uncaught it was a 500, which tells the
+    // user nothing. There is no "only population" or "default population" to protect any more —
+    // nothing falls back to a population it was not given (ADR-0041), so the last one may go.
     try {
       await deps.store.deletePopulation(population.id);
     } catch (err) {
@@ -1290,7 +1455,26 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   const settingsView = async (projectId: string): Promise<SettingsView> => {
     const settings = await ensureSettings(deps.store, projectId);
     const { apiKey: _apiKey, ...model } = settings.model;
-    return { model, guardrails: settings.guardrails, verifier: settings.verifier, daemon: settings.daemon, hasApiKey: deps.hasApiKey(), updatedAt: settings.updatedAt };
+    // The timing goes out too, under the wire's word for the cap: a study builder inherits these
+    // when its form names no timing, and without them on this view it would have to invent
+    // defaults of its own and disagree with what saving actually does.
+    return {
+      model,
+      guardrails: settings.guardrails,
+      verifier: settings.verifier,
+      daemon: settings.daemon,
+      cadence: settings.cadence,
+      seed: settings.seed,
+      maxVisits: settings.maxWakes,
+      hasApiKey: deps.hasApiKey(),
+      // Both judges' keys, because both judges are offered on the screen this view feeds and each
+      // fails on its own. `deps.typesafe` IS the flag for the typed one — its absence is how this
+      // process says it has no `TYPESAFE_API_KEY` (see `ControlDeps.typesafe`) — and what goes out
+      // is that one boolean. The key itself never comes down the wire, and neither does anything
+      // derived from it.
+      hasTypesafeKey: deps.typesafe !== undefined,
+      updatedAt: settings.updatedAt,
+    };
   };
 
   app.get(routes.settings(":p"), async (c) => {
@@ -1348,95 +1532,170 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.json({ ...triage, drifted: false });
   });
 
-  // ---- simulations ---------------------------------------------------------
+  // ---- studies -------------------------------------------------------------
 
-  const simulationOf = async (c: Context, projectId: string): Promise<Simulation | undefined> => {
+  const studyOf = async (c: Context, projectId: string): Promise<Simulation | undefined> => {
     const id = param(c, "s");
     const direct = await deps.store.getSimulation(id);
     if (direct && direct.projectId === projectId) return direct;
-    return (await deps.store.listSimulations({ projectId, includeArchived: true })).find((simulation) => simulation.slug === id);
+    return (await deps.store.listSimulations({ projectId, includeArchived: true })).find((study) => study.slug === id);
   };
 
-  app.get(routes.simulations(":p"), async (c) => {
-    const s = await scope(c);
-    return s.ok ? c.json({ items: await projects.listSimulations(s.project.id), nextCursor: null }) : s.response;
+  /** The overrides block as the row carries it: a block the form did not send overrides nothing. */
+  const overridesOf = (input: StudyOverridesInput): Simulation["overrides"] => ({ model: input.model ?? {}, guardrails: input.guardrails ?? {}, verifier: input.verifier ?? {} });
+
+  /**
+   * The report cycle a patch leaves behind: what is saved, with only the fields that were sent
+   * replaced.
+   *
+   * Field by field and never wholesale, exactly as `cadence` is merged, because this is the one
+   * dial on how often populace writes into somebody's issue tracker (ADR-0045) and a form that
+   * shows two of its four fields must not carry the other two along at a default. `ReportCycleInput`
+   * has no defaults of its own for that reason; see its comment.
+   */
+  const reportCycleOf = (existing: Simulation["reportCycle"], patch: ReportCycleInput | undefined): Simulation["reportCycle"] => ({
+    every: patch?.every ?? existing.every,
+    jitter: patch?.jitter ?? existing.jitter,
+    initialDelay: patch?.initialDelay ?? existing.initialDelay,
+    // `everyVisits` is nullable and null MEANS something — time is the only trigger — so it is
+    // undefined that falls through here, not falsiness.
+    everyVisits: patch?.everyVisits === undefined ? existing.everyVisits : patch.everyVisits,
   });
 
-  app.post(routes.simulations(":p"), async (c) => {
+  /**
+   * A study as its own page reads it.
+   *
+   * It is the index's summary plus the study's report cycle, and the cycle is added here rather
+   * than in the read model because that is where its one reader is: the builder opens on a study
+   * read on its own, and a studies index that carried a timing for every row would be shipping a
+   * setting nothing on that screen can act on. See `StudySummaryView.reportCycle`.
+   */
+  const studyView = async (study: Simulation): Promise<StudySummaryView> => ({ ...(await projects.studySummary(study)), reportCycle: study.reportCycle });
+
+  /** A saved study as a draft, so the saved and the unsaved are estimated by one path. */
+  const draftOf = (study: Simulation): StudyDraft => ({
+    projectId: study.projectId,
+    targetId: study.targetId,
+    populationId: study.populationId,
+    size: study.size,
+    visitsPerPerson: study.visitsPerPerson,
+    cadence: study.cadence,
+    seed: study.seed,
+    autoSweep: study.autoSweep,
+    requireFreshTarget: study.requireFreshTarget,
+    overrides: study.overrides,
+    brief: study.brief,
+  });
+
+  /**
+   * Writes the people a study's deal calls for, and forgives the one thing that can stop it: a
+   * cohort whose mix names a persona that has gone. The study row is saved by the time this runs,
+   * and the gap is reported where it is read — a 409 on the People page and in preflight — rather
+   * than by failing a save that did not cause it.
+   */
+  const materialiseQuietly = async (studyId: string): Promise<void> => {
+    try {
+      await materialise(deps.store, studyId);
+    } catch (err) {
+      if (!(err instanceof RosterIncomplete)) throw err;
+    }
+  };
+
+  app.get(routes.studies(":p"), async (c) => {
+    const s = await scope(c);
+    return s.ok ? c.json({ items: await projects.listStudies(s.project.id), nextCursor: null }) : s.response;
+  });
+
+  /**
+   * Making a study. `populationId`, `targetId` and `size` are REQUIRED: a project holds several
+   * targets and several populations, and the server refuses to guess which (ADR-0035) — a POST
+   * without them is a 400 that NAMES the choices and creates nothing, because "ambiguous" is a
+   * puzzle and a list of the two targets is an answer. The size is what makes it a study at all
+   * (ADR-0041): saving it is what writes the people.
+   */
+  app.post(routes.studies(":p"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const body = await parseBody(c, SimulationInputSchema);
+    // Parsed with the two ids relaxed, so a body missing one is answered with the choices rather
+    // than with the schema's word for "required".
+    const body = await parseBody(c, StudyCreateInputSchema.partial({ populationId: true, targetId: true }));
     if (!body.ok) return body.response;
-    const settings = await ensureSettings(deps.store, s.project.id);
-    const population = body.value.populationId ? owned(await deps.store.getPopulation(body.value.populationId), s.project.id) : await ensurePopulation(deps.store, s.project.id);
-    if (!population) return fail(c, "bad_request", "that population is not in this project");
-
-    /*
-      **With several targets, say which. Do not guess.**
-
-      This was `listTargets(projectId)[0]` — and `listTargets` orders `updated_at DESC`, so "the
-      first" meant "whichever you edited last". A project with a dev and a qa endpoint got a
-      simulation pointed at whichever of them had most recently been touched, silently, and the
-      row froze that choice forever.
-
-      One target still defaults, because with one there is nothing to choose and making every
-      caller say so would be ceremony. Zero keeps the refusal it always had. Two or more without
-      a `targetId` is a refusal that NAMES the choices, because a 400 saying "ambiguous" is a
-      puzzle and a 400 listing the two targets is an answer. `SimulationInputSchema.targetId`
-      stays optional, so this is a runtime refusal rather than a contract break.
-    */
+    const lib = await libraryOf(s.project.id);
     const targets = await deps.store.listTargets(s.project.id);
-    if (!body.value.targetId && targets.length > 1) {
-      return fail(c, "bad_request", `this project has ${targets.length} targets — say which one this simulation visits: ${targets.map((t) => `${t.name} (${t.id})`).join(", ")}`);
+    if (body.value.targetId === undefined) {
+      return fail(
+        c,
+        "bad_request",
+        targets.length === 0
+          ? "connect a target before making a study; a study names the target its people visit"
+          : `say which target this study visits (targetId): ${targets.map((t) => `${t.name} (${t.id})`).join(", ")}`,
+      );
     }
-    const target = body.value.targetId ? owned(await deps.store.getTarget(body.value.targetId), s.project.id) : targets[0];
-    if (!target) return fail(c, "conflict", "connect a target before making a simulation; a simulation names the target its runs go to");
-
-    // Same rule for the cast. `ensurePopulation` above resolves the default, which is right while
-    // there is one; with several, a simulation that does not say who goes is a guess about the
-    // most expensive thing on the row.
-    const populations = await deps.store.listPopulations(s.project.id);
-    if (!body.value.populationId && populations.length > 1) {
-      return fail(c, "bad_request", `this project has ${populations.length} populations — say which cast this simulation sends: ${populations.map((p) => `${p.name} (${p.id})`).join(", ")}`);
+    if (body.value.populationId === undefined) {
+      return fail(
+        c,
+        "bad_request",
+        lib.populations.length === 0
+          ? "compose a population before making a study; a study names the population it sends"
+          : `say which population this study sends (populationId): ${lib.populations.map((p) => `${p.name} (${p.id})`).join(", ")}`,
+      );
     }
-    const taken = new Set((await deps.store.listSimulations({ projectId: s.project.id, includeArchived: true })).map((sim) => sim.slug));
-    const base = body.value.slug ?? (slugify(body.value.name) || "simulation");
-    let slug = base;
-    for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
-    const simulation = await createSimulation(deps.store, {
+    const target = owned(await deps.store.getTarget(body.value.targetId), s.project.id);
+    if (!target) return fail(c, "bad_request", "that target is not in this project");
+    const population = owned(await deps.store.getPopulation(body.value.populationId), s.project.id);
+    if (!population) return fail(c, "bad_request", "that population is not in this project");
+    const settings = await ensureSettings(deps.store, s.project.id);
+    const taken = new Set(lib.studies.map((study) => study.slug));
+    const base = body.value.slug ?? (slugify(body.value.name) || "study");
+    const reserved = reservedSlug(c, base, "study");
+    if (reserved) return reserved;
+    const slug = uniqueSlug(base, taken);
+    const study = await createSimulation(deps.store, {
       projectId: s.project.id,
       slug,
       name: body.value.name,
       ...(body.value.description === undefined ? {} : { description: body.value.description }),
+      ...(body.value.brief === undefined ? {} : { brief: body.value.brief }),
       populationId: population.id,
       targetId: target.id,
+      size: body.value.size,
       visitsPerPerson: body.value.visitsPerPerson === undefined ? settings.maxWakes : body.value.visitsPerPerson,
       cadence: { ...settings.cadence, ...body.value.cadence },
       seed: body.value.seed ?? settings.seed,
       ...(body.value.autoSweep === undefined ? {} : { autoSweep: body.value.autoSweep }),
       ...(body.value.requireFreshTarget === undefined ? {} : { requireFreshTarget: body.value.requireFreshTarget }),
+      ...(body.value.overrides === undefined ? {} : { overrides: overridesOf(body.value.overrides) }),
     });
-    return c.json(await projects.simulationSummary(simulation), 201);
+    // The report cycle is merged onto the row after it exists rather than passed through the
+    // create draft, because a partial has to be merged over something and the thing it is merged
+    // over is the schema's own rhythm — which only exists once the row has been parsed. A second
+    // write on a path that then writes a whole roster anyway.
+    const withCycle: Simulation = body.value.reportCycle === undefined ? study : { ...study, reportCycle: reportCycleOf(study.reportCycle, body.value.reportCycle) };
+    if (withCycle !== study) await deps.store.saveSimulation(withCycle);
+    // Setting the size is what writes the people (ADR-0041): every cohort the population holds is
+    // laned at the largest count any study gives it, this one included.
+    await materialiseQuietly(study.id);
+    return c.json(await studyView(withCycle), 201);
   });
 
-  app.get(routes.simulation(":p", ":s"), async (c) => {
+  app.get(routes.study(":p", ":s"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const simulation = await simulationOf(c, s.project.id);
-    return simulation ? c.json(await projects.simulationSummary(simulation)) : fail(c, "not_found", "no such simulation");
+    const study = await studyOf(c, s.project.id);
+    return study ? c.json(await studyView(study)) : fail(c, "not_found", "no such study");
   });
 
-  app.put(routes.simulation(":p", ":s"), async (c) => {
+  app.put(routes.study(":p", ":s"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const existing = await simulationOf(c, s.project.id);
-    if (!existing) return fail(c, "not_found", "no such simulation");
-    const body = await parseBody(c, SimulationInputSchema);
+    const existing = await studyOf(c, s.project.id);
+    if (!existing) return fail(c, "not_found", "no such study");
+    const body = await parseBody(c, StudyUpdateInputSchema);
     if (!body.ok) return body.response;
     const visits = body.value.visitsPerPerson === undefined ? existing.visitsPerPerson : body.value.visitsPerPerson;
-    // The same ownership check the POST makes. Taken raw, a simulation in project A could be
-    // pointed at project B's target — and resolution looks a target up by id with no project
-    // predicate, so the run would go to B's server carrying B's stored bearer token.
+    // The same ownership check the POST makes. Taken raw, a study in project A could be pointed
+    // at project B's target — and resolution looks a target up by id with no project predicate,
+    // so the run would go to B's server carrying B's stored bearer token.
     if (body.value.populationId !== undefined && !owned(await deps.store.getPopulation(body.value.populationId), s.project.id)) {
       return fail(c, "bad_request", "that population is not in this project");
     }
@@ -1445,83 +1704,157 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     }
     const updated: Simulation = {
       ...existing,
-      name: body.value.name,
+      name: body.value.name ?? existing.name,
       description: body.value.description ?? existing.description,
+      brief: body.value.brief ?? existing.brief,
       populationId: body.value.populationId ?? existing.populationId,
       targetId: body.value.targetId ?? existing.targetId,
-      // The cap decides the mode, so the two can never disagree: a capped simulation ENDS and is
+      size: body.value.size ?? existing.size,
+      // The cap decides the mode, so the two can never disagree: a capped study ENDS and is
       // ephemeral, an uncapped one runs until somebody stops it and is longitudinal.
       mode: visits === null ? "longitudinal" : "ephemeral",
       visitsPerPerson: visits,
       cadence: { ...existing.cadence, ...body.value.cadence },
       seed: body.value.seed ?? existing.seed,
+      reportCycle: reportCycleOf(existing.reportCycle, body.value.reportCycle),
       autoSweep: body.value.autoSweep ?? existing.autoSweep,
       requireFreshTarget: body.value.requireFreshTarget ?? existing.requireFreshTarget,
+      // When sent, the object IS the overrides block: a form that shows all three blocks sends
+      // all three, and a block it left empty overrides nothing.
+      overrides: body.value.overrides === undefined ? existing.overrides : overridesOf(body.value.overrides),
       updatedAt: now(),
     };
     await deps.store.saveSimulation(updated);
-    return c.json(await projects.simulationSummary(updated));
+    // A new size re-deals the roster at once: growing re-deals nobody, shrinking puts people
+    // aside rather than away (ADR-0031). A population that was swapped out is re-laned too,
+    // because its cohorts may now be sent by nobody.
+    await materialiseQuietly(updated.id);
+    if (updated.populationId !== existing.populationId && (await deps.store.getPopulation(existing.populationId))) {
+      await ensureRosterFor(deps.store, existing.populationId);
+    }
+    return c.json(await studyView(updated));
   });
 
   /**
-   * Archived, not deleted: a simulation's executions are the user's history, so removing it from
-   * the list leaves them exactly where they are. `?runs=delete` is the user having been shown how
-   * many executions that is and said to take them too — then the simulation row goes as well, and
-   * the archive path is never reached.
+   * Archived, not deleted: a study's executions are the user's history, so removing it from the
+   * list leaves them exactly where they are. `?runs=delete` is the user having been shown how many
+   * executions that is and said to take them too — then the study row goes as well, and the
+   * archive path is never reached. (A study that has never run has no history to keep, and the
+   * store lets its row go either way.)
+   *
+   * Either way the people it alone was sending are put aside, not deleted: the roster is re-laned
+   * at the sizes the REMAINING studies give it (an archived study with a running or paused
+   * execution still counts), and they come back if a study sends them again (ADR-0031). This is
+   * the one writer that re-lanes through the population rather than through `materialise`,
+   * because the row it would materialise may just have gone.
    */
-  app.delete(routes.simulation(":p", ":s"), async (c) => {
+  app.delete(routes.study(":p", ":s"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const simulation = await simulationOf(c, s.project.id);
-    if (!simulation) return fail(c, "not_found", "no such simulation");
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
     const withRuns = c.req.query("runs") === "delete";
     if (withRuns) {
       const running = new Set(deps.runs.runningIds);
-      const live = (await deps.store.listRuns({ simulationId: simulation.id })).filter((run) => running.has(run.id));
-      if (live.length > 0) return fail(c, "conflict", `${simulation.name} is running; stop it first, and sweep if accounts were made`);
+      const live = (await deps.store.listRuns({ simulationId: study.id })).filter((run) => running.has(run.id));
+      if (live.length > 0) return fail(c, "conflict", `${study.name} is running; stop it first, and sweep if accounts were made`);
     }
-    await deps.store.deleteSimulation(simulation.id, withRuns ? { withRuns: true } : {});
+    await deps.store.deleteSimulation(study.id, withRuns ? { withRuns: true } : {});
+    try {
+      await ensureRosterFor(deps.store, study.populationId);
+    } catch (err) {
+      // A cohort whose persona has gone is reported where it is read, not by failing the archive.
+      if (!(err instanceof RosterIncomplete)) throw err;
+    }
     return c.body(null, 204);
   });
 
-  /** Resolves a simulation into the config a run would execute, or says what is missing. */
-  const resolve = async (c: Context, simulation: Simulation): Promise<{ ok: true; value: ResolvedSimulation } | { ok: false; response: Response }> => {
+  /** Resolves a study into the config a run would execute, or says what is missing. Reads only. */
+  const resolve = async (c: Context, study: Simulation): Promise<{ ok: true; value: ResolvedSimulation } | { ok: false; response: Response }> => {
     try {
-      return { ok: true, value: await resolveSimulationConfig(deps.store, deps.processConfig, simulation.id) };
+      return { ok: true, value: await resolveSimulationConfig(deps.store, deps.processConfig, study.id) };
     } catch (err) {
       if (err instanceof ConfigIncomplete) return { ok: false, response: fail(c, "conflict", err.missing.join("; ")) };
       throw err;
     }
   };
 
-  /** Pure arithmetic. It reads history and spends nothing; the estimate never starts a run. */
-  app.post(routes.simulationEstimate(":p", ":s"), async (c) => {
+  /**
+   * Pure arithmetic over a draft, saved or not. It reads history and spends nothing, writes no
+   * person and never starts a run. A study that sends nobody — a size of nought, or a population
+   * whose cohorts have no personas yet — is a ZERO estimate, never a 409: the builder asks this on
+   * every keystroke and the number is the answer it wants. The model and the ceilings in that
+   * answer are still the real ones, from the settings the study would run under.
+   */
+  const estimateFor = async (c: Context, draft: StudyDraft): Promise<Response> => {
+    // The same ownership check a POST makes: a draft in project A must not be priced against
+    // project B's population or target.
+    if (!owned(await deps.store.getPopulation(draft.populationId), draft.projectId)) return fail(c, "bad_request", "that population is not in this project");
+    if (!owned(await deps.store.getTarget(draft.targetId), draft.projectId)) return fail(c, "bad_request", "that target is not in this project");
+    try {
+      const { config } = await resolveDraft(deps.store, deps.processConfig, draft);
+      return c.json(toEstimateView(await estimateRun(deps.store, { config })));
+    } catch (err) {
+      if (!(err instanceof ConfigIncomplete)) throw err;
+      if (!err.sendsNobody) return fail(c, "conflict", err.missing.join("; "));
+      const plan = planSettings(await ensureSettings(deps.store, draft.projectId), draft.overrides);
+      return c.json(toEstimateView(await zeroEstimate(deps.store, { model: plan.model, guardrails: plan.guardrails, visitsPerPerson: draft.visitsPerPerson })));
+    }
+  };
+
+  /**
+   * The estimate for a study that does not exist yet, or for a saved one as the form now has it.
+   * The body is the draft; `cadence`, `seed` and `overrides` fall through to the project's
+   * settings when absent, exactly as they would on the row a POST would write.
+   */
+  app.post(routes.projectEstimate(":p"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const simulation = await simulationOf(c, s.project.id);
-    if (!simulation) return fail(c, "not_found", "no such simulation");
-    const resolved = await resolve(c, simulation);
-    if (!resolved.ok) return resolved.response;
-    return c.json(await estimateRun(deps.store, { config: resolved.value.config }));
+    const body = await parseBody(c, ProjectEstimateBodySchema);
+    if (!body.ok) return body.response;
+    const settings = await ensureSettings(deps.store, s.project.id);
+    return estimateFor(c, {
+      projectId: s.project.id,
+      targetId: body.value.targetId,
+      populationId: body.value.populationId,
+      size: body.value.size,
+      visitsPerPerson: body.value.visitsPerPerson,
+      cadence: { ...settings.cadence, ...body.value.cadence },
+      seed: body.value.seed ?? settings.seed,
+      ...(body.value.overrides === undefined ? {} : { overrides: overridesOf(body.value.overrides) }),
+    });
   });
 
-  /** Who is going, what they will meet, and what one of them will actually be told. No spending. */
-  app.get(routes.simulationPreflight(":p", ":s"), async (c) => {
+  /** The same arithmetic for a saved study, as the row has it. */
+  app.post(routes.studyEstimate(":p", ":s"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const simulation = await simulationOf(c, s.project.id);
-    if (!simulation) return fail(c, "not_found", "no such simulation");
-    const resolved = await resolve(c, simulation);
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    return estimateFor(c, draftOf(study));
+  });
+
+  /**
+   * Who is going, what they will meet, and what one of them will actually be told. No spending,
+   * and no writing: resolution reads the roster and fills a missing ordinal in memory, so a study
+   * saved a moment ago previews the same names a start would write (ADR-0041).
+   */
+  app.get(routes.studyPreflight(":p", ":s"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    const resolved = await resolve(c, study);
     if (!resolved.ok) return resolved.response;
     const { config } = resolved.value;
     const view = await liveTargetView(config, true, (await asTheUser(c, s.project.id)).signIn);
     const [estimate, killSwitch] = await Promise.all([estimateRun(deps.store, { config }), deps.store.getKillSwitch()]);
-    const first = expandPopulation(config.population, "preflight", simulation.id)[0];
+    const first = expandPopulation(config.population, "preflight", study.id)[0];
     const blockers: string[] = [];
     if (!deps.hasApiKey()) blockers.push("Set ANTHROPIC_API_KEY before starting a run; the people are model calls.");
     if (killSwitch.engaged) blockers.push(`Everything is stopped${killSwitch.reason ? ` (${killSwitch.reason})` : ""}. Release it to start a run.`);
-    if (simulation.requireFreshTarget && config.target.reset.kind === "none")
-      blockers.push("This simulation insists on a fresh target, and the target declares no reset.");
+    if (study.requireFreshTarget && config.target.reset.kind === "none")
+      blockers.push("This study insists on a fresh target, and the target declares no reset.");
     // A first contact that FAILED is a blocker: it is the one thing on this page that has actually
     // been tried against the target, and starting a run past it spends money to rediscover it.
     // Never having run one is not a blocker — it is a warning — because a check that provisions an
@@ -1534,15 +1867,15 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     // by the target is reported as blocked for "everyone" and a tool a persona refuses names the
     // cohorts it is shut off for.
     const targetOnly = effectiveToolPolicy(config.target.tools);
-    // One entry per lane: a cohort mixing two personas is shut out of a tool per persona, and the
-    // cohort's own policy narrows every lane in it.
+    // One entry per cohort AND persona: a cohort mixing two personas is shut out of a tool per
+    // persona, and the cohort's own policy narrows every one of its people.
     const cohorts = config.population.members.map((member) => ({
       label: `${member.cohortName || member.cohort} (${member.persona.name})`,
       policy: effectiveToolPolicy(config.target.tools, member.persona.tools, member.tools),
     }));
     // A self-signup target whose own policy blocks its sign-up tool is a dead configuration and it
     // is detectable without touching anything: nobody sent here could make an account, so every
-    // wake would end auth-failed. First contact reports it too, but only once somebody has run
+    // visit would end auth-failed. First contact reports it too, but only once somebody has run
     // one, and this costs nothing to say up front.
     // A target that was connected and never finished (ADR-0040). It is the cheapest blocker on
     // this page — no address is asked anything, the row itself says so — and it is the one that
@@ -1565,8 +1898,8 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     });
 
     return c.json(
-      await projects.preflight(simulation, {
-        estimate,
+      await projects.preflight(study, {
+        estimate: toEstimateView(estimate),
         tools: allowed.map((t) => ({ name: t.name, description: t.description })),
         blocked,
         // The TARGET's setting, not the strictest across the population: this is the target
@@ -1576,7 +1909,12 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
         firstContact: contact,
         toolsError: view.toolsError,
         promptPreview: first
-          ? { personName: first.agent.name, cohortSlug: first.agent.cohortSlug, text: personaSystemPrompt(first.agent, config.target) }
+          ? // The study's brief is the third argument, exactly as the real visit passes it
+            // (`runWake`). Rendering the preview without it made this page the one screen that
+            // showed a prompt nobody would ever be sent: the brief is the per-study text handed to
+            // everybody the study sends, so leaving it out dropped the study's own words from the
+            // only place a user can read them before spending anything.
+            { personName: first.agent.name, cohortSlug: first.agent.cohortSlug, text: personaSystemPrompt(first.agent, config.target, config.simulation.brief) }
           : { personName: "", cohortSlug: "", text: "" },
         blockers,
       }),
@@ -1588,11 +1926,15 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
    * failed job the browser can read, rather than a request that timed out with nothing to point
    * at (ADR-0027).
    */
-  const startExecution = async (c: Context, simulation: Simulation, carryForwardFrom?: string): Promise<Response> => {
+  const startExecution = async (c: Context, study: Simulation, carryForwardFrom?: string): Promise<Response> => {
     const body = await parseBody(c, StartExecutionBodySchema);
     if (!body.ok) return body.response;
     if (!deps.hasApiKey()) return fail(c, "unavailable", "starting a run needs ANTHROPIC_API_KEY; the people are model calls");
-    const resolved = await resolve(c, simulation);
+    // Materialised BEFORE the snapshot (ADR-0041): resolution is read-only and would fill a
+    // missing person in memory, and a cast the snapshot freezes has to be a cast that is stored,
+    // so that the same person is met by the next execution and by every other study on the cohort.
+    await materialiseQuietly(study.id);
+    const resolved = await resolve(c, study);
     if (!resolved.ok) return resolved.response;
     const parent = carryForwardFrom ?? body.value.carryForwardFrom;
     if (parent !== undefined) {
@@ -1601,18 +1943,18 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
         return fail(c, "not_found", `no run ${parent} to carry on from`);
       }
       // A carry-forward copies the parent's memory and its ACCOUNTS onto this run's participants,
-      // so the parent has to be an earlier execution of THIS simulation. Anything else seeds one
-      // project's people with another's, and `reconcile` then silently drops every inherited agent
-      // whose id is not in this population.
-      if (parentRun && parentRun.simulationId !== simulation.id) {
-        return fail(c, "conflict", `run ${parent} is an execution of a different simulation; carry it forward from its own`);
+      // so the parent has to be an earlier execution of THIS study. Anything else seeds one
+      // project's people with another's, and `reconcile` then silently drops every inherited
+      // participant whose id is not in this population.
+      if (parentRun && parentRun.simulationId !== study.id) {
+        return fail(c, "conflict", `run ${parent} is an execution of a different study; carry it forward from its own`);
       }
-      if (parentRun && parentRun.projectId !== simulation.projectId) {
+      if (parentRun && parentRun.projectId !== study.projectId) {
         return fail(c, "not_found", `no run ${parent} to carry on from`);
       }
     }
-    if (simulation.requireFreshTarget && resolved.value.config.target.reset.kind === "none") {
-      return fail(c, "conflict", `${simulation.name} insists on a fresh target, and ${resolved.value.target.name} declares no reset`);
+    if (study.requireFreshTarget && resolved.value.config.target.reset.kind === "none") {
+      return fail(c, "conflict", `${study.name} insists on a fresh target, and ${resolved.value.target.name} declares no reset`);
     }
     // Refused here, at the request, and not left to the job (ADR-0040). `identityProviderFor`
     // throws on an unfinished target, so without this the press starts a job, the job fails, and
@@ -1632,19 +1974,19 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
         const run = await deps.runs.start(
           {
             config: resolved.value.config,
-            projectId: simulation.projectId,
-            simulationId: simulation.id,
+            projectId: study.projectId,
+            simulationId: study.id,
             targetId: resolved.value.target.id,
             label,
             ...(parent === undefined ? {} : { continueFrom: parent, continuationReason: body.value.reason ?? "" }),
           },
-          (wakes) => void report({ done: wakes, label: `${wakes} visit(s) done` }),
+          (visits) => void report({ done: visits, label: `${visits} visit(s) done` }),
         );
         runId = run.id;
         snapshotId = run.configSnapshotId;
         return { runId: run.id };
       },
-      { projectId: simulation.projectId, label: parent === undefined ? "starting the run" : "carrying the run on" },
+      { projectId: study.projectId, label: parent === undefined ? "starting the run" : "carrying the run on" },
     );
 
     // The daemon keeps ticking after `start` resolves; this only waits for the run row to exist,
@@ -1659,29 +2001,32 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.json({ runId, jobId: job.id, configSnapshotId: snapshotId, label }, 201);
   };
 
-  app.post(routes.simulationRuns(":p", ":s"), async (c) => {
+  app.post(routes.studyRuns(":p", ":s"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const simulation = await simulationOf(c, s.project.id);
-    if (!simulation) return fail(c, "not_found", "no such simulation");
-    return startExecution(c, simulation);
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    return startExecution(c, study);
   });
 
-  app.get(routes.simulationRuns(":p", ":s"), async (c) => {
+  app.get(routes.studyRuns(":p", ":s"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const simulation = await simulationOf(c, s.project.id);
-    if (!simulation) return fail(c, "not_found", "no such simulation");
-    return c.json({ items: await new ReadModel(deps.store).listRuns({ simulationId: simulation.id }), nextCursor: null });
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    return c.json({ items: await new ReadModel(deps.store).listRuns({ simulationId: study.id }), nextCursor: null });
   });
 
-  app.post(routes.simulationApply(":p", ":s"), async (c) => {
+  app.post(routes.studyApply(":p", ":s"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const simulation = await simulationOf(c, s.project.id);
-    if (!simulation) return fail(c, "not_found", "no such simulation");
-    const live = (await deps.store.listRuns({ simulationId: simulation.id })).find((run) => run.status === "running" || run.status === "pending");
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    const live = (await deps.store.listRuns({ simulationId: study.id })).find((run) => run.status === "running" || run.status === "pending");
     if (!live) return fail(c, "conflict", "nothing is running, so there is nothing to apply the changes to; run it again instead");
+    // The re-resolve inside `applyChanges` reads the roster, so what it is about to freeze has to
+    // be written first — the same rule a start follows.
+    await materialiseQuietly(study.id);
     try {
       const run = await deps.runs.applyChanges(live.id);
       return c.json({ runId: run.id, configSnapshotId: run.configSnapshotId });
@@ -1690,34 +2035,34 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     }
   });
 
-  app.get(routes.simulationResults(":p", ":s"), async (c) => {
+  app.get(routes.studyResults(":p", ":s"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const simulation = await simulationOf(c, s.project.id);
-    if (!simulation) return fail(c, "not_found", "no such simulation");
-    const latest = (await deps.store.listRuns({ simulationId: simulation.id })).sort((a, b) => a.seq - b.seq).at(-1);
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    const latest = (await deps.store.listRuns({ simulationId: study.id })).sort((a, b) => a.seq - b.seq).at(-1);
     const coverage = latest ? await coverageOf(latest.id, (await asTheUser(c, s.project.id)).signIn) : { items: [], exposedCount: 0, neverCalledCount: 0, toolsError: null };
-    return c.json(await projects.results(simulation, coverage));
+    return c.json(await projects.results(study, coverage));
   });
 
-  app.get(routes.simulationCluster(":p", ":s", ":sig"), async (c) => {
+  app.get(routes.studyCluster(":p", ":s", ":sig"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const simulation = await simulationOf(c, s.project.id);
-    if (!simulation) return fail(c, "not_found", "no such simulation");
-    const detail = await projects.cluster(simulation, param(c, "sig"));
-    return detail ? c.json(detail) : fail(c, "not_found", "nothing with that signature in this simulation");
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    const detail = await projects.cluster(study, param(c, "sig"));
+    return detail ? c.json(detail) : fail(c, "not_found", "nothing with that signature in this study");
   });
 
-  app.get(routes.simulationCompare(":p", ":s"), async (c) => {
+  app.get(routes.studyCompare(":p", ":s"), async (c) => {
     const s = await scope(c);
     if (!s.ok) return s.response;
-    const simulation = await simulationOf(c, s.project.id);
-    if (!simulation) return fail(c, "not_found", "no such simulation");
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
     const q = parseQuery(c, CompareQuerySchema);
     if (!q.ok) return q.response;
-    const compared = await projects.compare(simulation, q.value.a, q.value.b);
-    return compared ? c.json(compared) : fail(c, "not_found", "those two executions are not both in this simulation");
+    const compared = await projects.compare(study, q.value.a, q.value.b);
+    return compared ? c.json(compared) : fail(c, "not_found", "those two executions are not both in this study");
   });
 
   /**
@@ -1725,7 +2070,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
    *
    * `signIn` is the OPERATOR's grant, threaded in from the request: reading which tools a target
    * exposes is one of the things ADR-0036 means by acting as the user. It is not the credential
-   * the run itself used, and cannot become one — a wake builds its own session.
+   * the run itself used, and cannot become one — a visit builds its own session.
    */
   const coverageOf = async (runId: string, signIn?: (endpoint: McpEndpoint) => SignInProvider | undefined) => {
     const read = new ReadModel(deps.store);
@@ -1739,6 +2084,599 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return read.toolUsage(runId, view);
   };
 
+  // ---- github: the connection, and filing what a study found (ADR-0044) ----
+
+  /**
+   * The connection as the browser may see it.
+   *
+   * It **parses**; it does not build a literal, and that is the whole guard rather than a style
+   * preference. `GithubConnectionViewSchema` is a `z.object`, so it drops every key it does not
+   * name and the token cannot survive the call whatever was handed in. The natural-looking
+   * alternative —
+   *
+   * ```ts
+   * const view: GithubConnectionView = { ...connection, tokenSet: connection.token !== undefined };
+   * ```
+   *
+   * — compiles clean and puts the token on the wire: TypeScript's excess-property check exists
+   * only for keys written out in a literal and does not reach across a spread. `settingsView`
+   * above is safe only because it is a whitelist literal naming every field it serves; the same
+   * code with one spread in it would be silently a leak. Parsing makes the guard structural
+   * instead of something the next author has to remember (ADR-0040).
+   */
+  const githubView = (connection: GithubConnection): GithubConnectionView =>
+    GithubConnectionViewSchema.parse({ ...connection, tokenSet: connection.token !== undefined && connection.token !== "" });
+
+  /**
+   * The connection, or `null` before anybody has made one.
+   *
+   * `null` rather than an empty object, because "no repository yet" and "a repository whose token
+   * you cannot see" are different states and the settings screen has to be able to tell them
+   * apart — the same reason `GET /target` answers a target row or nothing.
+   */
+  app.get(routes.github(":p"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const connection = await deps.store.getGithubConnection(s.project.id);
+    return c.json(connection === undefined ? null : githubView(connection));
+  });
+
+  /**
+   * A patch over the stored connection, with the write-only rule on the token: **absent keeps,
+   * the empty string clears, a value replaces** — `mergeIdentity` above, exactly.
+   *
+   * Two fields are deliberately not the caller's to set. `visibility` and `checkedAt` are what the
+   * CHECK found out by asking GitHub, so a PUT cannot declare a public repository private and walk
+   * past the confirmation that exists because a public one publishes the target's address and the
+   * study's setup. And when the repository CHANGES, both are reset: what the last check learned
+   * was about somewhere else, and carrying it over would make an unchecked repository read as
+   * checked and private.
+   */
+  app.put(routes.github(":p"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const body = await parseBody(c, GithubConnectionInputSchema);
+    if (!body.ok) return body.response;
+    const existing = await deps.store.getGithubConnection(s.project.id);
+    const repo = body.value.repo ?? existing?.repo;
+    // The server refuses to guess rather than inventing a repository (ADR-0035's rule): on a first
+    // PUT there is nothing stored to keep, so the missing field is named.
+    if (repo === undefined) return fail(c, "bad_request", "say which repository to file into, as owner/name; there is none stored to keep");
+    const token = body.value.token === undefined ? existing?.token : body.value.token === "" ? undefined : body.value.token;
+    const sameRepo = existing !== undefined && existing.repo === repo;
+    const at = now();
+    const connection = GithubConnectionSchema.parse({
+      projectId: s.project.id,
+      repo,
+      ...(token === undefined || token === "" ? {} : { token }),
+      visibility: sameRepo ? existing.visibility : "unknown",
+      checkedAt: sameRepo ? existing.checkedAt : null,
+      autoFile: body.value.autoFile ?? existing?.autoFile,
+      labels: body.value.labels ?? existing?.labels,
+      // Field by field, because the body's `filter` carries no defaults on purpose: spreading a
+      // partial over the stored block is right, but `{ ...existing.filter, ...body.value.filter }`
+      // would also write an explicitly-present `undefined` over a stored value. An absent field
+      // here falls through to the stored one and then to the schema's default.
+      filter: {
+        kinds: body.value.filter?.kinds ?? existing?.filter.kinds,
+        minSeverity: body.value.filter?.minSeverity ?? existing?.filter.minSeverity,
+        onlyConfirmed: body.value.filter?.onlyConfirmed ?? existing?.filter.onlyConfirmed,
+      },
+      createdAt: existing?.createdAt ?? at,
+      updatedAt: at,
+    });
+    await deps.store.saveGithubConnection(connection);
+    return c.json(githubView(connection));
+  });
+
+  /** Forget the whole thing, token included. GitHub is not told, because it did not ask. */
+  app.delete(routes.github(":p"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    await deps.store.deleteGithubConnection(s.project.id);
+    return c.body(null, 204);
+  });
+
+  /** One sentence a person can act on, per outcome. GitHub's own words go in `detail`. */
+  const checkWords = (repo: string, check: RepoCheck): string => {
+    switch (check.outcome) {
+      case "ready":
+        return check.visibility === "public"
+          ? `${repo} answers and this token can open an issue there. It is a PUBLIC repository: an issue carries the target's address and the conditions the people were given, and anybody can read it.`
+          : `${repo} answers and this token can open an issue there.`;
+      case "unreachable":
+        return `github.com did not answer, so populace cannot tell yet whether ${repo} can be filed into. Nothing was sent.`;
+      case "refused":
+        return `github.com refused this token for ${repo}. Check that it has write access to issues on that repository — a repository a token cannot see is answered exactly the same way as one that does not exist.`;
+      case "no-issues":
+        return `${repo} has its issue tracker switched off, so nothing can be filed there until somebody turns it back on.`;
+      case "expired":
+        return `this token has expired. Make a new one with write access to issues on ${repo}, then press Check again.`;
+    }
+  };
+
+  /**
+   * "Will this token open an issue in that repository?"
+   *
+   * A POST for three reasons, each of which would be enough on its own: the body may carry a token
+   * nobody has saved yet (the `provisioningCheck` precedent), it reaches somebody else's server,
+   * and it WRITES what it learned — the visibility and the time — onto the connection, which a GET
+   * may not do (ADR-0023, ADR-0041).
+   *
+   * An absent token falls back to the stored one, so the settings form — which has never been
+   * shown the token it is editing — can ask the same question as somebody pasting a fresh one.
+   */
+  app.post(routes.githubCheck(":p"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const body = await parseBody(c, GithubCheckBodySchema);
+    if (!body.ok) return body.response;
+    const existing = await deps.store.getGithubConnection(s.project.id);
+    const typed = body.value.token === undefined || body.value.token === "" ? undefined : body.value.token;
+    const token = typed ?? existing?.token;
+    const checkedAt = now();
+    // Nothing goes out at all without a token: an unauthenticated request to a private repository
+    // is answered 404, which reads as "no such repository" and would send somebody hunting for a
+    // typo in a name that is correct.
+    if (token === undefined || token === "") {
+      const nothingToTryWith: GithubCheckResult = GithubCheckResultSchema.parse({
+        outcome: "refused",
+        summary: `populace has no token to reach ${body.value.repo} with. Paste one with write access to issues on that repository, then press Check.`,
+        detail: null,
+        visibility: "unknown",
+        expiresAt: null,
+        checkedAt,
+      });
+      return c.json(nothingToTryWith);
+    }
+    const client = (deps.githubClient ?? ((connection) => new GithubClient(connection)))({ repo: body.value.repo, token });
+    const check = await client.getRepo();
+    /*
+     * Recorded only against the connection this check was actually about, and only when github.com
+     * ANSWERED.
+     *
+     * A check run from the form before a save has no row to stamp, and stamping the stored row with
+     * what was learned about a different repository is how an unchecked address comes to read as
+     * checked. `unreachable` is the third case and the subtle one: nothing was learned, so nothing
+     * is written — `checkedAt` means "when the check reached the repository", and a timestamp
+     * written beside `visibility: "unknown"` would be a row claiming it had been checked and found
+     * to be neither public nor private.
+     */
+    if (existing !== undefined && existing.repo === body.value.repo && check.outcome !== "unreachable") {
+      await deps.store.saveGithubConnection({ ...existing, visibility: check.visibility, checkedAt, updatedAt: checkedAt });
+    }
+    return c.json(GithubCheckResultSchema.parse({ ...check, summary: checkWords(body.value.repo, check), checkedAt }));
+  });
+
+  /**
+   * What the publisher needs, assembled here so both triggers below are the same pass.
+   *
+   * `projects` is the read model this whole file already shares, which is the point: the publisher
+   * builds ONE study context and derives every cluster from it, where a `cluster()` per candidate
+   * would rebuild every execution, visit and report — twice over, for the two clustering passes —
+   * for each issue it filed.
+   */
+  const publishDeps = (): PublishIssuesDeps => ({
+    store: deps.store,
+    readModel: projects,
+    ...(deps.githubClient ? { client: deps.githubClient } : {}),
+  });
+
+  /**
+   * Whether there is anywhere to file, asked BEFORE a job is enqueued.
+   *
+   * The synchronous route below needs none of this and deliberately has none: `publishIssues`
+   * refuses on its own — it has to, because the automatic cycle has no route in front of it — and
+   * the throw it makes happens before any outbound write, so a 409 carrying the publisher's own
+   * sentence is both correct and free. A JOB cannot do that: "you have not set up a repository"
+   * would arrive as a failed job row, which is the wrong place to learn it from a button press.
+   *
+   * **These two sentences are a second copy of `requireConnection`'s in `publish-issues.ts` and
+   * have to be kept in step with it.** The alternative is worse rather than better: asking the
+   * publisher itself, even over an empty signature list, loads the whole study context and runs
+   * `publishable` before it would notice there is nothing to file with — the one recompute that
+   * file exists to do once, done twice per press.
+   */
+  const notConnected = async (projectId: string): Promise<string | null> => {
+    const connection = await deps.store.getGithubConnection(projectId);
+    if (connection === undefined || connection.repo === "") return "This project has no repository to file issues into. Add one in the project's settings, check it, and populace will file there.";
+    if (connection.token === undefined || connection.token === "") return `populace has ${connection.repo} to file into but no token to file with. Paste a token with write access to issues on that repository and press Check.`;
+    return null;
+  };
+
+  /**
+   * ONE problem, filed now.
+   *
+   * Synchronous and not a job: one issue is one round trip, and a reader who pressed a button on a
+   * finding page wants the link rather than a job row to watch. It runs OUTSIDE the serial queue,
+   * which is exactly why it goes through the same `publishIssues` as the bulk path — the ledger
+   * read, the marker search and the per-issue ledger write are what stop a double click, or a
+   * click while a bulk job is running, from filing the same problem twice.
+   *
+   * 201 only when an issue was CREATED. A repeat comments on the issue that already exists and a
+   * skip creates nothing, so both answer 200 with the same typed result; a `failed` one answers
+   * 200 too, because the pass ran and its outcome is the answer — an error envelope would throw
+   * away the sentence the screen shows and the reason GitHub gave.
+   */
+  app.post(routes.studyIssue(":p", ":s", ":sig"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    let result: PublishIssueResult | undefined;
+    try {
+      const summary = await publishIssues({ simulation: study, signatures: [param(c, "sig")] }, publishDeps());
+      result = summary.results[0];
+    } catch (err) {
+      // The only throw the publisher makes, and it happens before any outbound write. A race
+      // between the pre-flight above and the pass itself lands here rather than as a 500.
+      // The publisher's own refusal, and the only throw it makes: it happens before any outbound
+      // write, so a project with nowhere to file has sent nothing to anybody.
+      if (err instanceof IssuesNotConnected) return fail(c, "conflict", err.message);
+      throw err;
+    }
+    // A bulk job cannot answer 404 and so reports an unknown signature as a skip; a route can, and
+    // "there is nothing with that signature in this study" is not the same answer as "populace
+    // passed over it".
+    if (result === undefined || result.reason === "not-found") return fail(c, "not_found", "nothing with that signature in this study");
+    return c.json(result, result.outcome === "filed" ? 201 : 200);
+  });
+
+  /**
+   * Every problem this study found that passes the connection's filter, or the ones named — as a
+   * JOB, because forty issues is forty round trips to somebody else's server (ADR-0027).
+   *
+   * The kind is `issues.publish` and NOT `issues.cycle`, and the difference is load-bearing rather
+   * than cosmetic: a succeeded `issues.cycle` is the one thing that closes a report window
+   * (`report-windows.ts`), because "populace has reported on everything up to here" is a claim the
+   * automatic cycle makes and a button press does not. Under the cycle's kind, a person pressing
+   * File all would move that boundary, and the next cycle would tell every issue in the repository
+   * that its problem had gone quiet.
+   *
+   * **`?preview=1` asks what it WOULD do and does none of it** — 200 with a `PublishPreview`, no
+   * job, no request to github.com, no row written and nothing spent. It is the same route and the
+   * same body on purpose: the dialog previews with exactly what it is about to send, so the answer
+   * it shows is about the press it is confirming and not about a similar one. A POST rather than a
+   * GET because the body carries the ticked signatures, and it stays inside the rule a GET is held
+   * to anyway — it writes nothing (ADR-0023).
+   */
+  app.post(routes.studyIssues(":p", ":s"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    const body = await parseBody(c, PublishIssuesBodySchema);
+    if (!body.ok) return body.response;
+    if (c.req.query("preview") === "1") {
+      try {
+        return c.json(await previewIssues({ store: deps.store, readModel: projects }, { simulation: study, ...(body.value.signatures === undefined ? {} : { signatures: body.value.signatures }) }));
+      } catch (err) {
+        // The same refusal the pass makes, in the same words: there is nowhere to file, so there is
+        // nothing to preview either. A preview needs no TOKEN, which is why it is this refusal and
+        // not `notConnected`'s — a reader with a repository and no token yet can still be shown
+        // what the press would do.
+        if (err instanceof IssuesNotConnected) return fail(c, "conflict", err.message);
+        throw err;
+      }
+    }
+    const refusal = await notConnected(s.project.id);
+    if (refusal !== null) return fail(c, "conflict", refusal);
+    const connection = await deps.store.getGithubConnection(s.project.id);
+    const named = body.value.signatures;
+    /*
+     * The execution this pass reports on, which is the newest one — the publisher itself reports on
+     * the newest window anybody visited, and that window lies inside this run.
+     *
+     * A `Job` names a project and a run and never a study, and changing that is a core schema with
+     * many construction sites. Naming the run is what puts the progress rows on that execution's
+     * live feed, where somebody who pressed the button on its results screen is looking.
+     *
+     * It also puts this row into `listJobs({ runId })`, which is what `report-windows.ts` reads
+     * boundaries out of — so the KIND below is doing real work: `reportWindows` takes only a
+     * succeeded `issues.cycle`, and this row sitting in that list under the wrong kind would close
+     * a report window that nothing has reported on.
+     */
+    const latest = (await deps.store.listRuns({ simulationId: study.id })).sort((a, b) => a.seq - b.seq).at(-1);
+    const job = await deps.jobs.enqueue(
+      "issues.publish",
+      async (_job, report) => {
+        await report({ label: "reading what this study found", done: 0, total: named?.length ?? null });
+        /**
+         * Progress writes, serialised.
+         *
+         * `onProgress` is synchronous and `report` is not, so firing each one as a loose promise
+         * would let two writes of the same job row race and leave the count going backwards on
+         * the live screen. Chaining keeps them in order and lets the handler wait for the last one
+         * before it settles — after which `JobRunner` ignores them anyway.
+         */
+        let writes: Promise<void> = Promise.resolve();
+        const summary = await publishIssues(
+          { simulation: study, ...(named === undefined ? {} : { signatures: named }) },
+          {
+            ...publishDeps(),
+            onProgress: (done, total) => {
+              writes = writes.then(() => report({ done, total, label: `${String(done)} of ${String(total)} looked at` }));
+            },
+          },
+        );
+        await writes;
+        const counts = [
+          summary.filed > 0 ? `${String(summary.filed)} filed` : "",
+          summary.commented > 0 ? `${String(summary.commented)} commented on` : "",
+          summary.skipped > 0 ? `${String(summary.skipped)} passed over` : "",
+          summary.failed > 0 ? `${String(summary.failed)} not filed` : "",
+        ].filter((part) => part !== "");
+        // The counts are reported BEFORE the throw below, so a partial failure keeps them: the
+        // ledger rows are written per issue inside the pass, so everything counted here is
+        // already persisted and the row a person reads has to say so.
+        await report({ done: summary.results.length, total: summary.results.length, label: counts.length > 0 ? `${counts.join(", ")} in ${summary.repo}` : `nothing to file in ${summary.repo}` });
+        if (summary.failed > 0) {
+          const first = summary.results.find((entry) => entry.outcome === "failed");
+          // Named counts first, then the first reason, so the row says what survived as well as
+          // what went wrong. `error` is GitHub's words through `redactText` — never a raw body,
+          // and never anything carrying the token.
+          throw new Error(`${counts.join(", ")}. The first that did not go: ${first?.error ?? "no reason given"}`);
+        }
+        return undefined;
+      },
+      { projectId: s.project.id, ...(latest ? { runId: latest.id } : {}), label: `filing what ${study.name} found in ${connection?.repo ?? "the project's repository"}` },
+    );
+    return c.json(job, 202);
+  });
+
+  // ---- the people a study sends (ADR-0041) --------------------------------
+
+  /** A person as the wire says them: effective values, and what was set by hand beside them. */
+  const personView = (person: Person, lane: Lane | undefined, elsewhere: ReadonlyMap<string, readonly number[]>): PersonView => ({
+    id: person.id,
+    cohortSlug: person.cohortSlug,
+    cohortName: lane?.cohort.name ?? person.cohortSlug,
+    personaSlug: person.personaSlug,
+    personaName: lane?.persona.spec.name ?? person.personaSlug,
+    ordinal: person.ordinal,
+    name: person.name,
+    details: person.details,
+    handle: person.handle,
+    generatedBy: person.generatedBy,
+    // The same layering expansion does (`individuate`): the sample, the cohort, then the hand.
+    patience: person.overrides.patience ?? person.persona.patience,
+    budgetUsd: person.overrides.budgetUsd ?? person.persona.budgetUsd,
+    traits: { ...person.persona.traits, ...(lane?.cohort.traits ?? {}), ...person.overrides.traits },
+    overrides: person.overrides,
+    archived: person.archivedAt !== null,
+    // How many OTHER studies reach this ordinal of this cohort and persona at their own size. A
+    // line written here follows them into every one of those, and the People page says so.
+    alsoSentBy: (elsewhere.get(person.laneSlug) ?? []).filter((count) => count > person.ordinal).length,
+  });
+
+  /**
+   * How many people every OTHER study sends per cohort-and-persona, keyed the way person rows
+   * are. The studies that count are the ones the roster rule counts (D3): not archived, or
+   * archived with an execution still running or paused. One deal per study, and never a query
+   * per person: the lists are loaded once and joined here.
+   */
+  const otherSenders = async (projectId: string, except: Simulation): Promise<Map<string, number[]>> => {
+    const [studies, runs, populations] = await Promise.all([
+      deps.store.listSimulations({ projectId, includeArchived: true }),
+      deps.store.listRuns({ projectId }),
+      deps.store.listPopulations(projectId),
+    ]);
+    const stillGoing = new Set(runs.filter((run) => run.status === "running" || run.status === "paused").map((run) => run.simulationId));
+    const counts = new Map<string, number[]>();
+    for (const study of studies) {
+      if (study.id === except.id || (study.archived && !stillGoing.has(study.id))) continue;
+      const population = populations.find((p) => p.id === study.populationId);
+      if (!population) continue;
+      let deal: Deal;
+      try {
+        deal = await dealFor(deps.store, population, study.size);
+      } catch (err) {
+        // A study over a cohort whose persona has gone sends nobody from it until that is fixed.
+        if (err instanceof RosterIncomplete) continue;
+        throw err;
+      }
+      for (const lane of deal.lanes) counts.set(lane.laneSlug, [...(counts.get(lane.laneSlug) ?? []), lane.count]);
+    }
+    return counts;
+  };
+
+  /** The people a study sends, or the one refusal: a cohort in its population draws on a persona that is gone. */
+  const sentBy = async (c: Context, study: Simulation): Promise<{ ok: true; value: Awaited<ReturnType<typeof peopleSentBy>> } | { ok: false; response: Response }> => {
+    try {
+      return { ok: true, value: await peopleSentBy(deps.store, study) };
+    } catch (err) {
+      if (err instanceof RosterIncomplete) return { ok: false, response: fail(c, "conflict", err.message) };
+      throw err;
+    }
+  };
+
+  /** Every person id the deal reaches, in deal order — rows written or not. */
+  const idsDealt = (lanes: readonly Lane[]): string[] => lanes.flatMap((lane) => Array.from({ length: lane.count }, (_, ordinal) => personIdFor(lane.laneSlug, ordinal)));
+
+  /**
+   * Writing people is refused while anything is executing. A live run is reading this cast through
+   * its config snapshot and signing accounts up from these handles; re-casting underneath it would
+   * leave that run's own participants unexplainable.
+   */
+  const refuseWhileRunning = async (projectId: string, studyName: string): Promise<string | null> => {
+    const live = [...(await deps.store.listRuns({ projectId, status: "running" })), ...(await deps.store.listRuns({ projectId, status: "pending" }))];
+    return live.length === 0 ? null : `${live.length} execution(s) are reading these people right now; pause or stop them before writing the people of ${studyName}`;
+  };
+
+  /**
+   * The `people.generate` handler, for one cohort. Tier 1 fills every empty slot for free before a
+   * token is spent, so this succeeds with a complete cast even when there is no API key — what the
+   * model adds is names and individuating details, and what it cannot do is leave a cohort half-cast.
+   */
+  const runWriter = async (cohortId: string, options: GenerateOptions, report: JobReport, spend: JobSpend): Promise<GeneratedRoster> => {
+    const generated = await generatePeople({ store: deps.store, ...(deps.provider ? { provider: deps.provider } : {}), report, spend }, cohortId, options);
+    await report({ label: generated.fellBackBecause ?? `wrote ${generated.written} of ${generated.written + generated.seeded}` });
+    return generated;
+  };
+
+  /** Writes the placeholders among the given people, cohort by cohort: the writer briefs one cohort at a time. */
+  const writePeople =
+    (batches: readonly { cohortId: string; personIds: string[] }[]): JobHandler =>
+    async (_job, report, spend) => {
+      for (const batch of batches) await runWriter(batch.cohortId, { personIds: batch.personIds }, report, spend);
+      return undefined;
+    };
+
+  /**
+   * The people this study sends, in deal order: cohorts in the population's order, personas in
+   * each cohort's mix order, then by ordinal. Only rows that exist are items; the ordinals nobody
+   * has written yet are counted in `missing`, so the screen can say "N not yet written" without a
+   * second request. Bounded: one roster read per project, one deal per study, whatever the size.
+   */
+  app.get(routes.studyPeople(":p", ":s"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    const sent = await sentBy(c, study);
+    if (!sent.ok) return sent.response;
+    const { deal, people, missing } = sent.value;
+    const laneOf = new Map(deal.lanes.map((lane) => [lane.laneSlug, lane]));
+    const elsewhere = await otherSenders(s.project.id, study);
+    const view: StudyPeopleView = {
+      items: people.map((person) => personView(person, laneOf.get(person.laneSlug), elsewhere)),
+      missing,
+      size: study.size,
+      sends: deal.sends,
+    };
+    return c.json(view);
+  });
+
+  /**
+   * Fills the slots nobody has written yet, among the people THIS study sends. A job, because
+   * tier 2 — a model writing them — is a model call, and it is the first model call this product
+   * makes outside a visit (SPEC §5.4). The rows are materialised first, so the writer meets every
+   * ordinal the deal reaches; it writes only the placeholders among them and leaves the rest.
+   */
+  app.post(routes.studyPeople(":p", ":s"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    const refusal = await refuseWhileRunning(s.project.id, study.name);
+    if (refusal) return fail(c, "conflict", refusal);
+    await materialiseQuietly(study.id);
+    const sent = await sentBy(c, study);
+    if (!sent.ok) return sent.response;
+    if (sent.value.deal.sends === 0) return fail(c, "conflict", "this study sends nobody yet: give it a size");
+    const batches = sent.value.deal.cohorts.flatMap((entry) => {
+      const personIds = idsDealt(entry.lanes);
+      return personIds.length === 0 ? [] : [{ cohortId: entry.cohort.id, personIds }];
+    });
+    const job = await deps.jobs.enqueue("people.generate", writePeople(batches), { projectId: s.project.id, label: `writing the people of ${study.name}` });
+    return c.json(job, 202);
+  });
+
+  /**
+   * Regeneration REPLACES people who already exist, which is why it needs `confirm`. Writing over
+   * a cast that past executions name is the one destructive thing in the people model. It is
+   * limited to the people this study sends; a row is shared by every study on the cohort, and the
+   * People page says so.
+   */
+  app.post(routes.studyPeopleRegenerate(":p", ":s"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    const body = await parseBody(c, GeneratePeopleBodySchema);
+    if (!body.ok) return body.response;
+    // A refusal, not a conflict: nothing about the study's state makes this impossible, the
+    // request is simply missing the acknowledgement that it rewrites who these people are and
+    // breaks comparison with every execution that already named them.
+    if (!body.value.confirm) return fail(c, "bad_request", "re-casting changes who these people are and breaks comparison with earlier executions; send confirm: true");
+    const refusal = await refuseWhileRunning(s.project.id, study.name);
+    if (refusal) return fail(c, "conflict", refusal);
+    await materialiseQuietly(study.id);
+    const sent = await sentBy(c, study);
+    if (!sent.ok) return sent.response;
+    const wanted = body.value.personIds === undefined ? undefined : new Set(body.value.personIds);
+    const recast = sent.value.people.filter((person) => person.archivedAt === null && (wanted === undefined || wanted.has(person.id)));
+    if (recast.length === 0) return fail(c, "not_found", wanted === undefined ? "this study sends nobody yet: give it a size" : "none of those people go in this study");
+    const job = await deps.jobs.enqueue(
+      "people.generate",
+      async (_job, report, spend) => {
+        // Re-casting is the one path that lets go of people who already exist. The rows are not
+        // deleted — a past execution's participants still name them, and the id is the slot — they
+        // are put back to being placeholders, which is the one state the writer will write into.
+        //
+        // Put back PROPERLY: the name is re-drawn from the seeded bank as well. A reset that kept
+        // the old model-written name while stamping the row `seeded` with no details left a person
+        // who was neither re-cast nor intact — and if the model then could not be reached, that is
+        // what the cohort was left holding.
+        const at = now();
+        let written = 0;
+        let fellBackBecause: string | null = null;
+        for (const entry of sent.value.deal.cohorts) {
+          const mine = recast.filter((person) => person.cohortId === entry.cohort.id);
+          if (mine.length === 0) continue;
+          const roster = await deps.store.listPeople({ cohortId: entry.cohort.id, includeArchived: true });
+          const recasting = new Set(mine.map((person) => person.id));
+          // Names are unique within the cohort, so the draw avoids everybody who is staying.
+          const used = new Set(roster.filter((person) => !recasting.has(person.id)).map((person) => person.name));
+          for (const person of mine) {
+            const name = nameFrom(person.seed, used);
+            used.add(name);
+            // The handle follows the name here, unlike a hand rename: re-casting is refused while
+            // anything is running, so nobody has signed an account up as this person yet.
+            await deps.store.savePerson({ ...person, name, handle: handleFor(name, person.laneSlug, person.ordinal), details: "", generatedBy: "seeded", generatedByModel: "", archivedAt: null, updatedAt: at });
+          }
+          const generated = await runWriter(entry.cohort.id, { personIds: mine.map((person) => person.id) }, report, spend);
+          written += generated.written;
+          fellBackBecause = generated.fellBackBecause ?? fellBackBecause;
+        }
+        // A confirmed re-cast that wrote nobody is a failure, not a quiet success: the cast the
+        // user asked to replace is gone and what stands in its place is the free one.
+        if (written === 0 && fellBackBecause !== null) throw new Error(`nobody was re-cast: ${fellBackBecause}`);
+        return undefined;
+      },
+      { projectId: s.project.id, label: `re-casting the people of ${study.name}` },
+    );
+    return c.json(job, 202);
+  });
+
+  /**
+   * One person, by hand: a name, a blurb, and the sampled dimensions — patience, budget, traits —
+   * which is as much individuality as a person carries (ADR-0031 amendment). Goals, constraints
+   * and tool policy stay on the persona. The row is the cohort's, shared by every study that sends
+   * the cohort, so it has to be one this study actually reaches.
+   */
+  app.patch(routes.studyPerson(":p", ":s", ":person"), async (c) => {
+    const s = await scope(c);
+    if (!s.ok) return s.response;
+    const study = await studyOf(c, s.project.id);
+    if (!study) return fail(c, "not_found", "no such study");
+    const body = await parseBody(c, PersonPatchSchema);
+    if (!body.ok) return body.response;
+    const sent = await sentBy(c, study);
+    if (!sent.ok) return sent.response;
+    const person = sent.value.people.find((candidate) => candidate.id === param(c, "person"));
+    if (!person) return fail(c, "not_found", "nobody by that id goes in this study");
+    // Null clears an override and the sample shows through again; absent leaves it alone.
+    const overrides: Person["overrides"] = { ...person.overrides, traits: { ...person.overrides.traits } };
+    if (body.value.patience === null) delete overrides.patience;
+    else if (body.value.patience !== undefined) overrides.patience = body.value.patience;
+    if (body.value.budgetUsd === null) delete overrides.budgetUsd;
+    else if (body.value.budgetUsd !== undefined) overrides.budgetUsd = body.value.budgetUsd;
+    if (body.value.traits === null) overrides.traits = {};
+    else if (body.value.traits !== undefined) overrides.traits = body.value.traits;
+    // The handle is NOT re-derived from a new name: it is what the account on the target was
+    // signed up with, and a rename must not orphan it (SPEC §5.3.5).
+    //
+    // And the row is stamped `authored`, which is what takes it out of the writer's reach. A
+    // rename that left it looking like a placeholder — seeded, no details — would be handed
+    // straight back to the next generate, which would overwrite the typed name AND re-derive the
+    // handle this line just refused to move.
+    const updated: Person = { ...person, name: body.value.name ?? person.name, details: body.value.details ?? person.details, overrides, generatedBy: "authored", updatedAt: now() };
+    await deps.store.savePerson(updated);
+    const lane = sent.value.deal.lanes.find((candidate) => candidate.laneSlug === person.laneSlug);
+    return c.json(personView(updated, lane, await otherSenders(s.project.id, study)));
+  });
+
   // ---- run control --------------------------------------------------------
 
   /**
@@ -1750,7 +2688,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
    * been swept is the only record of which accounts those are; delete the rows and they are
    * stranded there with nothing left that can find them. So an unswept run with live identities
    * says to sweep first, and `?force=1` is the user accepting the strand. A running execution is
-   * refused outright: there is a process mid-wake writing the rows this would remove.
+   * refused outright: there is a process mid-visit writing the rows this would remove.
    */
   app.delete(routes.run(":id"), async (c) => {
     const run = await deps.store.getRun(param(c, "id"));
@@ -1796,9 +2734,9 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   app.post(routes.runCarryForward(":id"), async (c) => {
     const parent = await deps.store.getRun(param(c, "id"));
     if (!parent) return fail(c, "not_found", `no run ${param(c, "id")} to carry on from`);
-    const simulation = await deps.store.getSimulation(parent.simulationId);
-    if (!simulation) return fail(c, "conflict", "that run's simulation is gone, so there is nothing to carry it on into");
-    return startExecution(c, simulation, parent.id);
+    const study = await deps.store.getSimulation(parent.simulationId);
+    if (!study) return fail(c, "conflict", "that run's study is gone, so there is nothing to carry it on into");
+    return startExecution(c, study, parent.id);
   });
 
   app.post(routes.runRound(":id"), async (c) => {
@@ -1823,23 +2761,39 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     return c.json(job, 202);
   });
 
-  /** Verification is a model call, so it is behind a POST and named in the request (ADR-0014). */
+  /**
+   * Verification is a model call, so it is behind a POST and named in the request (ADR-0014).
+   *
+   * Two things here are about MONEY, and both were holes.
+   *
+   * The job row carries the PROJECT as well as the run. `costSince({ projectId, kind: "authoring" })`
+   * sums `jobs.cost_usd` by `project_id`, so a digest job with a null project spent dollars that
+   * the project's day could not see — and an automatic report cycle, which is a digest on a timer
+   * for as long as a study runs, was therefore invisible to the only dollar ceiling in the system.
+   *
+   * And the judge's spend is CHARGED, through the job's `spend` callback, exactly as
+   * `people.generate` charges the model calls that write people. Verification spends outside a
+   * wake — a `model` judge at the default `claude-opus-5` on `effort: "high"`, up to `maxFindings`
+   * of them — and `Wake.costUsd` is the only other place a dollar is ever recorded, so without
+   * this the whole bill sat in a number nothing added up. With it, `costSince` sees a cycle's
+   * spend, the project's daily ceiling counts it, and `runDigest`'s refusal stops the next one.
+   */
   app.post(routes.runDigestJob(":id"), async (c) => {
     const runId = param(c, "id");
+    // Read here rather than in the handler so the row is stamped with the project from the moment
+    // it is queued: a job that only learns its project once it runs is a job whose spend is
+    // unattributable for as long as it sits in the queue.
+    const run = await deps.store.getRun(runId);
     const job = await deps.jobs.enqueue(
       "digest",
-      async (_job, report) => {
-        const config = await deps.configForRun(runId);
-        await report({ label: "checking the findings nobody has ruled on yet" });
-        if (config.verifier.judge === "model" && !deps.hasApiKey()) throw new Error("the model judge needs ANTHROPIC_API_KEY; switch the judge to heuristic or set a key");
-        await verifyPending({ store: deps.store, config, identityProvider: identityProviderFor(config.identity), ...(deps.provider ? { provider: deps.provider() } : {}) }, { runIds: [runId] });
-        await report({ label: "clustering what came back" });
-        const wakes = await deps.store.listWakes({ runIds: [runId] });
-        const since = wakes[0]?.startedAt ? new Date(wakes[0].startedAt) : new Date(0);
-        await buildDigest({ store: deps.store, config, since, until: new Date(), runIds: [runId] });
+      async (_job, report, spend) => {
+        // The whole body is `runDigest`, which the automatic report cycle calls too. The
+        // pre-flight refusal and the daily ceiling are in there, and being in there once is the
+        // point: this used to be one of two copies.
+        await runDigest(deps, runId, report, spend);
         return undefined;
       },
-      { runId, label: "building the digest" },
+      { runId, ...(run ? { projectId: run.projectId } : {}), label: "building the digest" },
     );
     return c.json(job, 202);
   });
@@ -1924,11 +2878,27 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
   });
 
   /**
+   * One line of the event log as the browser reads it (ADR-0026). The row names the study by the
+   * row's own word; the wire speaks the user's (ADR-0032, ADR-0042), so that one field is
+   * translated on the way out and everything else crosses unchanged.
+   */
+  const eventView = (event: Event): EventView => ({
+    seq: event.seq,
+    at: event.at,
+    projectId: event.projectId,
+    studyId: event.simulationId,
+    runId: event.runId,
+    wakeId: event.wakeId,
+    type: event.type,
+    payload: event.payload,
+  });
+
+  /**
    * One stream for the whole screen (ADR-0026). Everything before `after` comes from the table, so
    * a reconnecting browser replays the gap instead of losing it; everything after arrives live.
    *
-   * `project` and `simulation` sit alongside `run`, so a project page follows every simulation in
-   * it on one connection rather than opening one per execution.
+   * `project` and `study` sit alongside `run`, so a project page follows every study in it on one
+   * connection rather than opening one per execution.
    */
   app.get(routes.events, (c) => {
     const q = parseQuery(c, EventStreamQuerySchema);
@@ -1937,7 +2907,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
     // the page put in the URL when it first loaded.
     const header = c.req.header("last-event-id");
     const resumeFrom = header !== undefined && header !== "" ? Number.parseInt(header, 10) : q.value.after;
-    const filter = { ...(q.value.run === undefined ? {} : { runId: q.value.run }), ...(q.value.project === undefined ? {} : { projectId: q.value.project }), ...(q.value.simulation === undefined ? {} : { simulationId: q.value.simulation }) };
+    const filter = { ...(q.value.run === undefined ? {} : { runId: q.value.run }), ...(q.value.project === undefined ? {} : { projectId: q.value.project }), ...(q.value.study === undefined ? {} : { simulationId: q.value.study }) };
     const matches = (event: Event): boolean =>
       (filter.runId === undefined || event.runId === filter.runId) &&
       (filter.projectId === undefined || event.projectId === filter.projectId) &&
@@ -1959,7 +2929,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
           const missed = await deps.store.listEvents({ afterSeq: cursor, ...filter, limit: 200 });
           if (missed.length === 0) break;
           for (const event of missed) {
-            await stream.writeSSE({ id: String(event.seq), event: event.type, data: JSON.stringify(event) });
+            await stream.writeSSE({ id: String(event.seq), event: event.type, data: JSON.stringify(eventView(event)) });
             cursor = event.seq;
           }
         }
@@ -1976,7 +2946,7 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
           }
           // Events replayed above may also be in the queue; the cursor is what makes this idempotent.
           if (event.seq <= cursor) continue;
-          await stream.writeSSE({ id: String(event.seq), event: event.type, data: JSON.stringify(event) });
+          await stream.writeSSE({ id: String(event.seq), event: event.type, data: JSON.stringify(eventView(event)) });
           cursor = event.seq;
         }
       } finally {
@@ -1993,10 +2963,9 @@ export function mountControl(app: Hono, deps: ControlDeps): void {
       ...(q.value.after === undefined ? {} : { afterSeq: q.value.after }),
       ...(q.value.run === undefined ? {} : { runId: q.value.run }),
       ...(q.value.project === undefined ? {} : { projectId: q.value.project }),
-      ...(q.value.simulation === undefined ? {} : { simulationId: q.value.simulation }),
+      ...(q.value.study === undefined ? {} : { simulationId: q.value.study }),
       limit: 500,
     });
-    return c.json(page(events, undefined, 500));
+    return c.json(page(events.map(eventView), undefined, 500));
   });
-
 }

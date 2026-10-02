@@ -92,3 +92,23 @@ persona, for the reason ADR-0031 gave: those are what make a persona a template.
   and `context:`, and `persona:` alone is the mix of one.
 - The Populations row in the rail appears at the first cohort, not the second: there is a
   number to set the moment there is a cohort.
+
+## Amendment — the population says which and in what ratio; the study says how many (ADR-0041, ADR-0043)
+
+*Added 2026-09-25.* One of the four moves is superseded. **"The population says how many"**: a
+population's members carry a `weight`, not a `size`, and the only headcount is the study's `size`,
+dealt first across the population's weights and then across each cohort's mix — both levels by the
+`apportion` this record chose, so "growing re-deals nobody" holds end to end and the tie rule
+(earlier member, then earlier mix entry) is stated. *"Its screens edit the population's numbers
+inline"* — nothing edits a population from a study's page; the study builder has a size. *"The
+roster is sized at the largest size any population gives the cohort"* — at the largest count any
+study gives the lane, per ADR-0041 §3.
+
+Two consequences listed above are withdrawn. *"The starter flow is unchanged from the reader's
+side"* — the one-request adoption is removed; a starter is a starting point inside the persona
+builder and its `context` prefills a cohort builder (ADR-0043). *"The Populations row in the rail
+appears at the first cohort"* — it is always there, with no count gate. `populace scale` is
+unchanged and still multiplies the file's counts, which the import turns into weights.
+
+The other three moves — a cohort is a condition and a mix, people are numbered per lane, a person
+may be given individuality by hand — and Sainte-Laguë stand exactly as written.

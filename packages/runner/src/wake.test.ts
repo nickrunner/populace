@@ -28,21 +28,40 @@ interface PersonInput {
   handle: string;
 }
 
+/**
+ * The two shared lines a resolved config can carry above the person's own: what the cohort tells
+ * everyone in it (`members[].context`) and what the study tells everyone it sends
+ * (`simulation.brief`, ADR-0041 D3b). Both default to nothing said, which is what every other
+ * test here wants.
+ */
+interface SharedLines {
+  context?: string;
+  simulation?: Partial<PopulaceConfig["simulation"]>;
+}
+
 function makeConfig(
   overrides: Partial<PopulaceConfig["guardrails"]["perWake"]> = {},
   persona: Partial<PopulaceConfig["population"]["members"][number]["persona"]> = {},
   people: PersonInput[] = [],
+  shared: SharedLines = {},
 ): PopulaceConfig {
   return PopulaceConfigSchema.parse({
     target: { name: "Tasklet", mcp: [{ url: target.mcpUrl }], webBaseUrl: target.url, description: "A calm task list." },
     identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", teardownTool: "delete_account" },
     guardrails: { perWake: { maxTokens: 400_000, maxUsd: 3, maxTurns: 40, ...overrides }, dailyUsd: 50 },
+    simulation: shared.simulation ?? {},
     population: {
       id: "test",
       cadence: { every: "1s" },
       // The persona has a ROLE LABEL, not a human name: a persona is a kind of person. The human
       // name belongs to the generated person and is what the prompt and the signup email carry.
-      members: [{ persona: { id: "casual", name: "Casual lister", role: "a hobbyist", backstory: "Has too many lists.", goals: ["keep a grocery list"], ...persona }, people }],
+      members: [
+        {
+          ...(shared.context === undefined ? {} : { context: shared.context }),
+          persona: { id: "casual", name: "Casual lister", role: "a hobbyist", backstory: "Has too many lists.", goals: ["keep a grocery list"], ...persona },
+          people,
+        },
+      ],
     },
   });
 }
@@ -185,6 +204,48 @@ describe("runWake against the mock target", () => {
     await store.close();
   });
 
+  /**
+   * ADR-0041 D3b, from the wake's side. `prompt.test.ts` proves the formatter puts the brief where
+   * the rule says; this proves `runWake` HANDS it the brief from `config.simulation`, in the system
+   * prompt the provider actually received, so the study's one sentence to its people cannot go
+   * missing between the snapshot and the model. Position is asserted, not presence: the cohort's
+   * context is more general than the brief and the person's own line more particular, and "the
+   * general before the particular" is the order the prompt is built on.
+   */
+  it("hands the study's brief to the model after the cohort's context and before the person's own line", async () => {
+    const context = "You keep your lists on your phone, in the gaps between other things.";
+    const brief = "This study is about the checkout.";
+    const details = "On a cracked phone, trying to plan one weekend before the shops shut.";
+    const people: PersonInput[] = [{ ordinal: 0, id: "casual#1", name: "Ines Okonkwo", details, handle: "ines-okonkwo-casual-1" }];
+
+    const store = new SqliteStore(":memory:");
+    const config = makeConfig({}, {}, people, { context, simulation: { brief } });
+    expect(config.simulation.brief).toBe(brief);
+    const provider = new ScriptedProvider(sequence([]));
+    await runWake({ agent: firstAgent(config), config }, { store, provider, identityProvider: new SelfSignupProvider(config.identity as never) });
+
+    const [first] = provider.requests;
+    expect(first).toBeDefined();
+    const lines = first!.system.split("\n");
+    const at = (text: string): number => lines.indexOf(text);
+    expect(at(context)).toBeGreaterThan(0);
+    expect(at(brief)).toBe(at(context) + 1);
+    expect(at(details)).toBe(at(brief) + 1);
+
+    // An empty brief — the default — says nothing: no sentence, and no blank line standing in for
+    // one, so the person's line follows the cohort's directly and the prefix is what it was before
+    // briefs existed (ADR-0006: a stray line is a second version of every cached prompt).
+    const silent = makeConfig({}, {}, people, { context, simulation: { brief: "" } });
+    const silentProvider = new ScriptedProvider(sequence([]));
+    await runWake({ agent: firstAgent(silent), config: silent }, { store, provider: silentProvider, identityProvider: new SelfSignupProvider(silent.identity as never) });
+    const [bare] = silentProvider.requests;
+    expect(bare).toBeDefined();
+    expect(bare!.system).not.toContain(brief);
+    const bareLines = bare!.system.split("\n");
+    expect(bareLines.indexOf(details)).toBe(bareLines.indexOf(context) + 1);
+    await store.close();
+  });
+
   it("carries identity and memory into a second wake", async () => {
     const store = new SqliteStore(":memory:");
     const config = makeConfig();
@@ -218,6 +279,30 @@ describe("runWake against the mock target", () => {
     expect(listed?.result.text).toContain('"name": "Home"');
     expect((await store.getMemory(agent.runId, agent.id))?.notes.map((n) => n.text)).toEqual(["Still have 1 project(s)."]);
     expect(second.identity?.id).toBe(first.identity?.id);
+    await store.close();
+  });
+
+  it("deletes on the first try when nobody set a destructive policy", async () => {
+    const store = new SqliteStore(":memory:");
+    // No `tools` at all: every schema that holds a policy prefaults one, and the prefault now
+    // says `allow` (ADR-0013 amendment). This is the end of that chain — a wake built the way
+    // the common case builds it, deleting a real project without a round trip spent asking.
+    const config = makeConfig({});
+    const agent = firstAgent(config);
+    const policy = sequence([
+      (ctx) => {
+        const s = /email (\S+), display name "([^"]+)", password (\S+)/.exec(ctx.wakeContext)!;
+        return { calls: [{ name: "sign_up", input: { email: s[1]!, displayName: s[2]!, password: s[3]! } }] };
+      },
+      () => ({ calls: [{ name: "create_project", input: { name: "Temp" } }] }),
+      (ctx) => ({ calls: [{ name: "delete_project", input: { projectId: field(ctx.lastResults[0], "id") } }] }),
+    ]);
+    const result = await runWake({ agent, config }, { store, provider: new ScriptedProvider(policy), identityProvider: new SelfSignupProvider(config.identity as never) });
+    const trace = await store.getTrace(result.wake.id);
+    expect(ofType(trace, "guardrail").map((e) => e.rule)).not.toContain("destructive-confirm");
+    const deletes = ofType(trace, "tool.call").filter((e) => e.tool === "delete_project");
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]!.result.isError).toBe(false);
     await store.close();
   });
 
@@ -481,6 +566,95 @@ describe("the target's tool policy, merged with the persona's", () => {
     expect(ofType(trace, "tool.call").every((e) => !e.result.isError)).toBe(true);
     // The trace says why there is no account, rather than leaving an absence to be inferred.
     expect(ofType(trace, "identity").map((e) => e.detail).join(" ")).toContain("no accounts");
+    await store.close();
+  });
+});
+
+/**
+ * A target whose tool list changes part-way through a visit (`notifications/tools/list_changed`).
+ *
+ * Tasklet shows `export_tasks` only to a Pro account, so `upgrade_plan` is a call that changes what
+ * the caller may do next — the same shape as a product that hands somebody host tools once they
+ * create an organisation. The notification rides the response stream of the upgrade call itself,
+ * ahead of its result, which is why the runner can check a flag between turns instead of polling.
+ */
+describe("a target that changes its tool list mid-visit", () => {
+  const signUp = (ctx: ScriptContext): { name: string; input: Record<string, string> }[] => {
+    const s = /email (\S+), display name "([^"]+)", password (\S+)/.exec(ctx.wakeContext)!;
+    return [{ name: "sign_up", input: { email: s[1]!, displayName: s[2]!, password: s[3]! } }];
+  };
+
+  /** Sign up, upgrade, then reach for the tool the upgrade unlocked, recording what was offered each turn. */
+  const upgradeThenExport = (offered: string[][]): ScriptPolicy =>
+    sequence([
+      (ctx) => {
+        offered.push(ctx.toolNames);
+        return { calls: signUp(ctx) };
+      },
+      (ctx) => {
+        offered.push(ctx.toolNames);
+        return { calls: [call("upgrade_plan")] };
+      },
+      (ctx) => {
+        offered.push(ctx.toolNames);
+        return { calls: [call("export_tasks")] };
+      },
+    ]);
+
+  it("re-lists and offers the new tool on the next turn, without reconnecting", async () => {
+    const store = new SqliteStore(":memory:");
+    const config = makeConfig();
+    const agent = firstAgent(config);
+    const offered: string[][] = [];
+    const provider = new ScriptedProvider(upgradeThenExport(offered));
+    const result = await runWake({ agent, config }, { store, provider, identityProvider: new SelfSignupProvider(config.identity as never) });
+
+    expect(result.wake.status).toBe("done");
+    // The turn that upgraded was not shown the Pro tool; the turn after it was.
+    expect(offered[1]).not.toContain("export_tasks");
+    expect(offered[2]).toContain("export_tasks");
+
+    const trace = await store.getTrace(result.wake.id);
+    expect(ofType(trace, "tools").map((e) => ({ endpoint: e.endpoint, added: e.added, removed: e.removed }))).toEqual([
+      { endpoint: config.target.mcp[0]!.name, added: ["export_tasks"], removed: [] },
+    ]);
+    // An offered tool nobody can actually call is not a refreshed list: it ran, and it worked.
+    const calls = ofType(trace, "tool.call");
+    expect(calls.map((e) => e.tool)).toEqual(["sign_up", "upgrade_plan", "export_tasks"]);
+    expect(calls.at(-1)?.result.isError).toBe(false);
+    // The session re-listed rather than reconnecting: the only `reconnected` event is the signup's.
+    expect(ofType(trace, "identity").filter((e) => e.event === "reconnected")).toHaveLength(1);
+
+    // The system prompt's tool paragraph moved with the list — a person handed a tool nobody told
+    // them about is the same bug as a person told about a tool they cannot call.
+    expect(provider.requests[1]?.system).not.toContain("export_tasks");
+    expect(provider.requests[2]?.system).toContain("export_tasks");
+    // And the prompt cache is paid for once, at the turn the prefix changed. That is the price of
+    // the next turn being told the truth, not a regression (ADR-0006).
+    expect(provider.requests[1]?.cacheHit).toBe(true);
+    expect(provider.requests[2]?.cacheHit).toBe(false);
+    expect(provider.requests[3]?.cacheHit).toBe(true);
+    await store.close();
+  });
+
+  it("never adds a tool the policy denies, however the target's list grows", async () => {
+    const store = new SqliteStore(":memory:");
+    const base = makeConfig();
+    const config: PopulaceConfig = { ...base, target: { ...base.target, tools: { allow: [], deny: ["export_tasks"], destructive: "allow" } } };
+    const agent = firstAgent(config);
+    const offered: string[][] = [];
+    const result = await runWake(
+      { agent, config },
+      { store, provider: new ScriptedProvider(upgradeThenExport(offered)), identityProvider: new SelfSignupProvider(config.identity as never) },
+    );
+
+    const trace = await store.getTrace(result.wake.id);
+    // The target did grow — the trace records the app's own listing, before any policy.
+    expect(ofType(trace, "tools").map((e) => e.added)).toEqual([["export_tasks"]]);
+    // And the refresh went through the same gate as the connect-time listing, so it widened nothing.
+    expect(offered[2]).not.toContain("export_tasks");
+    expect(ofType(trace, "guardrail").filter((e) => e.rule === "tool-denied").map((e) => e.tool)).toEqual(["export_tasks"]);
+    expect(ofType(trace, "tool.call").map((e) => e.tool)).toEqual(["sign_up", "upgrade_plan"]);
     await store.close();
   });
 });

@@ -384,6 +384,22 @@ export class TaskletApp {
     this.persist();
     return publicUser(next);
   }
+
+  /**
+   * Whether this token belongs to a Pro account, without throwing for a token that belongs to
+   * nobody. The tool list is assembled before any handler runs, and a caller with no account — or a
+   * stale one — is simply shown the free toolset rather than an error.
+   */
+  isPro(token: string | undefined): boolean {
+    if (!token) return false;
+    return [...this.users.values()].find((u) => u.token === token)?.plan === "pro";
+  }
+
+  /** Pro only: every task the account owns, in one payload, for taking elsewhere. */
+  exportTasks(user: User): { plan: string; tasks: Task[] } {
+    if (user.plan !== "pro") throw new AppError("unauthorized", "export_tasks is a Pro feature; call upgrade_plan first");
+    return { plan: user.plan, tasks: [...this.tasks.values()].filter((t) => t.ownerId === user.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) };
+  }
 }
 
 export const PRODUCT_INFO = {
@@ -398,6 +414,7 @@ export const PRODUCT_INFO = {
     "Instant search across titles and notes (search ignores case)",
     "Comments on tasks",
     "Delete tasks you no longer need",
+    "Pro: export every task you own in one go",
     "Simple stats: open, done and overdue counts",
   ],
   plans: [

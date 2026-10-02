@@ -19,12 +19,19 @@ import {
 } from "@populace/core";
 import { McpSession, fetchPageText, toStrictInputSchema, type ModelProvider } from "@populace/runner";
 import { z } from "zod";
+import { typesafeJudge, type TypesafeClient } from "./typesafe-judge.js";
 
 export interface VerifierDeps {
   store: Store;
   config: PopulaceConfig;
   /** Required when the judge is `model`. */
   provider?: ModelProvider;
+  /**
+   * Required when the judge is `typesafe`. Built from `TYPESAFE_API_KEY` by whoever assembles these
+   * deps, so the key itself never reaches this package: a client is a thing that can be asked a
+   * question, not a credential to carry around.
+   */
+  typesafe?: TypesafeClient;
   /**
    * How an expired bearer is renewed before the replay. A digest runs long after the wakes it reads
    * — an hour is enough for a Firebase ID token — and a replay with a dead token is refused by the
@@ -90,12 +97,29 @@ export async function replayFinding(finding: Finding, deps: VerifierDeps): Promi
    */
   if (finding.identityId !== null && (identity === null || identity.tornDownAt !== null)) {
     const swept = identity?.tornDownAt;
+    /*
+     * The two halves of this go to two different readers, and they used to be one sentence.
+     *
+     * `error` becomes the verdict's `reason`, which is rendered beside the verdict on the finding
+     * page — so it says what happened to the account and stops there. It said more: it named the
+     * setting to change and how to re-run, which is operator guidance. To anybody reading a
+     * problem report about their own product that is instructions for a tool they are not running,
+     * and it also carried the word this product does not use for a study.
+     *
+     * The guidance is still worth saying, so it goes to the log, which is where the person who
+     * chose the setting is looking. Both readers are served; neither is told the other's thing.
+     */
+    if (swept) {
+      deps.log?.(
+        `[verify] ${finding.id}: the account that filed this was removed at ${swept}, so nothing about it can be checked against the target again. A study that removes its accounts as soon as it finishes leaves its own findings unverifiable — check them before the accounts go, or run it again with auto-sweep off.`,
+      );
+    }
     return {
       steps: [],
       toolNames: [],
       identityUsed: null,
       error: swept
-        ? `the account that filed this was removed from the target at ${swept}, so there is nobody left to replay as. A simulation with auto-sweep on takes its accounts down as soon as it finishes; verify before the sweep, or run it again with auto-sweep off.`
+        ? `the account that filed this was removed from the target at ${swept}, so there is nobody left to replay as`
         : `the account that filed this (${finding.identityId}) is no longer in this store, so there is nobody to replay as`,
     };
   }
@@ -134,6 +158,8 @@ export async function replayFinding(finding: Finding, deps: VerifierDeps): Promi
   return { steps, toolNames: session.listTools().map((t) => t.name), identityUsed: usable, error: null };
 }
 
+const ENVIRONMENTAL_TEXT = /token|unauthori|not found|no longer exists/i;
+
 const VOLATILE_KEY = /(^id$|Id$|^token$|At$|^createdAt$|^updatedAt$|^password)/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 
@@ -162,6 +188,58 @@ function comparable(record: ToolCallRecord): string {
   }
 }
 
+/**
+ * What the replay did to each reproduction step, mechanically: a sentence per step that behaved
+ * differently, and the first step whose failure reads as environmental rather than as the behaviour
+ * under investigation.
+ *
+ * Extracted from `heuristicJudge` because the typed judge's `reason` is composed from exactly this
+ * list (`typesafe-judge.ts`). Two judges describing the same replay in two different vocabularies
+ * would be two accounts of one event, and one of them would end up in a GitHub issue.
+ */
+export interface StepComparison {
+  /** `finding.reproduction.length`, carried so a caller can phrase "all N steps" without the finding. */
+  stepCount: number;
+  mismatches: string[];
+  environmental: { reason: string } | null;
+}
+
+export function compareSteps(finding: Finding, replay: ReplayOutcome): StepComparison {
+  const mismatches: string[] = [];
+  let environmental: { reason: string } | null = null;
+  for (const [i, original] of finding.reproduction.entries()) {
+    const replayed = replay.steps[i];
+    if (!replayed) {
+      mismatches.push(`step ${i + 1} (${original.tool}) was not replayed`);
+      continue;
+    }
+    // Only the first one is recorded, and the loop runs on: `heuristicJudge` returns on it
+    // immediately, and the typed judge wants the whole mismatch list for its reason.
+    if (environmental === null && replayed.result.isError && !original.result.isError && ENVIRONMENTAL_TEXT.test(replayed.result.text)) {
+      environmental = { reason: `step ${i + 1} (${original.tool}) failed on replay for an environmental reason: ${truncate(replayed.result.text, 160)}` };
+    }
+    if (replayed.result.isError !== original.result.isError) {
+      mismatches.push(`step ${i + 1} (${original.tool}) ${replayed.result.isError ? "errored" : "succeeded"} on replay but ${original.result.isError ? "errored" : "succeeded"} originally`);
+      continue;
+    }
+    if (comparable(original) !== comparable(replayed)) mismatches.push(`step ${i + 1} (${original.tool}) returned a different result`);
+  }
+  return { stepCount: finding.reproduction.length, mismatches, environmental };
+}
+
+/**
+ * The cases no judge needs a model for: a replay that never ran, a coverage gap (which is a
+ * tool-list diff and nothing else), an opinion, and a finding with no steps to replay.
+ * `heuristicJudge` settles all four from the evidence alone, so a paid judge hands them straight
+ * back to it — which is most of what keeps a repeating report cycle cheap.
+ *
+ * `modelJudge` predates this and guards only `replay.error`; it is left as it is rather than
+ * quietly changing what the existing default judge spends money on.
+ */
+function settledWithoutAModel(finding: Finding, replay: ReplayOutcome): boolean {
+  return replay.error !== null || finding.kind === "coverage-gap" || finding.kind === "praise" || finding.kind === "suggestion" || finding.reproduction.length === 0;
+}
+
 /** Deterministic judge for CI and offline use (ADR-0014). */
 export function heuristicJudge(finding: Finding, replay: ReplayOutcome): { verdict: Verdict; reason: string } {
   if (replay.error) return { verdict: "inconclusive", reason: replay.error };
@@ -174,22 +252,8 @@ export function heuristicJudge(finding: Finding, replay: ReplayOutcome): { verdi
   }
   if (finding.reproduction.length === 0) return { verdict: "inconclusive", reason: "finding carries no reproduction steps" };
   if (finding.kind === "praise" || finding.kind === "suggestion") return { verdict: "inconclusive", reason: `${finding.kind} findings are opinions; nothing to reproduce` };
-  const mismatches: string[] = [];
-  for (const [i, original] of finding.reproduction.entries()) {
-    const replayed = replay.steps[i];
-    if (!replayed) {
-      mismatches.push(`step ${i + 1} (${original.tool}) was not replayed`);
-      continue;
-    }
-    if (replayed.result.isError && !original.result.isError && /token|unauthori|not found|no longer exists/i.test(replayed.result.text)) {
-      return { verdict: "inconclusive", reason: `step ${i + 1} (${original.tool}) failed on replay for an environmental reason: ${truncate(replayed.result.text, 160)}` };
-    }
-    if (replayed.result.isError !== original.result.isError) {
-      mismatches.push(`step ${i + 1} (${original.tool}) ${replayed.result.isError ? "errored" : "succeeded"} on replay but ${original.result.isError ? "errored" : "succeeded"} originally`);
-      continue;
-    }
-    if (comparable(original) !== comparable(replayed)) mismatches.push(`step ${i + 1} (${original.tool}) returned a different result`);
-  }
+  const { mismatches, environmental } = compareSteps(finding, replay);
+  if (environmental) return { verdict: "inconclusive", reason: environmental.reason };
   if (mismatches.length === 0) return { verdict: "confirmed", reason: `all ${finding.reproduction.length} reproduction steps behaved the same on replay` };
   // If the decisive last step matches, the behaviour the finding is about still holds even if setup steps drifted.
   const last = finding.reproduction.length - 1;
@@ -251,12 +315,37 @@ export async function modelJudge(finding: Finding, replay: ReplayOutcome, deps: 
   return { ...parsed.data, costUsd };
 }
 
+/**
+ * Which judge answers, and what it said. The `judge` it comes back with is the one that actually
+ * decided, not the one the config asked for: a coverage gap is settled by the tool list whatever
+ * the config says, and recording `typesafe` over a verdict no model was asked for would be a small
+ * lie in a row somebody reads later.
+ */
+async function judgement(finding: Finding, replay: ReplayOutcome, deps: VerifierDeps): Promise<{ verdict: Verdict; reason: string; costUsd: number; judge: Verification["judge"] }> {
+  const configured = deps.config.verifier.judge;
+  if (configured === "model" && deps.provider) return { ...(await modelJudge(finding, replay, deps)), judge: "model" };
+  if (configured === "typesafe") {
+    /*
+     * Refuse out loud rather than quietly falling back, exactly as the digest route and the run
+     * report do for a `model` judge with no key. A silent downgrade is worse than a failure here:
+     * the verdicts would still be written, nothing would say which judge wrote them, and a study
+     * configured for the typed judge would look like it was running one.
+     */
+    if (!deps.typesafe) throw new Error("the typed judge needs TYPESAFE_API_KEY; set it or configure verifier.judge: heuristic");
+    if (!settledWithoutAModel(finding, replay)) {
+      const decided = await typesafeJudge(finding, replay, compareSteps(finding, replay), deps.typesafe);
+      return { ...decided, judge: "typesafe" };
+    }
+  }
+  return { ...heuristicJudge(finding, replay), costUsd: 0, judge: "heuristic" };
+}
+
 /** Replays and judges one finding, persisting the verification. */
 export async function verifyFinding(finding: Finding, deps: VerifierDeps): Promise<Verification> {
   const now = deps.now ?? (() => new Date());
   const replay = await replayFinding(finding, deps);
-  const judge = deps.config.verifier.judge === "model" && deps.provider ? "model" : "heuristic";
-  const decided = judge === "model" ? await modelJudge(finding, replay, deps) : { ...heuristicJudge(finding, replay), costUsd: 0 };
+  const decided = await judgement(finding, replay, deps);
+  const judge = decided.judge;
   const verification: Verification = { verdict: decided.verdict, reason: decided.reason, judge, replay: replay.steps, verifiedAt: now().toISOString(), costUsd: decided.costUsd };
   await deps.store.saveVerification(finding.id, verification);
   deps.log?.(`[verify] ${finding.id} ${finding.kind} "${truncate(finding.title, 60)}" -> ${verification.verdict} (${judge})`);

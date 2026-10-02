@@ -138,7 +138,7 @@ export function UseCases() {
         <Section id="across-executions" title="Reading a second execution">
           <Stack gap={6} align="start">
             {/*
-              The figure first, and the rule after it. `VarianceDiagram` draws one simulation sent
+              The figure first, and the rule after it. `VarianceDiagram` draws one study sent
               in twice — the rows both executions reported, and the rows only one of them reached
               — and prints §7.3's `EXECUTIONS_ARE_INDEPENDENT` from `Figure.js` rather than from a
               prop, so no call site can soften it.
@@ -157,7 +157,7 @@ export function UseCases() {
             </Measure>
 
             <Blurb>
-              Send the same simulation in again and the people do different things with it. What
+              Send the same study in again and the people do different things with it. What
               both executions reported is where to start; what only one of them reached is the edge
               of what got covered, and neither is a score.
             </Blurb>

@@ -15,8 +15,8 @@
  *   brand              the mark grammar: Dot, Ring, Capsule, Lattice, Fan
  *   atoms              33
  *   molecules          34
- *   organisms          33, the shell four included
- *   templates          8
+ *   organisms          36, the shell four included
+ *   templates          9, and the pieces they compose
  *
  * **What is deliberately absent.** The CVA factories behind the components — `textStyles`,
  * `button`, `navItem` and the rest — are not re-exported, exactly as the layer barrels do not

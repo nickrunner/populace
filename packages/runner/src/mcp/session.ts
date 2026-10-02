@@ -1,7 +1,7 @@
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import { ToolListChangedNotificationSchema, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { JsonValueSchema, type JsonObject, type JsonValue, type McpEndpoint, type ToolResultContent } from "@populace/core";
 import { z } from "zod";
 
@@ -63,6 +63,7 @@ function textOf(result: CallToolResult): string {
 export class McpSession {
   private client: Client | null = null;
   private tools: TargetTool[] = [];
+  private stale = false;
 
   /**
    * `signIn` is the USER's OAuth grant and is only ever passed by the things that act as the user
@@ -86,6 +87,13 @@ export class McpSession {
     const token = this.bearerToken ?? this.endpoint.bearerToken;
     if (token) headers.authorization = `Bearer ${token}`;
     const client = new Client({ name: "populace-runner", version: "0.1.0" });
+    // Registered BEFORE connect, because a target that has no standalone stream to notify on sends
+    // `notifications/tools/list_changed` down the response stream of the very call that changed the
+    // list — so the handler has to exist before the first tool call, not be added after one.
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      this.stale = true;
+      return Promise.resolve();
+    });
     // An explicit token wins: an identity's bearer IS who this connection is supposed to be, and
     // letting the SDK refresh a sign-in over the top of it would quietly swap the caller.
     const authProvider = token ? undefined : this.signIn;
@@ -93,15 +101,75 @@ export class McpSession {
       new StreamableHTTPClientTransport(new URL(this.endpoint.url), { requestInit: { headers }, ...(authProvider ? { authProvider } : {}) }),
     );
     this.client = client;
-    const listed = await client.listTools();
-    this.tools = listed.tools.map((t: Tool) => ({
-      endpoint: this.endpoint.name,
-      name: t.name,
-      description: t.description ?? "",
-      inputSchema: (toJson(t.inputSchema) as JsonObject | undefined) ?? { type: "object" },
-      destructive: t.annotations?.destructiveHint === true,
-      readOnly: t.annotations?.readOnlyHint === true,
-    }));
+    // A fresh connection has just listed; anything the old one was told is somebody else's news.
+    this.stale = false;
+    this.tools = await this.loadTools(client);
+  }
+
+  /**
+   * Every tool the endpoint lists, following `nextCursor` to the end.
+   *
+   * A paged target used to arrive truncated: the first page became the whole toolset for the
+   * session and the rest of the product was simply invisible to the person. The repeated-cursor
+   * guard is for a server that answers every page with the same cursor — a wake is not allowed to
+   * hang on somebody else's bug.
+   */
+  private async loadTools(client: Client): Promise<TargetTool[]> {
+    const out: TargetTool[] = [];
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const listed = await client.listTools(cursor === undefined ? {} : { cursor });
+      for (const t of listed.tools satisfies Tool[]) {
+        out.push({
+          endpoint: this.endpoint.name,
+          name: t.name,
+          description: t.description ?? "",
+          inputSchema: (toJson(t.inputSchema) as JsonObject | undefined) ?? { type: "object" },
+          destructive: t.annotations?.destructiveHint === true,
+          readOnly: t.annotations?.readOnlyHint === true,
+        });
+      }
+      cursor = listed.nextCursor;
+      if (cursor !== undefined && seen.has(cursor)) break;
+      if (cursor !== undefined) seen.add(cursor);
+    } while (cursor !== undefined);
+    return out;
+  }
+
+  /**
+   * Whether the target has said its tool list changed since this session last listed.
+   *
+   * It is a flag rather than a callback because the notification arrives on the response stream of
+   * the call that caused the change, ahead of that call's result: by the time `call()` resolves the
+   * handler has already run, so a caller that reads this right after a call needs no polling and no
+   * timer.
+   */
+  get toolsStale(): boolean {
+    return this.stale;
+  }
+
+  /**
+   * Re-lists the endpoint's tools and reports what the TARGET's listing gained and lost — not what
+   * a policy then permits, which this class knows nothing about.
+   *
+   * It does not reconnect. Reconnecting would re-run `initialize` for no reason, and on a
+   * self-signup target it would do it with whatever bearer the session happens to hold.
+   */
+  async refreshTools(): Promise<{ added: string[]; removed: string[] }> {
+    const client = this.client;
+    if (!client) throw new Error(`endpoint ${this.endpoint.name} is not connected`);
+    // Cleared before the listing, not after: a second change landing while this request is in
+    // flight has to leave the flag set, or the session keeps a list it was already told is stale.
+    this.stale = false;
+    const before = new Set(this.tools.map((t) => t.name));
+    const listed = await this.loadTools(client);
+    const after = new Set(listed.map((t) => t.name));
+    this.tools = listed;
+    return {
+      added: [...after].filter((name) => !before.has(name)),
+      removed: [...before].filter((name) => !after.has(name)),
+    };
   }
 
   async reconnectWith(bearerToken: string): Promise<void> {

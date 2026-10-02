@@ -6,7 +6,7 @@ import { pageStateSlot, type PageStateSlots } from "./DocumentPage.js";
 
 /**
  * CenteredPage — ATOMIC-INVENTORY §4, template 6. One screen (`Projects`), plus `NotFound` and
- * the project and simulation shells' own error states.
+ * the project and study shells' own error states.
  *
  * The railless one. It is what a screen uses when there is nothing beside the content and nothing
  * under it: a list of projects, a 404, a shell that could not load the record the rest of the

@@ -81,6 +81,15 @@ export const TraceEventSchema = z.discriminatedUnion("type", [
     tool: z.string().optional(),
   }),
   z.object({ ...base, type: z.literal("identity"), event: z.enum(["provisioned", "captured", "missing", "reconnected", "redeemed", "rejected"]), strategy: z.string(), detail: z.string() }),
+  /**
+   * The target told this session its tool list changed mid-visit, and the session re-listed.
+   *
+   * `added` and `removed` are the TARGET's listing, before the tool policy narrows it: a tool the
+   * target added and the policy withholds appears here and never reaches the model, which is the
+   * distinction a reader needs when the two disagree. A refresh with both arrays empty is itself a
+   * fact — the target said something changed and no name did.
+   */
+  z.object({ ...base, type: z.literal("tools"), event: z.literal("changed"), endpoint: z.string(), added: z.array(z.string()), removed: z.array(z.string()) }),
   z.object({ ...base, type: z.literal("finding"), findingId: z.string(), kind: z.string(), title: z.string() }),
   z.object({ ...base, type: z.literal("memory"), operation: z.string(), text: z.string() }),
   z.object({ ...base, type: z.literal("note"), text: z.string() }),

@@ -2,9 +2,11 @@
  * Everything in core that runs unchanged in a browser: schemas, ids, pure helpers and the
  * interfaces. `population.ts`, `names.ts` and `signature.ts` are deliberately absent - they need a
  * synchronous SHA-256 and so stay on `node:crypto`, and nothing in a browser expands a population,
- * draws a name or hashes a signature (ADR-0021).
+ * draws a name or hashes a signature (ADR-0021). `apportion.ts` IS here: a builder previews the
+ * deal a study's size makes, and it has to be the server's own arithmetic (ADR-0041).
  */
 export * from "./ids.js";
+export * from "./apportion.js";
 export * from "./duration.js";
 export * from "./glob.js";
 export * from "./json.js";
@@ -35,6 +37,7 @@ export * from "./schemas/authored.js";
 export * from "./schemas/triage.js";
 export * from "./schemas/event.js";
 export * from "./schemas/job.js";
+export * from "./schemas/github.js";
 export * from "./interfaces/store.js";
 export * from "./interfaces/scheduler.js";
 export * from "./interfaces/identity-provider.js";

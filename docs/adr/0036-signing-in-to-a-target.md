@@ -218,3 +218,46 @@ decision is actually about, and it is untouched.
 
 The regression test asserts preflight's tool list against a gated fixture, and was checked to fail
 without the fix — `[]` where `['search_stays']` belongs, which is exactly what the reader saw.
+
+## Amendment (2026-09-30): there is a third credential, and it points away from the target
+
+This record's central section is headed *"The two credentials are different things and the screen
+says so"*. **There are three.** Filing a study's problems as GitHub issues (ADR-0044) gave populace
+a fine-grained personal access token to github.com, and the taxonomy has to grow rather than be
+stretched, because the new one is not a variant of either of the other two.
+
+- **Yours, to the target.** The OAuth sign-in to a gated address (`SignInGrant`), passed only by the
+  things acting AS you — `checkTarget` and the tool lists behind it.
+- **Theirs, one per person.** `identity` on the target, the only bearer `runWake` ever carries. The
+  people a study sends are strangers with accounts of their own, which is the premise of the product.
+- **Yours, to a third party that is NOT the target.** The token in `github_connections`. It points
+  at github.com, which is not the target, was never visited by anybody in a population, and has
+  nothing to do with the study.
+
+**The rule for the third one is simpler than the rule for the other two, not harder.** The first two
+are kept apart by who passes them, which needs care at every call site because both legitimately
+reach a target. This one reaches nothing:
+
+> **It never reaches `runWake` or `McpSession.connect` at all, under any name. It never enters a
+> `ConfigSnapshot`, a trace, an event payload or a log line. It never comes back down the wire.**
+
+There is no legitimate path by which the code that talks to somebody's product should be holding the
+code that talks to their repository. The original failure this record guards against — *"a grant that
+leaked into a wake would send forty people to the target wearing the owner's face"* — has a worse
+sibling here: a token that arrived at a wake would be handed to a stranger's MCP server as a bearer,
+and the stranger would be holding write access to the reader's issue tracker.
+
+It is structural rather than careful. The token lives in **its own table**, for the same reason
+`sign_in_grants` does (ADR-0040): nothing that assembles a config, a snapshot or a view can reach it
+by walking a blob it was already holding. `PopulaceConfig` is built field by field with no
+passthrough, `GET /github` serves `GithubConnectionView` carrying `tokenSet: boolean`, and the PUT
+follows the same write-only round trip every other credential here does — absent keeps, `""` clears,
+a value replaces. `redactConfig` gained a `github`/`token` clause anyway, because that function
+enumerates paths and defence in depth is cheap.
+
+**And ADR-0037's sentence is now false.** *"populace calls it with one shared secret and holds no
+vendor credential at all"* was true of the target and is no longer true of populace, which holds a
+token to a vendor that has nothing to do with the target. That reading of least privilege is
+unchanged for the provisioning wire; what changed is that populace grew an outbound job of its own.
+CLAUDE.md's *"Two credentials, and they must never be confused"* is corrected to three in the same
+change.

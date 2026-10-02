@@ -82,24 +82,24 @@ const TERMS: readonly Term[] = [...CHAIN_LINKS.slice(0, 6), "execution", ...CHAI
  */
 const DEFINITIONS: Record<Term, ReactNode> = {
   project: "Everything you author about one app. Nothing is shared between two projects.",
-  simulation: "A population, a target and a mode. It is the thing you press go on.",
-  population: "Which cohorts go, and how many of each. Setting the number is what makes the people.",
+  study: "A population, a target, a mode and a size. It is the thing you press go on, and the only thing with a headcount.",
+  population: "Which cohorts go, each at a weight. The study's size, dealt through those weights, is what makes the people.",
   cohort: (
     <>
       People who share a condition — what they have in common, in their own words — drawn from a
-      mix of personas in a ratio. It owns the seed and how often its people come back, and no
-      headcount (<Code inProse>size</Code> is the population&rsquo;s).
+      mix of personas at weights. It owns the seed and how often its people come back, and no
+      headcount (<Code inProse>size</Code> is the study&rsquo;s).
     </>
   ),
   person: "A durable individual: a name, a line, and whatever you set on them by hand. Written once, never silently rewritten.",
   visit: "One session: someone arrives, tries to get an errand done, and leaves.",
-  execution: "One run of a simulation, numbered from one. It holds that run’s visits.",
+  execution: "One run of a study, numbered from one. It holds that run’s visits.",
   finding: "One problem, carrying the calls it rests on, so a verifier can replay it.",
 };
 
 /**
  * Each word's shape, in the mark's own grammar (§8.6) — which is the whole reason a definition
- * here fits on one line. `project`, `simulation` and `execution` are frames rather than people,
+ * here fits on one line. `project`, `study` and `execution` are frames rather than people,
  * and are drawn as frames; inventing a brand glyph for them would say "cohort" about something
  * that is not one.
  */
@@ -111,7 +111,7 @@ function glyphOf(term: Term): ReactNode {
           <span className={cn(FRAME, "h-4 w-6 border-rule")} />
         </span>
       );
-    case "simulation":
+    case "study":
       return (
         <span className={cn(FRAME, "p-1")}>
           <Lattice dots={crowd(6)} rows={2} size="sm" />
@@ -254,8 +254,9 @@ export function Concepts() {
           <Stack gap={6} align="start">
             <Measure as="p" width="lede">
               <Text size="lede" tone="soft" as="span">
-                Adopting a starter persona builds the cohort, the population and the people for you.
-                These words are for the day you want to change one.
+                Start from a prebuilt persona inside the builder, then a cohort, a population and a
+                study with a size — each one a page, each offering to make the next. These words
+                are for the day you want to change one.
               </Text>
             </Measure>
 

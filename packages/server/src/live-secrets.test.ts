@@ -3,7 +3,7 @@ import { JobViewSchema, routes } from "@populace/contract";
 import { PopulaceConfigSchema, newRunId, tagForRun, type Finding, type Identity, type PopulaceConfig, type Run, type Store } from "@populace/core";
 import { SqliteStore } from "@populace/store-sqlite";
 import { describe, expect, it } from "vitest";
-import { ensurePersonaCohort, ensurePopulation, ensureSimulation, resolveSimulationConfig, snapshotConfig, type ProcessConfig } from "./config-store.js";
+import { ensureSimulation, resolveSimulationConfig, snapshotConfig, type ProcessConfig } from "./config-store.js";
 import { startServer, type RunningServer } from "./serve.js";
 
 const processConfig: ProcessConfig = { store: { kind: "sqlite", path: ":memory:" }, digestDir: "digests" };
@@ -54,8 +54,8 @@ function config(url: string): PopulaceConfig {
 async function runOnFrozenConfig(store: Store): Promise<{ runId: string; live: PopulaceConfig }> {
   const simulation = await ensureSimulation(store);
   // The heuristic judge, so these tests stay off the API: the replay is the part that connects, and
-  // it runs whichever judge reads its results. It is set on the SIMULATION because a simulation's
-  // overrides win over the project's settings field-wise.
+  // it runs whichever judge reads its results. It is set on the STUDY because a study's overrides
+  // win over the project's settings field-wise.
   await store.saveSimulation({ ...simulation, overrides: { ...simulation.overrides, verifier: { ...simulation.overrides.verifier, judge: "heuristic" } }, updatedAt: new Date().toISOString() });
   const { config: live } = await resolveSimulationConfig(store, processConfig, simulation.id);
   const snapshot = await snapshotConfig(store, live);
@@ -200,10 +200,10 @@ describe("connecting to the target from a run's frozen config", () => {
 
   /**
    * The state the fallback used to paper over. `resolveSimulationConfig` throws when the rows a run
-   * was built from no longer describe a population -- a deleted target or persona, or a cohort
-   * edited down to nobody, which takes no deletion at all -- and handing back the frozen snapshot
-   * at that point put `[redacted]` on the wire just as surely as reading it in the first place.
-   * There are two acceptable outcomes and a redacted credential is neither.
+   * was built from no longer describe a population -- a deleted target or persona, or a study
+   * sized down to nobody, which takes no deletion at all (ADR-0041) -- and handing back the frozen
+   * snapshot at that point put `[redacted]` on the wire just as surely as reading it in the first
+   * place. There are two acceptable outcomes and a redacted credential is neither.
    */
   it("refuses to connect at all when the live credentials cannot be restored", async () => {
     const target = await recorder();
@@ -211,11 +211,10 @@ describe("connecting to the target from a run's frozen config", () => {
     const server = await startServer({ store, storePath: ":memory:", version: "test", seedConfig: config(target.url), port: 0 });
     try {
       const { runId } = await runOnFrozenConfig(server.store);
-      // The cohort the run was built from is emptied AFTER its snapshot was frozen. The run's plan
-      // is still in the snapshot; its credentials are in rows that no longer resolve.
-      const persona = (await server.store.listPersonas("default"))[0];
-      expect(persona).toBeDefined();
-      await ensurePersonaCohort(server.store, await ensurePopulation(server.store, "default"), persona!, 0);
+      // The study the run was built from is sized to nobody AFTER its snapshot was frozen. The
+      // run's plan is still in the snapshot; its credentials are in rows that no longer resolve.
+      const simulation = await ensureSimulation(server.store);
+      await server.store.saveSimulation({ ...simulation, size: 0, updatedAt: new Date().toISOString() });
       target.seen.length = 0;
 
       const res = await fetch(`${server.url}${routes.runSweep(runId)}`, {
@@ -232,7 +231,7 @@ describe("connecting to the target from a run's frozen config", () => {
       expect(target.seen).toHaveLength(0);
       const failed = JobViewSchema.parse(await (await fetch(`${server.url}${routes.job(job.id)}`)).json());
       expect(failed.status).toBe("failed");
-      expect(failed.error).toContain("nobody is in the population");
+      expect(failed.error).toContain("sends nobody");
 
       // And the run can still be READ. Describing it needs no credentials, so the digest renders.
       const digest = await fetch(`${server.url}${routes.runDigest(runId)}`);

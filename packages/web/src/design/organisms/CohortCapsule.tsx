@@ -19,10 +19,15 @@ import {
  * CohortCapsule — a cohort, drawn as the mark draws one (DESIGN-SYSTEM §1.2 M4, §8.6).
  *
  * The mark fuses lattice cells into stadiums; the grammar reads a capsule as *individuals merged
- * into one body*, which is exactly what a cohort is — N people of one persona, and the only
- * place a headcount lives. So a cohort is a **stadium that hugs its contents**, and a population
- * is a column of those stadiums at different lengths, each visibly made of individuals. That is
- * the whole reason the population screens do not need a bar chart: the bar *is* the people.
+ * into one body*, which is exactly what a cohort is when a study sends it — the people dealt to
+ * that cohort, drawn as one body. **The count is the study's, not the cohort's** (ADR-0041): a
+ * cohort is personas with weights and has no headcount of its own, so a capsule is only ever
+ * drawn for a cohort inside a study or an execution, where a size has been dealt. So a cohort is
+ * a **stadium that hugs its contents**, and a population sent by a study is a column of those
+ * stadiums at different lengths, each visibly made of individuals. That is the whole reason the
+ * people screens do not need a bar chart: the bar *is* the people. A builder balancing weights
+ * with no size in hand draws a `Meter` instead (`WeightedMixEditor`), because a capsule's length
+ * would claim a headcount nothing there has.
  *
  * **The bar is `brand/Capsule`, not a CSS pill.** The stadium around the people is the mark's own
  * shape at the mark's own geometry — a capsule of *n* cells is `26 + (n-1) × 31` units long, so
@@ -79,7 +84,7 @@ export interface CohortCapsuleProps {
   dots: readonly LatticeDot[];
   /** How many of them hit the thing this screen is about. */
   hit?: number;
-  /** The cohort's headcount, where it is larger than the roster drawn. */
+  /** How many people the study sends from this cohort, where more than the roster drawn. */
   total?: number;
   to?: string;
 }

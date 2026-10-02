@@ -12,18 +12,34 @@ export const ModelPriceSchema = z.object({
 });
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 
-export const DEFAULT_MODEL = "claude-opus-5";
+export const DEFAULT_MODEL = "claude-sonnet-5-5";
 
+/**
+ * A row missing here is not free: `priceFor` bills an unlisted model at the most expensive known
+ * rate so ceilings stay conservative, which means a current model with no row is reported — and
+ * charged against `perWake.maxUsd` and `dailyUsd` — at several times what it actually costs. The
+ * two Sonnet rows differ only in id for that reason: `claude-sonnet-5-5` was absent, so a study
+ * running it was priced as Opus 5 and read 2.5x high.
+ */
 export const DEFAULT_PRICES: Record<string, ModelPrice> = {
+  "claude-opus-5-5": { input: 4, output: 20, cacheWrite: 5, cacheRead: 0.2 },
   "claude-opus-5": { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
   "claude-opus-4-8": { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  "claude-sonnet-5-5": { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 },
   "claude-sonnet-5": { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
 };
 
 export const ModelConfigSchema = z.object({
   model: z.string().default(DEFAULT_MODEL),
-  effort: EffortSchema.default("high"),
+  /**
+   * `low`, not `high`: a person fumbling through somebody else's product for the first time is not
+   * deliberating, and a study pays for the thinking of every person it sends on every visit. A
+   * cohort or persona that genuinely needs a considered agent raises it per `ModelOverrideSchema`
+   * — the expensive setting is the one you opt into. Constant for the length of a wake, so it does
+   * not cost the messages cache (changing `effort` mid-conversation would).
+   */
+  effort: EffortSchema.default("low"),
   maxTokens: z.number().int().positive().default(16_000),
   /** Server-side refusal fallbacks (`fallbacks: "default"`). On by default. */
   fallbacks: z.boolean().default(true),

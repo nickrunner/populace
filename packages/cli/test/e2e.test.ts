@@ -90,6 +90,9 @@ const policy: ScriptPolicy = byWake(
 describe("local daemon + CLI end to end", () => {
   it("runs a three-persona population for several wakes each with memory carrying across, then digests and sweeps through the CLI", async () => {
     const loaded = loadConfig(join(dir, "populace.yaml"));
+    // Three cohorts of one: the study's size is their sum, set by the loader so the snapshot says
+    // how many went (ADR-0041); the daemon below runs exactly that many.
+    expect(loaded.config.simulation.size).toBe(3);
     const runId = currentRunId(loaded, { newRun: true });
     const store = new SqliteStore(storePath(loaded));
     const daemon = new LocalDaemon({ config: loaded.config, runId }, { store, provider: new ScriptedProvider(policy), identityProvider: new SelfSignupProvider(loaded.config.identity as never) });

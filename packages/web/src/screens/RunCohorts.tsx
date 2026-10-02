@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import type { Participant, RunCohort } from "../api.js";
-import { useSimulation } from "../context.jsx";
+import { useStudy } from "../context.jsx";
 import { people, plural } from "../format.js";
 import { q } from "../queries.js";
 import {
@@ -32,7 +32,13 @@ import {
 } from "../design/index.js";
 
 /**
- * Who went, by cohort.
+ * Who went on ONE execution, by cohort.
+ *
+ * It lives at `executions/:runId/cohorts` and takes the execution as a prop (ADR-0041, ADR-0043).
+ * It used to be the study's own "Population" item, reading whichever execution was latest; a
+ * study's people have a page of their own now, and the cast of an execution is a fact about that
+ * execution — frozen in its snapshot — rather than about the study as it stands today, so it is
+ * addressed by the execution it was the cast of and linked from the Executions list.
  *
  * This screen used to be a card per participant with a memory panel inside it, and the panel
  * fired its own request — one memory read per head, re-polled every five seconds. Three requests
@@ -51,7 +57,7 @@ import {
  * (ADR-0028), so a roster is a record of who went that time and of nothing else.
  */
 export function RunCohorts({ runId }: { runId: string }) {
-  const { href } = useSimulation();
+  const { href } = useStudy();
   const cohorts = useQuery(q.runCohorts(runId));
   const participants = useQuery(q.participants(runId));
   /*
@@ -81,8 +87,8 @@ export function RunCohorts({ runId }: { runId: string }) {
     <InstrumentPage
       header={
         <PageHeader
-          title="Population"
-          lede="The people this execution sent, grouped by cohort. Open one to see who is in it; open a person to see what they are carrying between visits."
+          title="Who went"
+          lede="The people this execution sent, grouped by cohort, as they were when it ran. Open one to see who is in it; open a person to see what they are carrying between visits."
           meta={cohortItems === undefined ? undefined : totals(cohortItems)}
         />
       }
@@ -90,14 +96,14 @@ export function RunCohorts({ runId }: { runId: string }) {
       loading={
         <StateBlock
           kind="loading"
-          what="the population"
-          skeleton={<Skeleton variant="row" count={4} height={96} label="Reading the population" />}
+          what="who went"
+          skeleton={<Skeleton variant="row" count={4} height={96} label="Reading who went" />}
         />
       }
       error={
         <StateBlock
           kind="failed"
-          what="the population"
+          what="who went"
           error={cohorts.error ?? participants.error}
         >
           <Button
@@ -115,7 +121,7 @@ export function RunCohorts({ runId }: { runId: string }) {
         // Bare, like the other sixteen ported screens: `Card tone="sunk"` is reserved for the
         // quiet aside (§3, organism 1), and a state block is the page's own subject here, not
         // an aside beside it.
-        <StateBlock kind="empty" what="this execution's population">
+        <StateBlock kind="empty" what="this execution's cast">
           Nobody went on this execution.
         </StateBlock>
       }

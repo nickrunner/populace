@@ -80,3 +80,24 @@ cannot be set on a person, for the reason above. `PATCH …/people/:personId` ta
 a dimension back to the draw, and any edit stamps `authored`. People are numbered per lane
 (`cohortSlug.personaSlug#ordinal`), and the roster is sized by the populations that send the
 cohort rather than by a `size` on the cohort, which no longer exists.
+
+## Amendment — the roster is sized by the studies, and a read writes nothing (ADR-0041)
+
+*Added 2026-09-25.* Two sentences move. *"`ensureRoster(cohortId)` materialises them on first read
+of a cohort, on every size change, and from the explicit generate job"*: no GET writes a person any
+more. The writers are explicit — creating, editing or archiving a study, editing a population or a
+cohort, starting an execution, the study's people write and regenerate jobs, and the YAML import —
+and `resolveSimulationConfig` reads the roster and fills a missing ordinal in memory from the seeded
+draw, so a snapshot can be taken of people who were never written. The amendment of 2026-09-23 said
+*"the roster is sized by the populations that send the cohort"*: it is sized by the STUDIES — the
+largest count a lane gets in any study that is not archived, or is archived but still has an
+execution running or paused — because a population no longer carries a size. Everything this
+record protects is unchanged: fill empty slots only, never overwrite, archive on a shrink, restore
+on a grow, and the seed decides who the next person is and not who these people are.
+
+The routes move with the ownership: a person is read and edited through the study that sends them
+(`GET/POST …/studies/:s/people`, `PATCH …/studies/:s/people/:person`, `POST …/people/regenerate`),
+and the row is shared by every study sending the cohort, which the page says once. A study may also
+say one thing to all of its people — `brief`, rendered after the cohort's context — and that is
+deliberately a sentence on the study rather than authored content on a person, for the reason the
+last paragraph of the decision gives.

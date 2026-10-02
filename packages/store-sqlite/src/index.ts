@@ -6,7 +6,11 @@ import {
   CohortSchema,
   ConfigSnapshotSchema,
   EventSchema,
+  FiledIssueQuietNoticeSchema,
+  FiledIssueSchema,
+  FiledIssueSightingSchema,
   FindingSchema,
+  GithubConnectionSchema,
   JobSchema,
   PersonSchema,
   ProjectSchema,
@@ -35,6 +39,11 @@ import {
   type Event,
   type EventInput,
   type EventQuery,
+  type FiledIssue,
+  type FiledIssueGrowth,
+  type FiledIssueKey,
+  type FiledIssueProvider,
+  type GithubConnection,
   type Identity,
   type Job,
   type Memory,
@@ -56,7 +65,7 @@ import {
   type Wake,
   type WakeQuery,
 } from "@populace/core";
-import type { z } from "zod";
+import { z } from "zod";
 
 /**
  * Every table, in one constant. There is no migration framework and no `schema_version`: the
@@ -147,6 +156,53 @@ CREATE TABLE IF NOT EXISTS sign_in_grants (
 /* The OAuth callback arrives holding a state parameter and nothing else; this finds its flow. */
 CREATE INDEX IF NOT EXISTS sign_in_grants_state ON sign_in_grants(pending_state);
 
+/*
+ * YOUR credential to a third party that is NOT the target: the repository populace files issues
+ * into, and the fine-grained token it files them with (ADR-0044). Its own table for the same
+ * reason \`sign_in_grants\` is one — a credential gets its own row, so nothing that assembles a
+ * config, a snapshot or a view can reach it by walking a blob it was already holding (ADR-0040).
+ *
+ * \`project_id\` alone is the key, because one project files into one repository: nothing is shared
+ * across projects and a project's finding signatures only roll up within it (ADR-0035), so its
+ * issues only roll up within one repository too. \`repo\` is lifted out because it is what every
+ * refusal and every confirmation names, and reading which repository a project points at should
+ * not mean opening the row that holds the token.
+ */
+CREATE TABLE IF NOT EXISTS github_connections (
+  project_id TEXT PRIMARY KEY, repo TEXT NOT NULL, updated_at TEXT NOT NULL, json TEXT NOT NULL
+);
+
+/*
+ * The filing ledger: one row per issue populace has opened, holding EVERY finding signature the
+ * cluster behind it contained. This is the thing that makes "the same problem is not filed twice"
+ * true; \`FiledIssueSchema\` carries the argument for why the key is the member signature SET and
+ * not the cluster's representative signature, which moves when a verdict is written.
+ *
+ * It sits among the authored rows and not the produced ones although no human types it, because
+ * what it is scoped to is a PROJECT: an issue number outlives the cluster, the run and the study
+ * that reported it, so \`deleteRun\` must not take it and a sweep must not either.
+ *
+ * Keyed \`(project_id, provider, repo, number)\` — an issue number identifies an issue only inside
+ * one repository, so a connection re-pointed at a second repository does not make the rows it
+ * already wrote ambiguous.
+ *
+ * **No signature join table, deliberately.** The one query this table exists for is "does any of
+ * these N signatures already appear in any filed set?", which SQL wants as either a join table or
+ * a lifted column plus \`IN (…)\`. Both cost a second write that has to stay consistent with the
+ * blob, and there is no migration framework here to repair a divergence once one exists (ADR-0011
+ * amendment) — a ledger that disagrees with itself re-files every issue in somebody's repository,
+ * which is the exact failure the ledger is for. So \`matchFiledIssues\` intersects in memory over
+ * one repository's rows, which \`(project_id, provider, repo)\` reaches as the leading columns of
+ * the primary key with no extra index, and the row count is bounded by the issues one person reads
+ * in one repository. If that stops being true the join table is the fix, and this is the note that
+ * it was weighed.
+ */
+CREATE TABLE IF NOT EXISTS filed_issues (
+  project_id TEXT NOT NULL, provider TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL,
+  filed_at TEXT NOT NULL, json TEXT NOT NULL,
+  PRIMARY KEY (project_id, provider, repo, number)
+);
+
 CREATE TABLE IF NOT EXISTS personas (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL, origin TEXT NOT NULL,
   updated_at TEXT NOT NULL, json TEXT NOT NULL
@@ -155,9 +211,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS personas_slug ON personas(project_id, slug);
 
 /*
  * A cohort has no persona column and no size (ADR-0039): it MIXES personas, in \`json.mix\`, and
- * the headcount lives on the population that sends it. \`cohort_personas\` is the mix lifted out
- * of the blob for one query — "which cohorts still name this persona?" — which is the guard
- * that refuses to delete a persona somebody is drawn from.
+ * the one headcount there is belongs to the STUDY that sends it (ADR-0041) — a population only
+ * weights its cohorts. \`cohort_personas\` is the mix lifted out of the blob for one query —
+ * "which cohorts still name this persona?" — which is the guard that refuses to delete a persona
+ * somebody is drawn from.
  */
 CREATE TABLE IF NOT EXISTS cohorts (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL, updated_at TEXT NOT NULL, json TEXT NOT NULL
@@ -290,6 +347,63 @@ function applySchema(db: DatabaseSync, warn: (line: string) => void): void {
   db.prepare("INSERT INTO control (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(SHAPE_KEY, SCHEMA_SHAPE);
 }
 
+/**
+ * The one migration this file carries, and the reason it is not a `SCHEMA_SHAPE` bump (ADR-0041).
+ *
+ * The headcount moved from `populations.json.members[].size` to `simulations.json.size`. Both are
+ * blob fields with no lifted column, so the tables did not change and a rebuild would have thrown
+ * away every run for nothing; but a simulation written before the move has no `size`, and the
+ * default of nought would send nobody the next time it ran. So on open, once, every simulation
+ * whose JSON has no `size` is given the sum of its population's legacy member sizes — nought when
+ * the population is gone — and the population's `size`s are left where they are, because the
+ * member schema reads them as weights. Sainte-Laguë returns a target vector exactly when the
+ * weights are proportional to it and sum to the size, so an upgraded study deals exactly the
+ * counts it had and a longitudinal execution paused across the upgrade resumes with the same people.
+ *
+ * `SIZE_BACKFILL_KEY` is the marker in the same table as the shape: present, the pass is skipped;
+ * absent (a database from before this build, or one the shape check has just rebuilt), it runs and
+ * is then recorded. Running it twice is harmless — a row that has a `size` is never touched — the
+ * marker only saves reading every simulation on every open. The raw blobs are read with the
+ * MINIMAL schemas below rather than `SimulationSchema`, because the whole point is that these rows
+ * predate the field that schema now expects. Delete this when the migration framework arrives.
+ */
+const SIZE_BACKFILL_KEY = "size_backfill";
+
+/** Just enough of a legacy population blob to add its member sizes up; everything else passes through untouched. */
+const LegacyPopulationBlobSchema = z.looseObject({
+  members: z.array(z.looseObject({ size: z.number().int().nonnegative().optional() })).default([]),
+});
+
+/** Just enough of a simulation blob to know which population it sends and whether it has a size yet. */
+const SimulationBlobSchema = z.looseObject({
+  populationId: z.string(),
+  size: z.number().int().nonnegative().optional(),
+});
+
+function backfillStudySizes(db: DatabaseSync): void {
+  const marker = db.prepare("SELECT value FROM control WHERE key = ?").get(SIZE_BACKFILL_KEY);
+  if (marker) return;
+  const legacySizeOf = new Map<string, number>();
+  for (const row of db.prepare("SELECT id, json FROM populations").all()) {
+    // eslint-disable-next-line no-restricted-syntax -- SQLite boundary: the blob is parsed with the minimal schema on the next line.
+    const { id, json } = row as unknown as { id: string; json: string };
+    const population = parseRow(LegacyPopulationBlobSchema, { json });
+    legacySizeOf.set(id, population.members.reduce((sum, member) => sum + (member.size ?? 0), 0));
+  }
+  const update = db.prepare("UPDATE simulations SET json = ? WHERE id = ?");
+  for (const row of db.prepare("SELECT id, json FROM simulations").all()) {
+    // eslint-disable-next-line no-restricted-syntax -- SQLite boundary: the blob is parsed with the minimal schema on the next line.
+    const { id, json } = row as unknown as { id: string; json: string };
+    const simulation = parseRow(SimulationBlobSchema, { json });
+    if (simulation.size !== undefined) continue;
+    update.run(JSON.stringify({ ...simulation, size: legacySizeOf.get(simulation.populationId) ?? 0 }), id);
+  }
+  // LAST, deliberately: a row this cannot parse throws out of the loop above, and an absent marker
+  // is what makes the next open try again once somebody has repaired the row. Recording the marker
+  // first, or in a `finally`, would turn one bad blob into a study that deals nobody for ever.
+  db.prepare("INSERT INTO control (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(SIZE_BACKFILL_KEY, "1");
+}
+
 interface JsonRow {
   json: string;
 }
@@ -307,12 +421,26 @@ function rows(result: object[]): JsonRow[] {
 /** Store implementation on the SQLite module built into Node 22 (ADR-0011). */
 export class SqliteStore implements Store {
   private readonly db: DatabaseSync;
+  /** Kept because a read can now degrade rather than throw; see `ledgerRows`. */
+  private readonly warn: (line: string) => void;
 
   constructor(path: string, warn: (line: string) => void = (line) => console.warn(line)) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+    this.warn = warn;
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
     applySchema(this.db, warn);
+    // The backfill reads two whole tables through `parseRow`, which throws on a blob it cannot
+    // understand — and a throw here escapes the CONSTRUCTOR, so one hand-edited or truncated row
+    // in `populations` or `simulations` would make the database impossible to OPEN AT ALL. Every
+    // other blob read in this file is per-query and fails only that query, so this one is caught
+    // and reported instead. The marker is written as the backfill's last statement, so a failure
+    // leaves it absent and the next open retries — which is what makes repairing the row enough.
+    try {
+      backfillStudySizes(this.db);
+    } catch (err) {
+      warn(`populace: could not backfill study sizes on open (${err instanceof Error ? err.message : String(err)}); studies written before the headcount moved may still deal nobody. The pass will run again on the next open.`);
+    }
   }
 
   static open(path: string, warn?: (line: string) => void): SqliteStore {
@@ -713,7 +841,9 @@ export class SqliteStore implements Store {
    */
   private simulationsNaming(column: "target_id" | "population_id", id: string): string[] {
     const result = this.db.prepare(`SELECT json FROM simulations WHERE ${column} = ? ORDER BY slug`).all(id);
-    return rows(result).map((r) => `simulation "${parseRow(SimulationSchema, r).name}"`);
+    // "study", not "simulation": this string reaches the user in the 409 body, and the product's
+    // word for the row is study (ADR-0032, ADR-0042). The method keeps the row's name.
+    return rows(result).map((r) => `study "${parseRow(SimulationSchema, r).name}"`);
   }
 
   private cohortsNamingPersona(personaId: string): string[] {
@@ -783,6 +913,11 @@ export class SqliteStore implements Store {
       this.db.prepare("DELETE FROM personas WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM targets WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM sign_in_grants WHERE project_id = ?").run(id);
+      // A project's credentials go with it (ADR-0036), and so does its filing ledger: the issues
+      // outlive the runs, but they were signatures rolled up inside this project and nothing else
+      // can ever match them again.
+      this.db.prepare("DELETE FROM github_connections WHERE project_id = ?").run(id);
+      this.db.prepare("DELETE FROM filed_issues WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM triage WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM settings WHERE project_id = ?").run(id);
       this.db.prepare("DELETE FROM jobs WHERE project_id = ?").run(id);
@@ -851,6 +986,158 @@ export class SqliteStore implements Store {
   deleteSignInGrant(projectId: string, url: string): Promise<void> {
     this.db.prepare("DELETE FROM sign_in_grants WHERE project_id = ? AND url = ?").run(projectId, normalizeEndpointUrl(url));
     return Promise.resolve();
+  }
+
+  saveGithubConnection(connection: GithubConnection): Promise<void> {
+    const parsed = GithubConnectionSchema.parse(connection);
+    this.db
+      .prepare(
+        `INSERT INTO github_connections (project_id, repo, updated_at, json) VALUES (?, ?, ?, ?)
+         ON CONFLICT(project_id) DO UPDATE SET repo = excluded.repo, updated_at = excluded.updated_at, json = excluded.json`,
+      )
+      .run(parsed.projectId, parsed.repo, parsed.updatedAt, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  getGithubConnection(projectId: string): Promise<GithubConnection | undefined> {
+    const row = this.db.prepare("SELECT json FROM github_connections WHERE project_id = ?").get(projectId);
+    return Promise.resolve(row ? parseRow(GithubConnectionSchema, rows([row])[0] as JsonRow) : undefined);
+  }
+
+  deleteGithubConnection(projectId: string): Promise<void> {
+    this.db.prepare("DELETE FROM github_connections WHERE project_id = ?").run(projectId);
+    return Promise.resolve();
+  }
+
+  saveFiledIssue(issue: FiledIssue): Promise<void> {
+    const parsed = FiledIssueSchema.parse(issue);
+    this.db
+      .prepare(
+        `INSERT INTO filed_issues (project_id, provider, repo, number, filed_at, json) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id, provider, repo, number) DO UPDATE SET filed_at = excluded.filed_at, json = excluded.json`,
+      )
+      .run(parsed.projectId, parsed.provider, parsed.repo, parsed.number, parsed.filedAt, JSON.stringify(parsed));
+    return Promise.resolve();
+  }
+
+  /**
+   * Ledger rows, parsed one at a time and with a row that will not parse SKIPPED rather than
+   * thrown out of.
+   *
+   * `parseRow` is right everywhere else in this file: a corrupt blob is a bug and a loud one. Here
+   * it is the wrong trade, because of what the caller does with a throw. A publisher that cannot
+   * read the ledger has no way to tell "nothing has been filed" from "I could not look", and if it
+   * guesses the first it re-files every issue in somebody's repository. One unreadable row must
+   * not be able to cause that, so it costs its own issue a possible duplicate and nothing more.
+   *
+   * Skipping is also the only honest thing to do with such a row: a row this binary cannot
+   * understand is one it must not MATCH on either — it cannot know which signatures are in a set
+   * it cannot read. The count is warned about so the row is repairable rather than invisible.
+   */
+  private ledgerRows(result: object[]): FiledIssue[] {
+    const out: FiledIssue[] = [];
+    let skipped = 0;
+    for (const row of rows(result)) {
+      // eslint-disable-next-line no-restricted-syntax -- SQLite boundary: JSON text is parsed with zod on this same line.
+      const parsed = FiledIssueSchema.safeParse(JSON.parse(row.json) as unknown);
+      if (parsed.success) out.push(parsed.data);
+      else skipped += 1;
+    }
+    if (skipped > 0) this.warn(`populace: skipped ${skipped} filing-ledger row${skipped === 1 ? "" : "s"} this build cannot read. They are not matched against, so the problems behind them may be filed again.`);
+    return out;
+  }
+
+  /** Oldest first, which is the policy every caller of the ledger is written around. */
+  listFiledIssues(projectId: string): Promise<FiledIssue[]> {
+    const result = this.db.prepare("SELECT json FROM filed_issues WHERE project_id = ? ORDER BY filed_at ASC, number ASC").all(projectId);
+    return Promise.resolve(this.ledgerRows(result));
+  }
+
+  matchFiledIssues(projectId: string, provider: FiledIssueProvider, repo: string, signatures: readonly string[]): Promise<FiledIssue[]> {
+    // Nothing to match against is not a match: a cluster with no member signatures cannot be the
+    // thing any row is about, and the alternative — an empty `IN ()` — would be a row scan whose
+    // answer is always no.
+    if (!signatures.length) return Promise.resolve([]);
+    const wanted = new Set(signatures);
+    // Scoped to the repository, not to the project. `saveGithubConnection` upserts on the project,
+    // so re-pointing at a second repository is one PUT — and a match on the project alone would
+    // then send every comment to the repository this token is no longer scoped to while the new
+    // one never receives an issue at all. A row filed elsewhere has genuinely not told THIS
+    // repository anything, so it is not a match; it is kept, because it is what stops a
+    // re-point-and-back from filing everything twice.
+    //
+    // Oldest first, and every match rather than the first: two rows both match once the clusterer
+    // bridges two problems into one cluster, and the caller comments on the oldest and marks the
+    // rest `supersededBy` instead of orphaning them silently.
+    const result = this.db.prepare("SELECT json FROM filed_issues WHERE project_id = ? AND provider = ? AND repo = ? ORDER BY filed_at ASC, number ASC").all(projectId, provider, repo);
+    return Promise.resolve(this.ledgerRows(result).filter((issue) => issue.signatures.some((signature) => wanted.has(signature))));
+  }
+
+  /**
+   * The set union and the sighting append, in one transaction, because the alternative loses a
+   * signature. Read-modify-write through `saveFiledIssue` spans two awaits, and the single-problem
+   * route runs outside the serial job queue — so a bulk job and a click interleave there, the
+   * later write wins whole, and the signatures the earlier one added are gone. That is the exact
+   * duplicate this ledger exists to prevent, reintroduced by the code that maintains it.
+   *
+   * `BEGIN IMMEDIATE` rather than a deferred transaction, and the same shape as `deleteProject`:
+   * the write lock is taken before the read, so two growers serialise on the lock instead of one
+   * of them losing at COMMIT.
+   */
+  growFiledIssue(key: FiledIssueKey, growth: FiledIssueGrowth): Promise<FiledIssue | undefined> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db
+        .prepare("SELECT json FROM filed_issues WHERE project_id = ? AND provider = ? AND repo = ? AND number = ?")
+        .get(key.projectId, key.provider, key.repo, key.number);
+      if (!row) {
+        this.db.exec("COMMIT");
+        return Promise.resolve(undefined);
+      }
+      const existing = parseRow(FiledIssueSchema, rows([row])[0] as JsonRow);
+      const signatures = [...existing.signatures];
+      for (const signature of growth.signatures) if (!signatures.includes(signature)) signatures.push(signature);
+      // A window already recorded is a double-publish of that window, not a second sighting —
+      // which is the whole reason a sighting carries `window` and not a bare `seq` (a longitudinal
+      // study has one execution for its life, so `seq` alone is 1 for ever).
+      const seenIn = [...existing.seenIn];
+      const seenKey = (seen: (typeof seenIn)[number]): string => `${seen.studyId}|${seen.runId}|${String(seen.seq)}|${String(seen.window)}`;
+      const known = new Set(seenIn.map(seenKey));
+      for (const seen of growth.seenIn) {
+        const parsed = FiledIssueSightingSchema.parse(seen);
+        if (known.has(seenKey(parsed))) continue;
+        known.add(seenKey(parsed));
+        seenIn.push(parsed);
+      }
+      // A gone-quiet announcement already recorded for the same `(studyId, since)` is the SAME
+      // news, and the publisher's whole guard rests on this append being atomic: the synchronous
+      // single-problem route runs outside the serial job queue, so a `get` plus a `save` at the
+      // call site would let two passes each see no notice and each write one (see
+      // `FiledIssueQuietNoticeSchema`).
+      const quietNotices = [...existing.quietNotices];
+      const quietKey = (notice: (typeof quietNotices)[number]): string => `${notice.studyId}|${String(notice.since)}`;
+      const announced = new Set(quietNotices.map(quietKey));
+      for (const notice of growth.quietNotices ?? []) {
+        const parsed = FiledIssueQuietNoticeSchema.parse(notice);
+        if (announced.has(quietKey(parsed))) continue;
+        announced.add(quietKey(parsed));
+        quietNotices.push(parsed);
+      }
+      const grown = FiledIssueSchema.parse({
+        ...existing,
+        signatures,
+        seenIn,
+        quietNotices,
+        ...(growth.supersededBy === undefined ? {} : { supersededBy: growth.supersededBy }),
+        updatedAt: growth.updatedAt,
+      });
+      this.db.prepare("UPDATE filed_issues SET json = ? WHERE project_id = ? AND provider = ? AND repo = ? AND number = ?").run(JSON.stringify(grown), key.projectId, key.provider, key.repo, key.number);
+      this.db.exec("COMMIT");
+      return Promise.resolve(grown);
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   savePersona(persona: StoredPersona): Promise<void> {

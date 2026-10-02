@@ -76,3 +76,14 @@ executes a frozen snapshot (ADR-0024). The answer is an explicit action — "app
 running execution" — which re-resolves, re-snapshots and reconciles, adding participants for new
 cohorts at visit one and retiring removed ones, while everybody else keeps their memory. Ephemeral
 simulations do not offer it: edit it and run it again.
+
+## Amendment — a study's size follows the same rule as every other edit (ADR-0041)
+
+*Added 2026-09-25.* The noun is called a **study** on the wire and every screen (ADR-0042); the
+table above is otherwise unchanged. The study now owns its headcount (`size`), and changing it is an
+edit like any other: a running longitudinal execution takes it through "Apply to the running
+execution", which re-resolves at the new size, adds people at visit one and retires those past
+their lane's count with their memory kept; an ephemeral execution is not touched, and the next
+execution uses it. Nothing scales a bounded execution mid-flight, and nothing here is a
+determinism layer. The study's `brief` is frozen into the snapshot with everything else, so what a
+past execution told its people is what its snapshot says it did.

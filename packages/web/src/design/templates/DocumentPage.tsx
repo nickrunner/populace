@@ -43,7 +43,7 @@ import type { StateKind } from "../tokens.js";
  * `--w-page` is 1100px and that number is not arbitrary: it is the document column (648px) plus
  * the 48px gap plus the 264px instrument rail plus the gutter pair. It is the width of the
  * two-column layout. But `rail` is optional and **exactly one screen in the product passes one**
- * — `SimulationResults`. Everywhere else the frame was reserving 312px for a column that never
+ * — `StudyResults`. Everywhere else the frame was reserving 312px for a column that never
  * rendered, and since the document column is left-aligned inside it, all 312px of that reserve
  * piled up on the right: on a 1605px `<main>` the content's optical centre sat 201px left of the
  * window's. It read as a page pushed into the corner, which is exactly what it was.

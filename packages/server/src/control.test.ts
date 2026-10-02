@@ -2,33 +2,44 @@ import { SelfSignupProvider } from "@populace/adapters/self-signup";
 import {
   ClusterDetailViewSchema,
   CohortViewSchema,
-  EventSchema,
+  ErrorBodySchema,
+  EstimateViewSchema,
+  EventViewSchema,
   JobViewSchema,
   ParticipantDetailViewSchema,
   ParticipantSummaryViewSchema,
   PersonViewSchema,
+  PersonaPreviewViewSchema,
   PreflightViewSchema,
   ProjectOverviewViewSchema,
   ProjectSummaryViewSchema,
   PersonaViewSchema,
   PopulationViewSchema,
-  RunEstimateSchema,
   RunLiveSchema,
   RunSummarySchema,
   ExecutionCompareViewSchema,
-  SimulationResultsViewSchema,
+  StudyPeopleViewSchema,
+  StudyResultsViewSchema,
+  StudySummaryViewSchema,
   TriageViewSchema,
   SettingsViewSchema,
   SetupStatusSchema,
   StarterPersonaViewSchema,
   FirstContactSchema,
-  SimulationSummaryViewSchema,
+  GithubCheckResultSchema,
+  GithubConnectionViewSchema,
+  PublishIssueResultSchema,
   StoredTargetViewSchema,
   TargetCheckSchema,
   TargetPromisesSchema,
   pageOf,
   routes,
+  type ClusterCardView,
+  type CohortView,
+  type PersonaView,
   type PersonView,
+  type PopulationView,
+  type StudyPeopleView,
 } from "@populace/contract";
 import {
   CadenceSchema,
@@ -37,15 +48,19 @@ import {
   newCohortId,
   newRunId,
   newTargetId,
+  personIdOfAgentId,
   signatureOf,
   tagForRun,
   type Cohort,
+  type Finding,
   type PopulaceConfig,
   type Simulation,
   type Store,
+  type StoredPopulation,
+  type Wake,
 } from "@populace/core";
 import { startMockTarget, type RunningMockTarget } from "@populace/mock-target";
-import { primaryTool } from "@populace/reports";
+import { primaryTool, type TypesafeClient } from "@populace/reports";
 import { runWake, personaSystemPrompt } from "@populace/runner";
 import { ScriptedProvider, call, sequence, type ScriptContext, type ScriptPolicy } from "@populace/runner/testing";
 import { SqliteStore } from "@populace/store-sqlite";
@@ -53,14 +68,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
 import {
-  cohortsOf,
   createSimulation,
-  ensurePersonaCohort,
-  ensurePopulation,
-  setPopulationMember,
   ensureProject,
   ensureSettings,
   ensureSimulation,
+  materialise,
   redactConfig,
   resolveSimulationConfig,
   seedProjectFromConfig,
@@ -70,11 +82,15 @@ import {
 } from "./config-store.js";
 import { ensureRoster } from "./cohort-store.js";
 import { resetTarget } from "./target-reset.js";
+import type { IssuesClient } from "./deps.js";
 import { EventHub, RecordingStore } from "./events.js";
+import type { GithubOutcome, IssueRef, MarkerSearch, RepoCheck } from "./github.js";
 import { JobRunner } from "./jobs.js";
-import { RunController } from "./runs.js";
+import { ProjectReadModel } from "./project-read-model.js";
+import { reportWindows, type ReportWindow } from "./report-windows.js";
+import { RunController, cohortChanges } from "./runs.js";
 import { startServer } from "./serve.js";
-import { STARTER_PERSONAS } from "./starters.js";
+import { STARTER_PERSONAS, starterBySlug } from "./starters.js";
 import { takeLock, StoreLocked } from "./lock.js";
 
 let target: RunningMockTarget;
@@ -102,11 +118,79 @@ function config(): PopulaceConfig {
   });
 }
 
+/**
+ * github.com, offline.
+ *
+ * It implements exactly the slice of the real client the routes and the publisher are typed
+ * against (`IssuesClient`), so an operation added or renamed there is a compile error here rather
+ * than a hole a test walks through. `asked` is what makes the credential assertions possible: the
+ * factory records every `{ repo, token }` a route built a client with, which is the only honest way
+ * to ask "did the check fall back to the stored token, and did anything go out when there was
+ * none".
+ */
+class FakeGithub implements IssuesClient {
+  /** Every connection a route built a client from, in order. Never asserted on as a secret store. */
+  readonly asked: { repo: string; token: string }[] = [];
+  readonly created: { number: number; title: string; body: string; labels: string[] }[] = [];
+  readonly comments: { number: number; body: string }[] = [];
+  /** What the check answers. A test moves it to say "public", "no issues", "expired". */
+  repoCheck: RepoCheck = { outcome: "ready", detail: null, visibility: "private", expiresAt: null };
+  /** Creates from this one on (1-based) are refused, for the mid-batch failure. */
+  refuseCreatesFrom: number | null = null;
+  private next = 1;
+
+  getRepo(): Promise<RepoCheck> {
+    return Promise.resolve(this.repoCheck);
+  }
+
+  ensureLabels(labels: readonly string[]): Promise<GithubOutcome<{ created: string[]; existing: string[] }>> {
+    return Promise.resolve({ ok: true, created: [...labels], existing: [] });
+  }
+
+  createIssue(issue: { title: string; body: string; labels: readonly string[] }): Promise<GithubOutcome<{ issue: IssueRef }>> {
+    if (this.refuseCreatesFrom !== null && this.created.length + 1 >= this.refuseCreatesFrom) {
+      return Promise.resolve({ ok: false, code: "refused", message: "Validation failed: somebody's repository said no.", status: 422 });
+    }
+    const number = this.next++;
+    this.created.push({ number, title: issue.title, body: issue.body, labels: [...issue.labels] });
+    return Promise.resolve({ ok: true, issue: this.ref(number) });
+  }
+
+  getIssue(number: number): Promise<GithubOutcome<{ issue: IssueRef }>> {
+    return Promise.resolve({ ok: true, issue: this.ref(number) });
+  }
+
+  addComment(number: number, body: string): Promise<GithubOutcome<{ id: number; url: string }>> {
+    this.comments.push({ number, body });
+    return Promise.resolve({ ok: true, id: this.comments.length, url: `https://github.test/acme/tasklet/issues/${String(number)}#c${String(this.comments.length)}` });
+  }
+
+  reopenIssue(number: number): Promise<GithubOutcome<{ issue: IssueRef }>> {
+    return Promise.resolve({ ok: true, issue: this.ref(number) });
+  }
+
+  searchIssues(marker: string): Promise<MarkerSearch> {
+    const hit = this.created.find((issue) => issue.body.includes(marker));
+    return Promise.resolve(hit === undefined ? { outcome: "none" } : { outcome: "found", issues: [this.ref(hit.number)] });
+  }
+
+  /** No budget in a test: the pass never stops itself on the wall clock. */
+  outOfTime(): null {
+    return null;
+  }
+
+  private ref(number: number): IssueRef {
+    return { number, url: `https://github.test/acme/tasklet/issues/${String(number)}`, state: "open", createdAt: "2026-05-01T09:12:33.000Z" };
+  }
+}
+
 interface Harness {
   app: Hono;
   store: Store;
   jobs: JobRunner;
   runs: RunController;
+  /** github.com, offline. Every route that would reach it is given this instead. */
+  github: FakeGithub;
   /** Every store method this harness's app has called, in order. */
   calls: string[];
   resetCalls(): void;
@@ -118,7 +202,8 @@ interface Harness {
  *
  * This is how "one screen is a bounded number of queries" is asserted rather than assumed. The old
  * population screen fired one memory read per participant on a five-second poll, and nothing in
- * the test suite could have noticed.
+ * the test suite could have noticed. It is also how "a GET writes nothing" (ADR-0041) is asserted:
+ * the writes are the method names that begin with a verb that changes a row.
  */
 function counting(inner: Store): { store: Store; calls: string[] } {
   const calls: string[] = [];
@@ -138,9 +223,19 @@ function counting(inner: Store): { store: Store; calls: string[] } {
   return { store, calls };
 }
 
+/** The store methods that change a row. Everything a GET is forbidden to call (ADR-0041, D3). */
+const WRITES = /^(save|upsert|delete|append|set|archive)/;
+const writesIn = (calls: readonly string[]): string[] => calls.filter((name) => WRITES.test(name));
+
+/**
+ * The words the rows use for themselves and the wire must not (ADR-0032, ADR-0042). Asserted over
+ * raw bodies rather than parsed views, because a schema that carried one would parse it happily.
+ */
+const ROWS_OWN_WORDS = /\b(simulation|agent|wake|lane)s?\b/i;
+
 const processConfig = { store: { kind: "sqlite" as const, path: ":memory:" }, digestDir: "digests" };
 
-/** The project's simulation, resolved. Every run in this file goes through this one path. */
+/** The project's study, resolved. Every run in this file goes through this one path. */
 async function resolveProject(store: Store): Promise<ResolvedSimulation> {
   const simulation = await ensureSimulation(store);
   return resolveSimulationConfig(store, processConfig, simulation.id);
@@ -148,10 +243,10 @@ async function resolveProject(store: Store): Promise<ResolvedSimulation> {
 
 /**
  * The M2 app over a real store, wired exactly as `populace serve` wires it — the recording store,
- * the hub, the job queue and the run controller — so what these tests drive is the process, not a
- * hand-assembled subset of it.
+ * the hub, the job queue and the run controller with the roster writer on it — so what these tests
+ * drive is the process, not a hand-assembled subset of it.
  */
-async function harness(options: { hasApiKey?: boolean; seed?: boolean; policy?: ScriptPolicy; writesPeople?: boolean } = {}): Promise<Harness> {
+async function harness(options: { hasApiKey?: boolean; seed?: boolean; policy?: ScriptPolicy; writesPeople?: boolean; judges?: boolean; typesafe?: TypesafeClient } = {}): Promise<Harness> {
   const inner = new SqliteStore(":memory:");
   const hub = new EventHub();
   const counted = counting(new RecordingStore(inner, hub.publish));
@@ -161,11 +256,13 @@ async function harness(options: { hasApiKey?: boolean; seed?: boolean; policy?: 
   if (options.seed !== false) await seedProjectFromConfig(store, config());
 
   const provider = new ScriptedProvider(options.policy ?? (() => ({ calls: [call("done", { summary: "looked around", would_return: true })] })));
+  const github = new FakeGithub();
   const jobs = new JobRunner(store);
   const runs = new RunController({
     store,
     provider: () => provider,
     resolve: async (simulationId: string) => (await resolveSimulationConfig(store, processConfig, simulationId)).config,
+    materialise: (simulationId: string) => materialise(store, simulationId),
   });
   const app = createApp({
     store,
@@ -176,15 +273,24 @@ async function harness(options: { hasApiKey?: boolean; seed?: boolean; policy?: 
       store,
       processConfig,
       hasApiKey: () => options.hasApiKey !== false,
-      // Only where a test is about tier-2 person generation: given a provider, `people.generate`
-      // calls the model instead of leaving the seeded cast alone, and every other test in this
-      // file is about something else.
-      ...(options.writesPeople ? { provider: (): ScriptedProvider => provider } : {}),
+      // Only where a test is about tier-2 person generation or about what the JUDGE spends: given
+      // a provider, `people.generate` calls the model instead of leaving the seeded cast alone and
+      // the digest's `model` judge asks it for a verdict, and every other test in this file is
+      // about something else.
+      ...(options.writesPeople === true || options.judges === true ? { provider: (): ScriptedProvider => provider } : {}),
       jobs,
       runs,
       hub,
       configForRun: async () => (await resolveProject(store)).config,
       sweep: () => Promise.resolve({ identities: 0, removed: 0, preExisting: 0, stranded: 0, failures: 0, lines: [] }),
+      // ALWAYS a double, never the real client. Nothing in this suite may reach github.com and
+      // nothing in it holds a token; a route that quietly fell back to `new GithubClient(...)`
+      // would try, which is the one failure a test cannot be allowed to cause.
+      githubClient: (connection) => {
+        github.asked.push(connection);
+        return github;
+      },
+      ...(options.typesafe ? { typesafe: (): TypesafeClient => options.typesafe! } : {}),
     },
   });
   return {
@@ -192,6 +298,7 @@ async function harness(options: { hasApiKey?: boolean; seed?: boolean; policy?: 
     store,
     jobs,
     runs,
+    github,
     calls: counted.calls,
     resetCalls: () => {
       counted.calls.length = 0;
@@ -211,12 +318,45 @@ const json = async (res: Response): Promise<ResponseBody> => {
 /** Every test in this file works inside one project; the path segment is what says which. */
 const P = "default";
 
-/** The project's default population, as a path. Composition is project-scoped, not global. */
-const populationRoute = async (h: Harness): Promise<string> => routes.population_(P, (await ensurePopulation(h.store)).id);
+const post = async (app: Hono, path: string, body: object = {}): Promise<Response> => app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+const put = async (app: Hono, path: string, body: object): Promise<Response> => app.request(path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+const patch = async (app: Hono, path: string, body: object): Promise<Response> => app.request(path, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-/** How many of a cohort the default population sends. A cohort has no size of its own (ADR-0039). */
-const resize = async (h: Harness, cohortId: string, size: number): Promise<void> => {
-  await setPopulationMember(h.store, await ensurePopulation(h.store), cohortId, size);
+/**
+ * The project's population: the one the import wrote, or the first one a test composed. Oldest
+ * first, so two rows written in one millisecond still resolve the same way — there is no default
+ * population any more (ADR-0041), only the ones somebody made.
+ */
+const thePopulation = async (store: Store, projectId = P): Promise<StoredPopulation> => {
+  const population = [...(await store.listPopulations(projectId))].sort((a, b) => (a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt)))[0];
+  if (!population) throw new Error("no population in this project yet");
+  return population;
+};
+const populationRoute = async (h: Harness): Promise<string> => routes.population_(P, (await thePopulation(h.store)).id);
+
+/**
+ * Puts a cohort into the project's population at `weight` — in place when it is already there,
+ * at the end when it is not, and out altogether at nought — through the route, so the studies
+ * sending the population are re-laned exactly as the builder's save re-lanes them.
+ */
+const weigh = async (h: Harness, cohortId: string, weight: number): Promise<PopulationView> => {
+  const population = await thePopulation(h.store);
+  const present = population.members.some((member) => member.cohortId === cohortId);
+  const members = [
+    ...population.members.map((member) => ({ cohortId: member.cohortId, weight: member.cohortId === cohortId ? weight : member.weight })),
+    ...(present ? [] : [{ cohortId, weight }]),
+  ];
+  return PopulationViewSchema.parse(await json(await put(h.app, routes.population_(P, population.id), { members })));
+};
+
+/** THE headcount (ADR-0041): the project's study at `size` people, with its roster written. */
+const sizeStudy = (h: Harness, size: number): Promise<Simulation> => ensureSimulation(h.store, P, { size });
+
+/** The cohort the import made for the one persona in `config()`: its slug is the persona's. */
+const seededCohort = async (store: Store): Promise<Cohort> => {
+  const cohort = (await store.listCohorts(P)).find((candidate) => candidate.slug === "casual-lister");
+  if (!cohort) throw new Error("the import did not make the casual-lister cohort");
+  return cohort;
 };
 
 /** A cohort row the way the store wants it: a mix of one, sharing one line. */
@@ -239,9 +379,29 @@ const cohortRow = (fields: { id: string; slug: string; name: string; personaId: 
   };
 };
 
-/** A run belongs to a SIMULATION now: "start a run" is "run this simulation once more". */
-const runsRoute = async (h: Harness): Promise<string> => routes.simulationRuns(P, (await ensureSimulation(h.store)).id);
-const estimateRoute = async (h: Harness): Promise<string> => routes.simulationEstimate(P, (await ensureSimulation(h.store)).id);
+/**
+ * Takes a starter the way the builder does now (ADR-0043): the starter's spec is posted as a
+ * persona with `origin: "starter"`. Nothing else is made — no cohort, no member, no people.
+ */
+const takeStarter = async (h: Harness, slug: string, projectId = P): Promise<PersonaView> => {
+  const starter = starterBySlug(slug);
+  if (!starter) throw new Error(`no starter called ${slug}`);
+  const { id: _id, ...spec } = starter.spec;
+  return PersonaViewSchema.parse(await json(await post(h.app, routes.personas(projectId), { slug, spec, origin: "starter" })));
+};
+
+const makeCohort = async (h: Harness, body: object, projectId = P): Promise<CohortView> => CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(projectId), body)));
+
+/** A run belongs to a STUDY: "start a run" is "run this study once more". */
+const runsRoute = async (h: Harness): Promise<string> => routes.studyRuns(P, (await ensureSimulation(h.store)).id);
+const estimateRoute = async (h: Harness): Promise<string> => routes.studyEstimate(P, (await ensureSimulation(h.store)).id);
+
+/** The people a study sends, in deal order, as its People page reads them. */
+const peopleOf = async (h: Harness, studyId?: string): Promise<StudyPeopleView> =>
+  StudyPeopleViewSchema.parse(await json(await h.app.request(routes.studyPeople(P, studyId ?? (await ensureSimulation(h.store)).id))));
+
+/** The persona slugs the project's study sends, in deal order, each once. */
+const memberSlugs = async (h: Harness): Promise<string[]> => [...new Set((await peopleOf(h)).items.map((person) => person.personaSlug))];
 
 /**
  * Reads what an SSE endpoint replays and then lets go. The stream never ends by itself — it sits
@@ -307,11 +467,8 @@ const complainsWithoutTool: ScriptPolicy = sequence([
   () => ({ calls: [call("done", { summary: "had a look", would_return: true })] }),
 ]);
 
-const post = async (app: Hono, path: string, body: object = {}): Promise<Response> => app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-/** The persona slugs the default population sends, lane by lane. */
-const memberSlugs = async (h: Harness): Promise<string[]> =>
-  PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h)))).members.flatMap((m) => m.personas.filter((p) => p.count > 0).map((p) => p.slug));
-const put = async (app: Hono, path: string, body: object): Promise<Response> => app.request(path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+/** What a refusal said, unescaped: the body is JSON, and a quoted name inside it is escaped in the raw text. */
+const reason = async (res: Response): Promise<string> => ErrorBodySchema.parse(await res.json()).error.message;
 
 describe("authoring config into the database", () => {
   it("imports a populace.yaml once and then treats the rows as the truth", async () => {
@@ -325,12 +482,71 @@ describe("authoring config into the database", () => {
     expect(people.items[0]?.origin).toBe("imported");
     expect(people.items[0]?.cohorts).toBe(1);
 
+    // Lossless across the shapes (ADR-0041): the file's one lane of one becomes a mix weight of
+    // one, a member weight of one and a study of size one, so the deal gives the file back.
+    const population = await thePopulation(h.store);
+    expect(population.members.map((member) => member.weight)).toEqual([1]);
+    expect((await ensureSimulation(h.store)).size).toBe(1);
+    expect((await peopleOf(h)).items).toHaveLength(1);
+
     // A second import must not overwrite work someone has since done in the browser.
     await put(h.app, routes.target_(P, targets.items[0]!.id), { name: "Renamed in the browser", mcp: [{ name: "default", url: target.mcpUrl }], identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", emailDomain: "populace.test" } });
     const again = await seedProjectFromConfig(h.store, config());
     expect(again.seeded).toBe(false);
     const after = pageOf(StoredTargetViewSchema).parse(await json(await h.app.request(routes.targets(P))));
     expect(after.items[0]?.name).toBe("Renamed in the browser");
+    await h.close();
+  });
+
+  /**
+   * The same losslessness with numbers that cannot be confused for one another. The test above
+   * imports a file of one lane of one, where the mix weight, the member weight and the study's
+   * size are all 1 — so it would pass just as happily if a weight were read as a size or a lane's
+   * count as its cohort's. This file has two cohorts, three lanes and three different numbers at
+   * each of the three places, so each one is pinned to the thing it actually counts: the lane
+   * counts become the folded cohort's MIX weights, their sum becomes the population MEMBER weight,
+   * and the file's whole headcount becomes the study's SIZE.
+   */
+  it("folds a file's lanes into cohorts without confusing a mix weight, a member weight and a size", async () => {
+    const h = await harness({ seed: false });
+    await seedProjectFromConfig(
+      h.store,
+      PopulaceConfigSchema.parse({
+        ...config(),
+        population: {
+          id: "field-test",
+          name: "The field test",
+          members: [
+            { cohort: "mobile", cohortName: "Mobile only", context: "You only ever use this on your phone.", count: 3, persona: { id: "phone-lister", name: "Mina Roy", role: "a list keeper", backstory: "b", goals: ["keep a list"] } },
+            { cohort: "mobile", cohortName: "Mobile only", context: "You only ever use this on your phone.", count: 2, persona: { id: "phone-power", name: "Omar Diaz", role: "a heavy user", backstory: "b", goals: ["get through the day"] } },
+            { cohort: "desk", cohortName: "At a desk", context: "You only ever use this at a desk.", count: 1, persona: { id: "desk-planner", name: "Ines Park", role: "a planner", backstory: "b", goals: ["plan the week"] } },
+          ],
+        },
+      }),
+    );
+
+    const cohorts = await h.store.listCohorts(P);
+    const mobile = cohorts.find((cohort) => cohort.slug === "mobile")!;
+    const desk = cohorts.find((cohort) => cohort.slug === "desk")!;
+    // A mix weight is a LANE's count, and which persona it belongs to is half of what is under
+    // test: 3 for the first lane and 2 for the second, in the file's order.
+    const personaSlugs = new Map((await h.store.listPersonas(P)).map((persona) => [persona.id, persona.slug]));
+    expect(mobile.mix.map((entry) => [personaSlugs.get(entry.personaId), entry.weight])).toEqual([["phone-lister", 3], ["phone-power", 2]]);
+    expect(desk.mix.map((entry) => [personaSlugs.get(entry.personaId), entry.weight])).toEqual([["desk-planner", 1]]);
+
+    // A member weight is the cohort's lanes SUMMED — five, which is neither lane's count — and the
+    // study's size is everybody the file counted.
+    const population = await thePopulation(h.store);
+    expect(population.members.map((member) => [member.cohortId, member.weight])).toEqual([[mobile.id, 5], [desk.id, 1]]);
+    expect((await ensureSimulation(h.store)).size).toBe(6);
+
+    // ...so the deal hands the file back, lane by lane, rather than some other arithmetic that
+    // happens to add up.
+    const dealt = (await peopleOf(h)).items;
+    expect(dealt).toHaveLength(6);
+    expect(dealt.filter((person) => person.personaSlug === "phone-lister")).toHaveLength(3);
+    expect(dealt.filter((person) => person.personaSlug === "phone-power")).toHaveLength(2);
+    expect(dealt.filter((person) => person.personaSlug === "desk-planner")).toHaveLength(1);
     await h.close();
   });
 
@@ -378,14 +594,14 @@ describe("authoring config into the database", () => {
     await h.close();
   });
 
-  it("keeps a persona's slug immutable when its display name changes, so agent ids survive", async () => {
+  it("keeps a persona's slug immutable when its display name changes, so participant ids survive", async () => {
     const h = await harness();
     const people = pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas(P))));
     const person = people.items[0]!;
     const renamed = PersonaViewSchema.parse(await json(await put(h.app, routes.persona(P, person.id), { slug: "something-else", spec: { ...person.spec, name: "Casey Renamed" } })));
     expect(renamed.spec.name).toBe("Casey Renamed");
     expect(renamed.slug).toBe("casual-lister");
-    // The id the runner builds agent ids from follows the slug, not the display name.
+    // The id the runner builds participant ids from follows the slug, not the display name.
     expect(renamed.spec.id).toBe("casual-lister");
     const resolved = await resolveProject(h.store);
     expect(resolved.config.population.members[0]?.persona.id).toBe("casual-lister");
@@ -407,111 +623,163 @@ describe("authoring config into the database", () => {
     expect(STARTER_PERSONAS.map((starter) => starter.spec.name)).toEqual(["First-time visitor", "Deadline planner", "Power user", "Sceptical evaluator", "Bargain hunter", "The one who left"]);
   });
 
-  it("adds a starter and counts them into the population", async () => {
+  /**
+   * ADR-0043. Taking a starter used to be one POST that made a persona, a cohort and a population
+   * member behind the reader's back, and that hidden chain is the confusion the redesign exists to
+   * undo. The starters are now offered whole, inside the builder, and saving the builder is the
+   * one way a persona is made — which makes nothing else on the reader's behalf.
+   */
+  it("offers the starters whole inside the builder, and no longer makes rows on the reader's behalf", async () => {
     const h = await harness({ seed: false });
     const starters = pageOf(StarterPersonaViewSchema).parse(await json(await h.app.request(routes.personaStarters(P))));
     expect(starters.items).toHaveLength(STARTER_PERSONAS.length);
-    expect(starters.items.map((s) => s.slug)).toContain("the-one-who-left");
+    const leaver = starters.items.find((s) => s.slug === "the-one-who-left")!;
+    // The whole spec, so choosing one fills the form, and the suggested cohort context beside it.
+    expect(leaver.spec.backstory.length).toBeGreaterThan(0);
+    expect(leaver.spec.goals.length).toBeGreaterThan(0);
+    expect(leaver.context.length).toBeGreaterThan(0);
 
-    const added = PersonaViewSchema.parse(await json(await post(h.app, routes.personaStarters(P), { slug: "first-timer", count: 2 })));
+    // The one-request path is gone: it is not a route any more.
+    expect((await post(h.app, routes.personaStarters(P), { slug: "first-timer", count: 2 })).status).toBe(404);
+
+    const added = await takeStarter(h, "first-timer");
     expect(added.origin).toBe("starter");
-    // Adopting a starter makes ONE cohort of that persona alone, sent at the count asked for.
-    expect(added.cohorts).toBe(1);
-    const population = PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h))));
-    expect(population.members).toHaveLength(1);
-    expect(population.members[0]?.size).toBe(2);
-    expect(population.members[0]?.personas.map((p) => [p.slug, p.count])).toEqual([["first-timer", 2]]);
-    // The cohort arrives with the starter's own shared line, so nobody has to invent one first.
-    expect(population.members[0]?.context).toContain("found this product on your own");
+    // The starter's own shared line is offered to the cohort builder, and nowhere applied.
+    expect(added.suggestedContext).toContain("found this product on your own");
+    expect(added.cohorts).toBe(0);
+    // Nothing was sent anywhere: no cohort, no population, no person.
+    expect(await h.store.listCohorts(P)).toHaveLength(0);
+    expect(await h.store.listPopulations(P)).toHaveLength(0);
+    expect(await h.store.listPeople({ projectId: P, includeArchived: true })).toHaveLength(0);
 
-    // Sending nobody from the cohort leaves the persona and the cohort written down but out of the run.
-    await put(h.app, await populationRoute(h), { members: [] });
-    expect(PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h)))).members).toHaveLength(0);
-    expect(pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas(P)))).items).toHaveLength(1);
+    // An edit makes it the reader's own, and the suggestion goes with the origin.
+    const edited = PersonaViewSchema.parse(await json(await put(h.app, routes.persona(P, added.id), { spec: { ...added.spec, name: "Newcomer" } })));
+    expect(edited.origin).toBe("authored");
+    expect(edited.suggestedContext).toBeNull();
     await h.close();
   });
 
   /**
-   * `PUT /population` replaces the member list. The browser drops a persona from the array when
-   * its stepper reaches zero rather than sending `count: 0` (`screens/setup/People.tsx`), so a
-   * handler that only walked the array left the cohort at its old size and the UI snapped back.
+   * "How this reads to them" works on the draft, in both builder modes, so the preview is of what
+   * the form holds rather than of what was last saved. With no target in the project it renders
+   * against a placeholder product, so a reader building their first persona still sees the shape.
+   */
+  it("previews how a draft persona reads before it is saved, against the one target or a placeholder", async () => {
+    const spec = { name: "Night owl", role: "someone who plans at midnight", backstory: "They tidy the list before bed.", goals: ["keep a list"] };
+
+    const empty = await harness({ seed: false });
+    const blank = PersonaPreviewViewSchema.parse(await json(await post(empty.app, routes.personasPreview(P), { spec })));
+    expect(blank.personaSlug).toBe("night-owl");
+    expect(blank.text).toContain("your product");
+    expect(blank.text).toContain("someone who plans at midnight");
+    // A preview is a preview: nothing was saved by asking.
+    expect(await empty.store.listPersonas(P)).toHaveLength(0);
+    await empty.close();
+
+    const h = await harness();
+    const against = PersonaPreviewViewSchema.parse(await json(await post(h.app, routes.personasPreview(P), { spec })));
+    expect(against.text).toContain("Tasklet");
+    expect(against.text).toContain("projects and tasks");
+    // The saved persona's preview is the same renderer over the stored spec.
+    const persona = (await h.store.listPersonas(P))[0]!;
+    const saved = PersonaPreviewViewSchema.parse(await json(await post(h.app, routes.personaPreview(P, persona.id))));
+    expect(saved.personaSlug).toBe(persona.slug);
+    expect(saved.text).toContain(persona.spec.role);
+    expect(saved.text).toContain("Tasklet");
+    await h.close();
+  });
+
+  /**
+   * `PUT /populations/:pop` replaces the member list. The browser drops a cohort from the array
+   * when its weight reaches zero rather than sending `weight: 0`, so a handler that only walked
+   * the array left the cohort at its old weight and the UI snapped back.
    */
   it("removes a cohort the body omits, and stores the per-cohort visit cap", async () => {
     const h = await harness();
     const seeded = pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas(P)))).items[0]!;
-    const power = PersonaViewSchema.parse(await json(await post(h.app, routes.personaStarters(P), { slug: "power-user", count: 3 })));
+    const power = await takeStarter(h, "power-user");
+    const powerCohort = await makeCohort(h, { name: "Power users", slug: "power-user", context: "You live in this product all day.", mix: [{ personaId: power.id }] });
+    await weigh(h, powerCohort.id, 3);
     expect(PopulationViewSchema.parse(await json(await h.app.request(await populationRoute(h)))).members).toHaveLength(2);
-    const powerCohort = (await h.store.listCohorts(P)).find((cohort) => cohort.mix.some((entry) => entry.personaId === power.id))!;
 
-    // The cap is the cohort's; the size is the population's.
+    // The cap is the cohort's; the weight is the population's; the size is the study's.
     await put(h.app, routes.cohort(P, powerCohort.id), { maxVisits: 6 });
-    const view = PopulationViewSchema.parse(await json(await put(h.app, await populationRoute(h), { members: [{ cohortId: powerCohort.id, size: 3 }] })));
+    const view = PopulationViewSchema.parse(await json(await put(h.app, await populationRoute(h), { members: [{ cohortId: powerCohort.id, weight: 3 }] })));
     expect(view.members.map((m) => m.cohortId)).toEqual([powerCohort.id]);
-    expect(view.members[0]?.size).toBe(3);
+    expect(view.members[0]?.weight).toBe(3);
+    expect(view.members[0]?.share).toBe(1);
     expect(view.members[0]?.maxVisits).toBe(6);
+    await sizeStudy(h, 3);
     expect(await memberSlugs(h)).toEqual([power.slug]);
     // Out of the population, still written down: removing a member never deletes the persona.
     expect(pageOf(PersonaViewSchema).parse(await json(await h.app.request(routes.personas(P)))).items.map((p) => p.slug)).toContain(seeded.slug);
 
     // The cap is not just echoed back: it reaches the config the run is expanded from.
     const resolved = await resolveProject(h.store);
-    expect(resolved.config.population.members.map((m) => m.maxWakes)).toEqual([6]);
+    expect(resolved.config.population.members.map((m) => [m.count, m.maxWakes])).toEqual([[3, 6]]);
     await h.close();
   });
 
   /**
-   * `population.members` decides who is expanded into agents and therefore who spends money, so
-   * a cohort the population does not hold stays out of the resolved config. A project can hold
-   * one: a YAML import rewrites the members and leaves whatever was authored in the browser behind.
+   * `population.members` decides who is expanded into participants and therefore who spends
+   * money, so a cohort the population does not hold stays out of the resolved config. A project
+   * can hold one: a YAML import writes its own population and leaves whatever was authored in the
+   * browser out of it.
    */
   it("expands only the cohorts the population holds, not every cohort in the project", async () => {
     const h = await harness();
     const persona = (await h.store.listPersonas("default"))[0]!;
     await h.store.saveCohort(cohortRow({ id: "coh_orphan", slug: "orphans", name: "Orphans", personaId: persona.id }));
 
-    expect((await cohortsOf(h.store)).map((c) => c.slug)).not.toContain("orphans");
+    expect((await thePopulation(h.store)).members.map((m) => m.cohortId)).not.toContain("coh_orphan");
     const resolved = await resolveProject(h.store);
     expect(resolved.config.population.members.map((m) => m.cohort)).not.toContain("orphans");
-    expect(SetupStatusSchema.parse(await json(await h.app.request(routes.projectSetup(P)))).peopleCount).toBe(1);
+    // ...and nobody is written for it: `counts.people` is person rows, and a cohort no study sends has none.
+    expect(ProjectOverviewViewSchema.parse(await json(await h.app.request(routes.project(P)))).counts.people).toBe(1);
     await h.close();
   });
 
   /**
    * **The bug this stage exists for.** `PUT /projects/:p/populations/:pop` parsed `:pop`, resolved
-   * it, checked it — and then edited a different row, because `setCohortSize` called
-   * `ensurePopulation` internally and that returns the population whose slug is `everyone`. You
-   * could create a second population through the API and never put anything in it: every write
-   * landed on the default, and a simulation on the new one failed with "nobody is in the
-   * population yet". A population is composition and composing one is the only thing it is for.
+   * it, checked it — and then edited a different row, because the member writer resolved a default
+   * population internally and edited that whatever the caller meant. You could create a second
+   * population through the API and never put anything in it, and a study on the new one failed
+   * with "nobody is in the population yet". A population is composition and composing one is the
+   * only thing it is for.
    */
   it("composes the population named in the URL, and leaves every other population alone", async () => {
     const h = await harness();
-    const everyone = await ensurePopulation(h.store, "default");
+    const everyone = await thePopulation(h.store);
     const before = [...everyone.members];
     expect(before.length).toBeGreaterThan(0);
 
     // A cohort that only the new population will hold. POST /cohorts puts it in no population:
-    // a cohort has no size, and the population that sends it says how many.
+    // a cohort has no size, and the study that sends it says how many.
     const persona = (await h.store.listPersonas("default"))[0]!;
-    const extra = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { name: "Weekenders", context: "You plan on Fridays.", mix: [{ personaId: persona.id }] })));
-    expect(extra.usedByPopulations).toEqual([]);
+    const extra = await makeCohort(h, { name: "Weekenders", context: "You plan on Fridays.", mix: [{ personaId: persona.id }] });
+    expect(extra.usedBy).toBe(0);
 
     const made = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Soak cast" })));
     expect(made.members).toHaveLength(0);
+    expect(made.usedBy).toBe(0);
 
-    const composed = PopulationViewSchema.parse(
-      await json(await put(h.app, routes.population_(P, made.id), { members: [{ cohortId: extra.id, size: 2 }] })),
-    );
-    expect(composed.members.map((m) => [m.cohortId, m.size])).toEqual([[extra.id, 2]]);
+    const composed = PopulationViewSchema.parse(await json(await put(h.app, routes.population_(P, made.id), { members: [{ cohortId: extra.id, weight: 2 }] })));
+    expect(composed.members.map((m) => [m.cohortId, m.weight, m.share])).toEqual([[extra.id, 2, 1]]);
 
-    // The default population did NOT move. This is the whole assertion.
+    // The imported population did NOT move. This is the whole assertion.
     expect((await h.store.getPopulation(everyone.id))?.members).toEqual(before);
 
-    // ...and a simulation naming the new population expands exactly what the new one holds.
-    const simulation = await ensureSimulation(h.store);
-    await h.store.saveSimulation({ ...simulation, populationId: made.id, updatedAt: new Date().toISOString() });
-    const resolved = await resolveSimulationConfig(h.store, processConfig, simulation.id);
+    // ...and a study pointed at the new one expands exactly what the new one holds.
+    const study = await ensureSimulation(h.store);
+    const moved = StudySummaryViewSchema.parse(await json(await put(h.app, routes.study(P, study.id), { populationId: made.id, size: 2 })));
+    expect(moved.population.id).toBe(made.id);
+    expect(moved.sends).toBe(2);
+    const resolved = await resolveSimulationConfig(h.store, processConfig, study.id);
     expect(resolved.config.population.members.map((m) => m.cohort)).toEqual([extra.slug]);
+    // The swap re-laned the population it left too: nobody sends the imported cohort now, so its
+    // people are put aside, while the new cohort's two are written.
+    expect(await h.store.listPeople({ cohortId: (await seededCohort(h.store)).id })).toHaveLength(0);
+    expect(await h.store.listPeople({ cohortId: extra.id })).toHaveLength(2);
     await h.close();
   });
 
@@ -524,12 +792,18 @@ describe("authoring config into the database", () => {
   it("takes a shared cohort out of one population without deleting it from the other", async () => {
     const h = await harness();
     const persona = (await h.store.listPersonas("default"))[0]!;
-    const shared = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { name: "Shared", context: "You share a commute.", mix: [{ personaId: persona.id }] })));
+    const shared = await makeCohort(h, { name: "Shared", context: "You share a commute.", mix: [{ personaId: persona.id }] });
 
-    const a = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Cast A" })));
+    // Composed in one request, or filled in afterwards: the same row either way.
+    const a = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Cast A", members: [{ cohortId: shared.id, weight: 1 }] })));
+    expect(a.members.map((m) => m.cohortId)).toEqual([shared.id]);
     const b = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Cast B" })));
-    await put(h.app, routes.population_(P, a.id), { members: [{ cohortId: shared.id, size: 2 }] });
-    await put(h.app, routes.population_(P, b.id), { members: [{ cohortId: shared.id, size: 2 }] });
+    await put(h.app, routes.population_(P, b.id), { members: [{ cohortId: shared.id, weight: 2 }] });
+    // Somebody has to SEND them for people to exist: a study on Cast B at two.
+    const targetId = (await h.store.listTargets(P))[0]!.id;
+    const soak = StudySummaryViewSchema.parse(await json(await post(h.app, routes.studies(P), { name: "Soak", targetId, populationId: b.id, size: 2 })));
+    expect(soak.sends).toBe(2);
+    expect(await h.store.listPeople({ cohortId: shared.id })).toHaveLength(2);
 
     // Empty Cast A: the member list replaces what is there.
     const emptied = await put(h.app, routes.population_(P, a.id), { members: [] });
@@ -537,7 +811,7 @@ describe("authoring config into the database", () => {
 
     // Out of A, still in B, and the people are still there.
     expect((await h.store.getPopulation(a.id))?.members).toEqual([]);
-    expect((await h.store.getPopulation(b.id))?.members).toEqual([{ cohortId: shared.id, size: 2 }]);
+    expect((await h.store.getPopulation(b.id))?.members).toEqual([{ cohortId: shared.id, weight: 2 }]);
     expect(await h.store.getCohort(shared.id)).toBeDefined();
     expect(await h.store.listPeople({ cohortId: shared.id })).toHaveLength(2);
     await h.close();
@@ -551,8 +825,10 @@ describe("authoring config into the database", () => {
   it("refuses to delete a persona two cohorts are built on, and takes neither of them apart", async () => {
     const h = await harness();
     const persona = (await h.store.listPersonas("default"))[0]!;
-    const second = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { name: "Weekend planners", context: "You plan on Fridays.", mix: [{ personaId: persona.id }] })));
-    await resize(h, second.id, 3);
+    const second = await makeCohort(h, { name: "Weekend planners", context: "You plan on Fridays.", mix: [{ personaId: persona.id }] });
+    await weigh(h, second.id, 1);
+    // Two cohorts at equal weight, six people: three each.
+    await sizeStudy(h, 6);
     const drawingOn = async (): Promise<Cohort[]> => (await h.store.listCohorts("default")).filter((cohort) => cohort.mix.some((entry) => entry.personaId === persona.id));
     expect(await drawingOn()).toHaveLength(2);
 
@@ -567,29 +843,55 @@ describe("authoring config into the database", () => {
   });
 
   /**
-   * ADR-0039: a cohort has no people until a population sends it, and setting that number is what
-   * writes them; from then on the roster is materialised on read, not only on a size change.
+   * ADR-0041: a cohort has no people until a study sends it, and setting the study's size is what
+   * writes them. Reading writes nothing — not a cohort, not a population, not the study's own
+   * People page — so a row nobody has materialised is reported as missing rather than invented.
    */
-  it("materialises a cohort's people when a population sizes it and when it is read", async () => {
+  it("writes a cohort's people when a study sizes it, and never on a read", async () => {
     const h = await harness();
     const persona = (await h.store.listPersonas("default"))[0]!;
-    const created = CohortViewSchema.parse(await json(await post(h.app, routes.cohorts(P), { name: "Mobile only", context: "You are on your phone.", mix: [{ personaId: persona.id }] })));
-    expect(created.size).toBe(0);
-    expect(created.generated.seeded).toBe(0);
-    await resize(h, created.id, 4);
-    expect(CohortViewSchema.parse(await json(await h.app.request(routes.cohort(P, created.id)))).generated.seeded).toBe(4);
+    const created = await makeCohort(h, { name: "Mobile only", context: "You are on your phone.", mix: [{ personaId: persona.id }] });
+    expect(created.usedBy).toBe(0);
+    expect(await h.store.listPeople({ cohortId: created.id, includeArchived: true })).toHaveLength(0);
 
-    // A cohort written straight into the store, and sized straight into the population, has no
-    // people at all until somebody looks.
+    // In the population, still nobody: without a study sending it, a population is a recipe.
+    await weigh(h, created.id, 1);
+    expect(await h.store.listPeople({ cohortId: created.id })).toHaveLength(0);
+    h.resetCalls();
+    expect(CohortViewSchema.parse(await json(await h.app.request(routes.cohort(P, created.id)))).usedBy).toBe(1);
+    expect(writesIn(h.calls)).toEqual([]);
+    expect(await h.store.listPeople({ cohortId: created.id })).toHaveLength(0);
+
+    // Two cohorts at 1 : 1 and a study of eight: four each, written by the sizing.
+    await sizeStudy(h, 8);
+    expect(await h.store.listPeople({ cohortId: created.id })).toHaveLength(4);
+
+    // A cohort written straight into the store, and weighed straight into the population, has no
+    // people at all until a WRITER runs — and the study's People page says so rather than
+    // writing them on the way past.
     const bare = cohortRow({ id: newCohortId(), slug: "hand-made", name: "Hand made", personaId: persona.id });
     await h.store.saveCohort(bare);
-    const everyone = await ensurePopulation(h.store);
-    await h.store.savePopulation({ ...everyone, members: [...everyone.members, { cohortId: bare.id, size: 3 }], updatedAt: new Date().toISOString() });
+    const everyone = await thePopulation(h.store);
+    await h.store.savePopulation({ ...everyone, members: [...everyone.members, { cohortId: bare.id, weight: 1 }], updatedAt: new Date().toISOString() });
     expect(await h.store.listPeople({ cohortId: bare.id, includeArchived: true })).toHaveLength(0);
-    const roster = pageOf(PersonViewSchema).parse(await json(await h.app.request(routes.cohortPeople(P, bare.id))));
-    expect(roster.items).toHaveLength(3);
-    expect(new Set(roster.items.map((person) => person.name)).size).toBe(3);
-    expect(CohortViewSchema.parse(await json(await h.app.request(routes.cohort(P, bare.id)))).generated.seeded).toBe(3);
+    h.resetCalls();
+    const unwritten = await peopleOf(h);
+    expect(writesIn(h.calls)).toEqual([]);
+    // Eight over three equal weights is 3, 3, 2 — a tie goes to the earlier member (D2) — so the
+    // hand-made cohort's two are the ones nobody has written.
+    expect(unwritten.sends).toBe(8);
+    expect(unwritten.missing).toBe(2);
+    expect(unwritten.items).toHaveLength(6);
+    expect(unwritten.items.every((person) => person.cohortSlug !== "hand-made")).toBe(true);
+
+    // The next writer fills them: saving the study, even at the same size, materialises its deal.
+    const study = await ensureSimulation(h.store);
+    await put(h.app, routes.study(P, study.id), { size: 8 });
+    const written = await peopleOf(h);
+    expect(written.missing).toBe(0);
+    expect(written.items).toHaveLength(8);
+    expect(written.items.filter((person) => person.cohortSlug === "hand-made").map((person) => person.name)).toHaveLength(2);
+    expect(new Set(written.items.map((person) => person.name)).size).toBe(8);
     await h.close();
   });
 
@@ -602,6 +904,36 @@ describe("authoring config into the database", () => {
     expect(new Set(slugs).size).toBe(slugs.length);
     expect((await h.store.getTarget(first.id))?.slug).toBe("tasklet");
     expect((await h.store.getTarget(second.id))?.slug).toBe("tasklet-2");
+    await h.close();
+  });
+
+  /**
+   * `new` is where every builder lives (`/library/cohorts/new`, `/studies/new`), so a row called
+   * that would be unreachable by the URL that is supposed to open it. Refused on every create.
+   */
+  it("keeps the slug `new` for the builders", async () => {
+    const h = await harness();
+    const persona = (await h.store.listPersonas(P))[0]!;
+    const targetId = (await h.store.listTargets(P))[0]!.id;
+    const population = await thePopulation(h.store);
+    const identity = { strategy: "self-signup" as const, signupTool: "sign_up", tokenPath: "token", emailDomain: "populace.test" };
+    const refusals = await Promise.all([
+      post(h.app, routes.personas(P), { slug: "new", spec: persona.spec }),
+      post(h.app, routes.cohorts(P), { slug: "new", name: "Newcomers", context: "You are new.", mix: [{ personaId: persona.id }] }),
+      post(h.app, routes.populations(P), { slug: "new", name: "Newcomers" }),
+      // A target's slug is derived from its name, and "New" makes exactly the reserved one.
+      post(h.app, routes.targets(P), { name: "New", mcp: [{ name: "default", url: target.mcpUrl }], identity }),
+      post(h.app, routes.studies(P), { slug: "new", name: "Newcomers", targetId, populationId: population.id, size: 1 }),
+    ]);
+    for (const refused of refusals) {
+      expect(refused.status).toBe(400);
+      expect(await reason(refused)).toContain('"new"');
+    }
+    expect(await h.store.listPersonas(P)).toHaveLength(1);
+    expect(await h.store.listCohorts(P)).toHaveLength(1);
+    expect(await h.store.listPopulations(P)).toHaveLength(1);
+    expect(await h.store.listTargets(P)).toHaveLength(1);
+    expect(await h.store.listSimulations({ projectId: P, includeArchived: true })).toHaveLength(1);
     await h.close();
   });
 
@@ -618,12 +950,36 @@ describe("authoring config into the database", () => {
   });
 
   /**
-   * The spending controls have to reach the run. A simulation that overrides nothing must resolve
-   * to the project's settings: its `overrides` block sits between the number a user types and the
-   * ceiling a wake is held to, and a block that parses to a full set of schema defaults overwrites
+   * The project's timing is on the Settings payload because a study builder inherits it. A builder
+   * that cannot read it has to carry defaults of its own, and an invented default that disagrees
+   * with the project's is a form that lies about what saving would do — so what the screen shows
+   * and what a save produces are asserted to be the same numbers here.
+   */
+  it("says what the project's timing is, and a new study that names none of it gets exactly that", async () => {
+    const h = await harness();
+    const settings = SettingsViewSchema.parse(await json(await h.app.request(routes.settings(P))));
+    expect(settings.cadence).toEqual(CadenceSchema.parse({ every: "20ms", jitter: "0s", initialDelay: "0s" }));
+    expect(settings.seed).toBe("populace");
+    expect(settings.maxVisits).toBe(2);
+    // The row calls the cap `maxWakes`; the wire translates the name and nothing else (ADR-0032).
+    expect((await ensureSettings(h.store)).maxWakes).toBe(2);
+    expect(JSON.stringify(settings)).not.toContain("maxWakes");
+
+    const existing = await ensureSimulation(h.store);
+    const study = StudySummaryViewSchema.parse(await json(await post(h.app, routes.studies(P), { name: "Timing", targetId: existing.targetId, populationId: existing.populationId, size: 1 })));
+    expect(study.cadence).toEqual(settings.cadence);
+    expect(study.seed).toBe(settings.seed);
+    expect(study.visitsPerPerson).toBe(settings.maxVisits);
+    await h.close();
+  });
+
+  /**
+   * The spending controls have to reach the run. A study that overrides nothing must resolve to
+   * the project's settings: its `overrides` block sits between the number a user types and the
+   * ceiling a visit is held to, and a block that parses to a full set of schema defaults overwrites
    * every one of those numbers without saying so.
    */
-  it("holds a run to the project's verifier and guardrail settings when the simulation overrides neither", async () => {
+  it("holds a run to the project's verifier and guardrail settings when the study overrides neither", async () => {
     const h = await harness({ seed: false });
     await seedProjectFromConfig(
       h.store,
@@ -639,7 +995,7 @@ describe("authoring config into the database", () => {
     expect(settings.guardrails.dailyUsd).toBe(7);
     expect(settings.verifier.judge).toBe("heuristic");
 
-    // A simulation nobody has overridden anything on overrides nothing.
+    // A study nobody has overridden anything on overrides nothing.
     const simulation = await ensureSimulation(h.store);
     expect(simulation.overrides.guardrails).toEqual({});
     expect(simulation.overrides.verifier).toEqual({});
@@ -664,22 +1020,48 @@ describe("authoring config into the database", () => {
   });
 
   /**
-   * A simulation that does carry overrides — a row written before the fix above, or an authoring
-   * screen somebody adds later — is now allowed to say so, because a limit that Settings cannot
-   * move looks identical to one it can until a screen says which it is.
+   * A study that does carry overrides — a row written before the fix above, or the builder's
+   * Overrides disclosure — is allowed to say so, because a limit that Settings cannot move looks
+   * identical to one it can until a screen says which it is.
    */
-  it("says on the pre-flight which of the project's settings a simulation is not taking", async () => {
+  it("says on the pre-flight which of the project's settings a study is not taking", async () => {
     const h = await harness();
     const simulation = await ensureSimulation(h.store);
-    expect(PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id)))).simulation.overriding).toEqual([]);
+    expect(PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id)))).study.overriding).toEqual([]);
 
     // Exactly the shape a row written before the override schemas were fixed carries.
     await h.store.saveSimulation({ ...simulation, overrides: { ...simulation.overrides, guardrails: { dailyUsd: 4 }, verifier: { judge: "model" } } });
-    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
-    expect(view.simulation.overriding).toEqual(["spending", "verification"]);
+    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id))));
+    expect(view.study.overriding).toEqual(["spending", "verification"]);
     // ...and it is telling the truth: those are the numbers the run is held to.
     const resolved = (await resolveSimulationConfig(h.store, processConfig, simulation.id)).config;
     expect(resolved.guardrails.dailyUsd).toBe(4);
+    await h.close();
+  });
+
+  /**
+   * `overriding` says WHICH blocks a study sets; the summary also carries what they hold, and the
+   * timing and the seed, so the builder's edit mode opens on the saved values rather than on the
+   * project's defaults and sending them back only when they moved. Durations come back as the
+   * row holds them — milliseconds — whatever they were typed as.
+   */
+  it("carries a study's timing, seed and override values on its summary", async () => {
+    const h = await harness();
+    const simulation = await ensureSimulation(h.store);
+    await h.store.saveSimulation({
+      ...simulation,
+      cadence: CadenceSchema.parse({ every: "2m", jitter: "5s", initialDelay: "1s" }),
+      seed: "walnut",
+      overrides: { model: { model: "claude-haiku-4-5", effort: "low" }, guardrails: { perWake: { maxTurns: 12 }, dailyUsd: 4 }, verifier: { judge: "model" } },
+    });
+    const view = StudySummaryViewSchema.parse(await json(await h.app.request(routes.study(P, simulation.id))));
+    expect(view.cadence).toEqual({ every: 120_000, jitter: 5_000, initialDelay: 1_000 });
+    expect(view.seed).toBe("walnut");
+    expect(view.overrides).toEqual({ model: { model: "claude-haiku-4-5", effort: "low" }, guardrails: { perWake: { maxTurns: 12 }, dailyUsd: 4 }, verifier: { judge: "model" } });
+    expect(view.overriding).toEqual(["spending", "verification", "model"]);
+    // The list says the same of every row, not only the one asked for by id.
+    const listed = pageOf(StudySummaryViewSchema).parse(await json(await h.app.request(routes.studies(P))));
+    expect(listed.items.find((s) => s.id === simulation.id)?.seed).toBe("walnut");
     await h.close();
   });
 });
@@ -711,7 +1093,9 @@ describe("what the connect wizard reads off a live target", () => {
     const h = await harness();
     const targets = pageOf(StoredTargetViewSchema).parse(await json(await h.app.request(routes.targets(P))));
     const existing = targets.items[0]!;
-    expect(existing.tools).toEqual({ allow: [], deny: [], destructive: "confirm" });
+    // A fresh target holds back nothing: no globs, and destructive tools go through (ADR-0013
+    // amendment). Narrowing is something the operator does on purpose.
+    expect(existing.tools).toEqual({ allow: [], deny: [], destructive: "allow" });
 
     const saved = StoredTargetViewSchema.parse(
       await json(
@@ -769,7 +1153,7 @@ describe("what the connect wizard reads off a live target", () => {
     const stored = StoredTargetViewSchema.parse(await json(await h.app.request(routes.target_(P, targetId))));
     expect(stored.firstContact?.outcome).toBe("accepted");
     const simulation = await ensureSimulation(h.store);
-    const ok = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    const ok = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id))));
     expect(ok.blockers.join(" ")).not.toContain("First contact");
     expect(ok.target.warnings.join(" ")).not.toContain("Nobody has tried");
 
@@ -780,7 +1164,7 @@ describe("what the connect wizard reads off a live target", () => {
       firstContact: { ...result, outcome: "rejected", summary: "the target refused this account's credential" },
       updatedAt: new Date().toISOString(),
     });
-    const blocked = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    const blocked = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id))));
     expect(blocked.blockers.join(" ")).toContain("refused this account's credential");
     await h.close();
   });
@@ -821,7 +1205,7 @@ describe("what the connect wizard reads off a live target", () => {
 
     // Which puts the warning back on preflight, rather than a tick for a configuration nobody tried.
     const simulation = await ensureSimulation(h.store);
-    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id))));
     expect(view.target.warnings.join(" ")).toContain("Nobody has tried");
     await h.close();
   });
@@ -832,7 +1216,7 @@ describe("what the connect wizard reads off a live target", () => {
     const row = (await h.store.getTarget(simulation.targetId))!;
     await h.store.saveTarget({ ...row, tools: { allow: [], deny: ["upgrade_plan"], destructive: "deny" }, updatedAt: new Date().toISOString() });
 
-    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id))));
     expect(view.target.tools).not.toContain("upgrade_plan");
     expect(view.target.blocked.map((b) => b.name)).toContain("upgrade_plan");
     expect(view.target.blocked.find((b) => b.name === "upgrade_plan")?.who).toBe("everyone");
@@ -843,7 +1227,7 @@ describe("what the connect wizard reads off a live target", () => {
 
   /**
    * A policy that takes away the one tool an account is made with is not a narrowing, it is a dead
-   * configuration: every wake would end auth-failed. It is detectable without touching anything,
+   * configuration: every visit would end auth-failed. It is detectable without touching anything,
    * so preflight says it rather than letting a run discover it.
    */
   it("blocks a run whose target policy takes away the tool people sign up with", async () => {
@@ -852,7 +1236,7 @@ describe("what the connect wizard reads off a live target", () => {
     const row = (await h.store.getTarget(simulation.targetId))!;
     await h.store.saveTarget({ ...row, tools: { allow: ["get_*", "list_*"], deny: [], destructive: "confirm" }, updatedAt: new Date().toISOString() });
 
-    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id))));
     expect(view.blockers.join(" ")).toContain("sign_up");
     expect(view.blockers.join(" ")).toContain("nobody sent here could sign up");
     await h.close();
@@ -870,17 +1254,36 @@ describe("what the connect wizard reads off a live target", () => {
   });
 });
 
+/**
+ * The browser onboarding path with no `populace.yaml` anywhere, walked the way the builders chain
+ * (ADR-0043): connect a target, make a persona from a starter, a cohort of it, a population of
+ * that — and stop short of the study, which is the test's to make at whatever size it wants.
+ */
+const browserProject = async (h: Harness, projectId = P): Promise<{ targetId: string; persona: PersonaView; cohort: CohortView; population: PopulationView }> => {
+  const identity = { strategy: "self-signup" as const, signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", emailDomain: "populace.test" };
+  const theirTarget = StoredTargetViewSchema.parse(await json(await post(h.app, routes.targets(projectId), { name: "Tasklet", mcp: [{ name: "default", url: target.mcpUrl }], identity })));
+  const persona = await takeStarter(h, "first-timer", projectId);
+  // The cohort builder prefills the starter's suggested line; here it is taken as offered.
+  const cohort = await makeCohort(h, { name: "First-timers", context: persona.suggestedContext ?? "You are new here.", mix: [{ personaId: persona.id }] }, projectId);
+  const population = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(projectId), { name: "Everyone", members: [{ cohortId: cohort.id, weight: 1 }] })));
+  return { targetId: theirTarget.id, persona, cohort, population };
+};
+
 describe("starting, steering and watching a run", () => {
   it("refuses to start without an api key, a target or anybody to send", async () => {
     const none = await harness({ seed: false });
     const empty = SetupStatusSchema.parse(await json(await none.app.request(routes.projectSetup(P))));
     expect(empty.ready).toBe(false);
     expect(empty.blockers.join(" ")).toContain("Connect a target");
-    expect(empty.simulationIds).toEqual([]);
-    // Nothing to run: a simulation names the target its runs go to, so there is no simulation to
-    // start until there is a target, and the refusal says so rather than 404ing on a path.
-    expect((await post(none.app, routes.simulations(P), { name: "Trial" })).status).toBe(409);
-    expect((await post(none.app, routes.simulationRuns(P, "sim_nothing"))).status).toBe(404);
+    expect(empty.studyIds).toEqual([]);
+    // Nothing to run: a study names the target its runs go to and the population it sends, so a
+    // study cannot be made until both exist — and the refusal says so and makes nothing, rather
+    // than 404ing on a path or guessing.
+    const refused = await post(none.app, routes.studies(P), { name: "Trial", size: 1 });
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("connect a target");
+    expect(await none.store.listSimulations({ projectId: P, includeArchived: true })).toHaveLength(0);
+    expect((await post(none.app, routes.studyRuns(P, "sim_nothing"))).status).toBe(404);
     await none.close();
 
     const keyless = await harness({ hasApiKey: false });
@@ -892,36 +1295,50 @@ describe("starting, steering and watching a run", () => {
   });
 
   /**
-   * The browser onboarding path, with no `populace.yaml` anywhere: connect a target, pick somebody
-   * to send, press go. `ready` used to be true with no simulation at all, and the go button then
-   * posted to `/simulations//runs` — a 404 at the end of the whole flow.
+   * The browser onboarding path, with no `populace.yaml` anywhere: connect a target, compose who
+   * goes, make a study with a size, press go. `ready` used to be true with no study at all, and
+   * the go button then posted to `/studies//runs` — a 404 at the end of the whole flow.
    */
   it("gives a project set up entirely in the browser something to run", async () => {
     const h = await harness({ seed: false });
-    const identity = { strategy: "self-signup" as const, signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", emailDomain: "populace.test" };
-    await post(h.app, routes.targets(P), { name: "Tasklet", mcp: [{ name: "default", url: target.mcpUrl }], identity });
-    await post(h.app, routes.personaStarters(P), { slug: "first-timer", count: 1 });
+    const { targetId, population } = await browserProject(h);
 
-    // Taking a starter WRITES THE PEOPLE. `counts.people` is the number of person rows, and it is
-    // what the zero state gates the way forward on (SPEC §7.5) — a cohort whose roster is only
-    // materialised when somebody happens to open the cohort's own page left the project reading
-    // "0 people configured" and the one path into a first run with no end.
+    // Everything but the study: what is left IS the study, and it stops the go button. Nobody is
+    // written yet either — a population is a recipe until a study sizes it (ADR-0041).
+    const before = SetupStatusSchema.parse(await json(await h.app.request(routes.projectSetup(P))));
+    expect(before.ready).toBe(false);
+    expect(before.needs.find((need) => need.id === "no-study")?.blocking).toBe(true);
+    expect(before.studyIds).toEqual([]);
+    expect(await h.store.listPeople({ projectId: P })).toHaveLength(0);
+
+    const made = await post(h.app, routes.studies(P), { name: "First look", targetId, populationId: population.id, size: 1, cadence: { every: "20ms", jitter: "0s", initialDelay: "0s" } });
+    expect(made.status).toBe(201);
+    const study = StudySummaryViewSchema.parse(await json(made));
+    expect(study.size).toBe(1);
+    expect(study.sends).toBe(1);
+    expect(study.status).toBe("never-run");
+
+    // Making the study WRITES THE PEOPLE. `counts.people` is the number of person rows, and it is
+    // what the zero state gates the way forward on (SPEC §7.5) — a roster only materialised when
+    // somebody happened to open the right page left the project reading "0 people configured".
     const home = ProjectOverviewViewSchema.parse(await json(await h.app.request(routes.project(P))));
     expect(home.counts.people).toBe(1);
     expect(home.counts.cohorts).toBe(1);
+    expect(home.counts.studies).toBe(1);
+    expect(home.studies.map((s) => s.id)).toEqual([study.id]);
 
     const setup = SetupStatusSchema.parse(await json(await h.app.request(routes.projectSetup(P))));
     expect(setup.ready).toBe(true);
     expect(setup.blockers).toEqual([]);
     // Ready means there is something to run, not merely somewhere to run it.
-    expect(setup.simulationIds.length).toBeGreaterThan(0);
+    expect(setup.studyIds.map((s) => s.id)).toEqual([study.id]);
 
-    const started = await post(h.app, routes.simulationRuns(P, setup.simulationIds[0]!.id));
+    const started = await post(h.app, routes.studyRuns(P, setup.studyIds[0]!.id));
     expect(started.status).toBe(201);
     const runId = ((await json(started)) as { runId: string }).runId;
     await h.jobs.idle();
     await h.runs.pause(runId);
-    expect((await h.store.getRun(runId))?.simulationId).toBe(setup.simulationIds[0]!.id);
+    expect((await h.store.getRun(runId))?.simulationId).toBe(study.id);
     await h.close();
   });
 
@@ -933,9 +1350,8 @@ describe("starting, steering and watching a run", () => {
    */
   it("separates what is left to do from what actually stops an execution", async () => {
     const h = await harness({ seed: false });
-    const identity = { strategy: "self-signup" as const, signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", emailDomain: "populace.test" };
-    await post(h.app, routes.targets(P), { name: "Tasklet", mcp: [{ name: "default", url: target.mcpUrl }], identity });
-    await post(h.app, routes.personaStarters(P), { slug: "first-timer", count: 1 });
+    const { targetId, population } = await browserProject(h);
+    await post(h.app, routes.studies(P), { name: "First look", targetId, populationId: population.id, size: 1 });
 
     const setup = SetupStatusSchema.parse(await json(await h.app.request(routes.projectSetup(P))));
 
@@ -960,25 +1376,70 @@ describe("starting, steering and watching a run", () => {
 
   it("estimates without spending anything, and says which basis it used", async () => {
     const h = await harness();
-    const first = RunEstimateSchema.parse(await json(await post(h.app, await estimateRoute(h))));
+    const first = EstimateViewSchema.parse(await json(await post(h.app, await estimateRoute(h))));
     expect(first.basis).toBe("default");
-    expect(first.agents).toBe(1);
-    expect(first.visits).toBe(2); // one person, maxWakes 2
+    expect(first.people).toBe(1);
+    expect(first.visits).toBe(2); // one person, two visits each
     expect(first.bounded).toBe(true);
     expect(first.expectedUsd).toBeGreaterThan(0);
     expect(first.stops.dailyUsd).toBe(50);
+    expect(first.stops.maxVisitsPerPerson).toBe(2);
     // Nothing was started by asking.
     expect(await h.store.listRuns()).toHaveLength(0);
     expect(await h.store.listWakes({})).toHaveLength(0);
 
     await realRun(h.store);
-    const second = RunEstimateSchema.parse(await json(await post(h.app, await estimateRoute(h))));
+    const second = EstimateViewSchema.parse(await json(await post(h.app, await estimateRoute(h))));
     expect(second.basis).toBe("history");
     expect(second.sampleSize).toBeGreaterThan(0);
     await h.close();
   });
 
-  it("runs a population from the browser and settles the run row when it is done", async () => {
+  /**
+   * The builder asks this on every keystroke, for a study that does not exist yet. It has to be
+   * read-only — a draft that wrote people would leave rows behind for every size the reader tried
+   * on the way to the one they saved — and a size that sends nobody has to be a number, not a
+   * refusal, because a form that shouts on the way to a valid value is a form nobody finishes.
+   */
+  it("prices a study that is not saved yet, and answers nought rather than refusing when it would send nobody", async () => {
+    const h = await harness();
+    const targetId = (await h.store.listTargets(P))[0]!.id;
+    const population = await thePopulation(h.store);
+    const rows = (await h.store.listPeople({ projectId: P, includeArchived: true })).length;
+    h.resetCalls();
+
+    const nobody = EstimateViewSchema.parse(await json(await post(h.app, routes.projectEstimate(P), { targetId, populationId: population.id, size: 0, visitsPerPerson: 2 })));
+    expect(nobody.people).toBe(0);
+    expect(nobody.visits).toBe(0);
+    expect(nobody.expectedUsd).toBe(0);
+    expect(nobody.perCohort).toEqual([]);
+    // The ceilings and the cap are still the real ones: they are what the study would run under.
+    expect(nobody.bounded).toBe(true);
+    expect(nobody.stops.maxVisitsPerPerson).toBe(2);
+    expect(nobody.stops.dailyUsd).toBe(50);
+
+    const six = EstimateViewSchema.parse(await json(await post(h.app, routes.projectEstimate(P), { targetId, populationId: population.id, size: 6, visitsPerPerson: 2 })));
+    expect(six.people).toBe(6);
+    expect(six.visits).toBe(12);
+    expect(six.expectedUsd).toBeGreaterThan(0);
+    expect(six.perCohort.map((row) => [row.cohort, row.people])).toEqual([["casual-lister", 6]]);
+    // Longitudinal is unbounded, whatever the size.
+    const soak = EstimateViewSchema.parse(await json(await post(h.app, routes.projectEstimate(P), { targetId, populationId: population.id, size: 6, visitsPerPerson: null })));
+    expect(soak.bounded).toBe(false);
+    expect(soak.assumedVisitsEach).not.toBeNull();
+
+    // Read-only, all of it: nothing was written for a study that does not exist.
+    expect(writesIn(h.calls)).toEqual([]);
+    expect(await h.store.listPeople({ projectId: P, includeArchived: true })).toHaveLength(rows);
+
+    // A SAVED study at nought answers the same nought, never a 409: the number is the answer.
+    const study = await ensureSimulation(h.store);
+    await h.store.saveSimulation({ ...study, size: 0, updatedAt: new Date().toISOString() });
+    expect(EstimateViewSchema.parse(await json(await post(h.app, routes.studyEstimate(P, study.id)))).people).toBe(0);
+    await h.close();
+  });
+
+  it("runs a study from the browser and settles the run row when it is done", async () => {
     const h = await harness();
     const started = await json(await post(h.app, await runsRoute(h), { label: "from the browser" }));
     const runId = (started as { runId: string }).runId;
@@ -1082,10 +1543,10 @@ describe("starting, steering and watching a run", () => {
 });
 
 /**
- * Executions of a simulation: the lifecycle SPEC §4 describes. Ephemeral is a clean slate and
- * ends on its own; longitudinal accumulates and is paused and picked back up on the same run id.
+ * Executions of a study: the lifecycle SPEC §4 describes. Ephemeral is a clean slate and ends on
+ * its own; longitudinal accumulates and is paused and picked back up on the same run id.
  */
-describe("executions of a simulation", () => {
+describe("executions of a study", () => {
   /** Remembering something is what makes "the second execution starts clean" observable. */
   const remembers: ScriptPolicy = sequence([
     () => ({ calls: [call("remember", { kind: "note", text: "Kept a list in the first execution." })] }),
@@ -1094,13 +1555,13 @@ describe("executions of a simulation", () => {
 
   /**
    * Makes an account on the target, once, on the first visit — which is what gives a sweep
-   * something to find. The credentials come out of the wake context, where the runner suggests
-   * them, exactly as a real agent reads them.
+   * something to find. The credentials come out of the visit context, where the runner suggests
+   * them, exactly as a real participant reads them.
    */
   const signsUp: ScriptPolicy = (ctx: ScriptContext) => {
     const suggested = /email (\S+), display name "([^"]+)", password (\S+)/.exec(ctx.wakeContext);
-    // The runner suggests credentials only when the agent has no account, so this signs up on the
-    // first visit — and again after a sweep took the account away, which is the point.
+    // The runner suggests credentials only when the participant has no account, so this signs up
+    // on the first visit — and again after a sweep took the account away, which is the point.
     if (ctx.turn === 1 && suggested) return { calls: [call("sign_up", { email: suggested[1]!, displayName: suggested[2]!, password: suggested[3]! })] };
     return { calls: [call("done", { summary: "had a look", would_return: true })] };
   };
@@ -1118,7 +1579,7 @@ describe("executions of a simulation", () => {
     return slowed;
   };
 
-  it("runs the same simulation twice as two independent executions, the second one a clean slate", async () => {
+  it("runs the same study twice as two independent executions, the second one a clean slate", async () => {
     const h = await harness({ policy: remembers });
     const first = await startRun(h);
     await h.jobs.idle();
@@ -1128,7 +1589,7 @@ describe("executions of a simulation", () => {
     const carried = await h.store.getMemory(first, before[0]!.id);
     expect(carried?.notes.map((n) => n.text).join(" ")).toContain("Kept a list in the first execution.");
 
-    // Nobody wakes in the second execution until it is inspected: a clean slate is a claim about
+    // Nobody visits in the second execution until it is inspected: a clean slate is a claim about
     // the moment it starts, not about what it does afterwards.
     await slowDown(h.store, "1h");
     const second = await startRun(h);
@@ -1226,7 +1687,7 @@ describe("executions of a simulation", () => {
    * therefore wipes the database out from under the people already in it, and every report they
    * file afterwards is against a state nobody asked for.
    */
-  it("refuses a second execution of a simulation while the first one is still going", async () => {
+  it("refuses a second execution of a study while the first one is still going", async () => {
     const h = await harness();
     await makeLongitudinal(h.store);
     const runId = await startRun(h);
@@ -1241,7 +1702,7 @@ describe("executions of a simulation", () => {
     await h.runs.pause(runId);
     const third = await post(h.app, await runsRoute(h));
     expect(third.status).toBe(201);
-    await h.runs.pause((await json(third) as { runId: string }).runId);
+    await h.runs.pause(((await json(third)) as { runId: string }).runId);
     await h.close();
   });
 
@@ -1297,7 +1758,7 @@ describe("executions of a simulation", () => {
     expect(resumed.lastResumedAt).not.toBeNull();
     expect(await h.store.listRuns()).toHaveLength(1);
 
-    // A drained wake finishes in the background, so wait for the COUNT to move rather than for a
+    // A drained visit finishes in the background, so wait for the COUNT to move rather than for a
     // row to appear: an in-flight visit is a row before it is a visit.
     await waitFor(async () => ((await h.store.listAgents({ runId }))[0]?.wakeCount ?? 0) > atPause[0]!.wakeCount);
     expect((await h.store.listWakes({ runIds: [runId] })).length).toBeGreaterThan(visitsAtPause);
@@ -1308,7 +1769,7 @@ describe("executions of a simulation", () => {
     expect(wakes.map((w) => w.wakeNumber)).toEqual(wakes.map((_w, index) => index + 1));
     expect(agent.wakeCount).toBeGreaterThan(atPause[0]!.wakeCount);
     // Carried, not rewritten: the note from before the pause is still in the document, and the
-    // post-resume visits added to it rather than starting a new one. Every turn of every wake
+    // post-resume visits added to it rather than starting a new one. Every turn of every visit
     // calls `remember`, so "there are notes" would be satisfied by a memory that had been wiped.
     const after = (await h.store.getMemory(runId, agent.id))!.notes;
     expect(after.length).toBeGreaterThan(notesAtPause.length);
@@ -1317,6 +1778,11 @@ describe("executions of a simulation", () => {
     await h.close();
   });
 
+  /**
+   * A change while a longitudinal execution is up reaches it only through "apply", and what it
+   * changed is written on the run's own log per COHORT — with a cohort's lanes summed, since a
+   * resolved member is one (cohort, persona) lane and a cohort mixing two is two rows.
+   */
   it("applies a change to a running longitudinal execution instead of pretending it was never made", async () => {
     const h = await harness();
     await makeLongitudinal(h.store);
@@ -1325,16 +1791,23 @@ describe("executions of a simulation", () => {
     await h.jobs.idle();
     const before = await h.store.getRun(runId);
 
-    // A second cohort, added while the execution is up.
-    const persona = PersonaViewSchema.parse(await json(await post(h.app, routes.personaStarters(P), { slug: "power-user", count: 2 })));
-    expect(persona.cohorts).toBe(1);
+    // A second cohort, added while the execution is up, and the study grown to send it: at 1 : 2
+    // over three people the newcomers get two.
+    const power = await takeStarter(h, "power-user");
+    const powerCohort = await makeCohort(h, { name: "Power users", slug: "power-user", context: "You live in this product all day.", mix: [{ personaId: power.id }] });
+    await weigh(h, powerCohort.id, 2);
+    const study = await ensureSimulation(h.store);
+    const grown = StudySummaryViewSchema.parse(await json(await put(h.app, routes.study(P, study.id), { size: 3 })));
+    expect(grown.sends).toBe(3);
     const updated = await h.runs.applyChanges(runId);
     expect(updated.configSnapshotId).not.toBe(before?.configSnapshotId);
 
     const agents = await h.store.listAgents({ runId });
     expect(agents.filter((a) => a.cohortSlug === "power-user")).toHaveLength(2);
+    expect(agents.filter((a) => a.cohortSlug === "casual-lister")).toHaveLength(1);
     const event = (await h.store.listEvents({ runId })).find((e) => e.type === "run.config");
     expect(JSON.stringify(event?.payload)).toContain("power-user");
+    expect(event?.payload).toMatchObject({ added: ["power-user"], removed: [], resized: [] });
     await h.runs.pause(runId);
     await h.close();
   });
@@ -1387,7 +1860,7 @@ describe("executions of a simulation", () => {
     await h.close();
   });
 
-  it("refuses to carry a run on into a simulation that is not the one it belongs to", async () => {
+  it("refuses to carry a run on into a study that is not the one it belongs to", async () => {
     const h = await harness();
     const mine = await ensureSimulation(h.store);
     const other = await createSimulation(h.store, {
@@ -1396,24 +1869,25 @@ describe("executions of a simulation", () => {
       name: "Another trial",
       populationId: mine.populationId,
       targetId: mine.targetId,
+      size: 1,
       visitsPerPerson: 1,
       cadence: CadenceSchema.parse({ every: "20ms", jitter: "0s" }),
       seed: "populace",
     });
-    const started = (await json(await post(h.app, routes.simulationRuns(P, mine.id)))) as { runId: string };
+    const started = (await json(await post(h.app, routes.studyRuns(P, mine.id)))) as { runId: string };
     const parent = started.runId;
     await h.jobs.idle();
     await h.runs.settled(parent);
     expect((await h.store.getRun(parent))?.simulationId).toBe(mine.id);
 
-    const refused = await post(h.app, routes.simulationRuns(P, other.id), { carryForwardFrom: parent });
+    const refused = await post(h.app, routes.studyRuns(P, other.id), { carryForwardFrom: parent });
     expect(refused.status).toBe(409);
-    expect(await refused.text()).toContain("different simulation");
+    expect(await refused.text()).toContain("different study");
     expect(await h.store.listRuns({ simulationId: other.id })).toHaveLength(0);
     await h.close();
   });
 
-  it("sends two simulations in one project to the two different targets they name", async () => {
+  it("sends two studies in one project to the two different targets they name", async () => {
     const other = await startMockTarget({ quiet: true });
     try {
       const h = await harness();
@@ -1427,13 +1901,14 @@ describe("executions of a simulation", () => {
         name: "Staging trial",
         populationId: first.populationId,
         targetId: second.id,
+        size: 1,
         visitsPerPerson: 1,
         cadence: CadenceSchema.parse({ every: "20ms", jitter: "0s" }),
         seed: "populace",
       });
 
       // The bug this replaces: resolution read `listTargets(projectId)[0]` ordered by updated_at,
-      // so BOTH simulations would have resolved to whichever target was saved last.
+      // so BOTH studies would have resolved to whichever target was saved last.
       const one = await resolveSimulationConfig(h.store, processConfig, first.id);
       const two = await resolveSimulationConfig(h.store, processConfig, staging.id);
       expect(one.config.target.mcp[0]?.url).toBe(target.mcpUrl);
@@ -1454,7 +1929,7 @@ describe("executions of a simulation", () => {
   });
 });
 
-/** Turns the project's simulation into an unbounded soak: no visit cap, so nothing ends it. */
+/** Turns the project's study into an unbounded soak: no visit cap, so nothing ends it. */
 async function makeLongitudinal(store: Store): Promise<Simulation> {
   const simulation = await ensureSimulation(store);
   const soak: Simulation = { ...simulation, mode: "longitudinal", visitsPerPerson: null, updatedAt: new Date().toISOString() };
@@ -1512,15 +1987,15 @@ describe("resetting the target before an execution", () => {
    * user said in so many words that these people must meet a clean product. A refusal that
    * silently stopped working would spend money against a dirty target instead.
    */
-  it("refuses to start a simulation that insists on a fresh target the target cannot give", async () => {
+  it("refuses to start a study that insists on a fresh target the target cannot give", async () => {
     const h = await harness();
     const simulation = await ensureSimulation(h.store);
     await h.store.saveSimulation({ ...simulation, requireFreshTarget: true, updatedAt: new Date().toISOString() });
 
-    const preflight = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    const preflight = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id))));
     expect(preflight.blockers.join(" ")).toContain("insists on a fresh target");
 
-    const refused = await post(h.app, routes.simulationRuns(P, simulation.id));
+    const refused = await post(h.app, routes.studyRuns(P, simulation.id));
     expect(refused.status).toBe(409);
     expect(await refused.text()).toContain("Tasklet");
     // Refused before anything was started, not half-way through one.
@@ -1529,11 +2004,11 @@ describe("resetting the target before an execution", () => {
     // Give the target a reset and the same start goes through.
     const stored = (await h.store.getTarget(simulation.targetId))!;
     await h.store.saveTarget({ ...stored, reset: { kind: "http", url: `${target.url}/admin/reset`, method: "POST", headers: { "x-admin-token": target.adminToken } }, updatedAt: new Date().toISOString() });
-    const started = await post(h.app, routes.simulationRuns(P, simulation.id));
+    const started = await post(h.app, routes.studyRuns(P, simulation.id));
     expect(started.status).toBe(201);
     await h.jobs.idle();
     await h.runs.settled(((await json(started)) as { runId: string }).runId);
-    expect(PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id)))).blockers.join(" ")).not.toContain("insists on a fresh target");
+    expect(PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id)))).blockers.join(" ")).not.toContain("insists on a fresh target");
     await h.close();
   });
 
@@ -1577,6 +2052,26 @@ describe("resetting the target before an execution", () => {
     expect(restored.target.reset.kind === "http" && restored.target.reset.headers["x-admin-token"]).toBe("super-secret");
     await h.close();
   });
+
+  /**
+   * The issue-filing token is a THIRD class of credential and it points at github.com rather than
+   * at the target, so it lives in its own table and no code path puts it in a config at all. This
+   * asserts the clause that would catch one anyway, because "it cannot get here" is three separate
+   * facts rather than a guarantee, and a snapshot is what gets attached to a bug report.
+   *
+   * `Object.assign` rather than a literal, because `PopulaceConfig` has no such field: the shape
+   * being tested is the one the type does not describe.
+   */
+  it("keeps an issue-filing token out of the snapshot even though nothing puts one in a config", async () => {
+    const h = await harness();
+    const { config } = await resolveProject(h.store);
+    const { config: frozen, redacted } = redactConfig(Object.assign(config, { github: { repo: "acme/tasklet", token: "ghp_live_credential" } }));
+    expect(redacted).toContain("github.token");
+    expect(JSON.stringify(frozen)).not.toContain("ghp_live_credential");
+    // The rest of the block survives: only the credential is replaced.
+    expect(JSON.stringify(frozen)).toContain("acme/tasklet");
+    await h.close();
+  });
 });
 
 /**
@@ -1588,11 +2083,9 @@ describe("the people in a cohort", () => {
   it("writes a cohort's people once, and neither a shrink nor a new seed re-casts them", async () => {
     const h = await harness();
     const persona = (await h.store.listPersonas("default"))[0]!;
-    // `ensurePersonaCohort` composes ONE named population, rather than resolving "everyone"
-    // internally and editing it whatever the caller meant.
-    const everyone = await ensurePopulation(h.store, "default");
-    await ensurePersonaCohort(h.store, everyone, persona, 5);
-    const cohort = (await cohortsOf(h.store))[0]!;
+    const cohort = await seededCohort(h.store);
+    // The study's size is the one headcount (ADR-0041), and setting it is what writes the people.
+    await sizeStudy(h, 5);
 
     const roster = await ensureRoster(h.store, cohort.id);
     expect(roster.map((p) => p.ordinal)).toEqual([0, 1, 2, 3, 4]);
@@ -1601,23 +2094,23 @@ describe("the people in a cohort", () => {
     expect(new Set(roster.map((p) => p.name)).size).toBe(5);
     expect(new Set(roster.map((p) => p.handle)).size).toBe(5);
     expect(roster.every((p) => p.generatedBy === "seeded")).toBe(true);
-    // Reading twice writes nothing new: filling a roster is not the same as re-casting it.
+    // Writing twice writes nothing new: filling a roster is not the same as re-casting it.
     expect((await ensureRoster(h.store, cohort.id)).map((p) => p.name)).toEqual(roster.map((p) => p.name));
 
     // Shrinking puts people aside rather than deleting them...
-    await resize(h, cohort.id, 3);
+    await sizeStudy(h, 3);
     expect((await ensureRoster(h.store, cohort.id)).map((p) => p.name)).toEqual(roster.slice(0, 3).map((p) => p.name));
     expect(await h.store.listPeople({ cohortId: cohort.id })).toHaveLength(3);
     expect(await h.store.listPeople({ cohortId: cohort.id, includeArchived: true })).toHaveLength(5);
 
     // ...so growing back meets the same five individuals, not five new ones wearing their ids.
-    await resize(h, cohort.id, 5);
+    await sizeStudy(h, 5);
     expect((await ensureRoster(h.store, cohort.id)).map((p) => p.name)).toEqual(roster.map((p) => p.name));
 
     // The seed decides who the NEXT person is, not who these people are.
     const stored = (await h.store.getCohort(cohort.id))!;
     await h.store.saveCohort({ ...stored, seed: "somebody-else", updatedAt: new Date().toISOString() });
-    await resize(h, cohort.id, 6);
+    await sizeStudy(h, 6);
     const grown = await ensureRoster(h.store, cohort.id);
     expect(grown).toHaveLength(6);
     expect(grown.slice(0, 5).map((p) => p.name)).toEqual(roster.map((p) => p.name));
@@ -1630,7 +2123,39 @@ describe("the people in a cohort", () => {
   });
 
   /**
-   * The whole chain in one test: a model writes a cohort's people, those people are who goes on
+   * ADR-0041: the study is the only headcount, and saving one at a size is what writes the rows.
+   * Growing re-deals nobody — the deal is house-monotone — and shrinking puts the tail aside, so
+   * the first six of eight are the same six people by name.
+   */
+  it("deals the roster when a study is made and again when its size changes, and growing re-deals nobody", async () => {
+    const h = await harness({ seed: false });
+    const { targetId, population, cohort } = await browserProject(h);
+    expect(await h.store.listPeople({ cohortId: cohort.id, includeArchived: true })).toHaveLength(0);
+
+    const made = StudySummaryViewSchema.parse(await json(await post(h.app, routes.studies(P), { name: "First look", targetId, populationId: population.id, size: 6 })));
+    expect(made.sends).toBe(6);
+    const six = await peopleOf(h, made.id);
+    expect(six.items.map((p) => p.ordinal)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(six.missing).toBe(0);
+    expect(await h.store.listPeople({ cohortId: cohort.id })).toHaveLength(6);
+
+    const three = StudySummaryViewSchema.parse(await json(await put(h.app, routes.study(P, made.id), { size: 3 })));
+    expect(three.sends).toBe(3);
+    expect((await peopleOf(h, made.id)).items.map((p) => p.name)).toEqual(six.items.slice(0, 3).map((p) => p.name));
+    // Aside, not away.
+    expect(await h.store.listPeople({ cohortId: cohort.id })).toHaveLength(3);
+    expect(await h.store.listPeople({ cohortId: cohort.id, includeArchived: true })).toHaveLength(6);
+
+    await put(h.app, routes.study(P, made.id), { size: 8 });
+    const eight = await peopleOf(h, made.id);
+    expect(eight.items).toHaveLength(8);
+    expect(eight.items.slice(0, 6).map((p) => p.name)).toEqual(six.items.map((p) => p.name));
+    expect(await h.store.listPeople({ cohortId: cohort.id, includeArchived: true })).toHaveLength(8);
+    await h.close();
+  });
+
+  /**
+   * The whole chain in one test: a model writes a study's people, those people are who goes on
    * the execution, and what they file is keyed at file time and counted back against the cohort
    * they came from.
    *
@@ -1649,17 +2174,16 @@ describe("the people in a cohort", () => {
       return { calls: [call("write_people", { people: ordinals.map((ordinal) => ({ ordinal, name: `Written Person ${ordinal + 1}`, details: `Keeps a list on a commute, slot ${ordinal + 1}.` })) })] };
     };
     const h = await harness({ policy: writes, writesPeople: true });
-    const cohort = (await cohortsOf(h.store))[0]!;
-    await resize(h, cohort.id, 2);
-    await post(h.app, routes.cohortPeople(P, cohort.id));
+    const cohort = await seededCohort(h.store);
+    const study = await sizeStudy(h, 2);
+    await post(h.app, routes.studyPeople(P, study.id));
     await h.jobs.idle();
 
-    const roster = pageOf(PersonViewSchema).parse(await json(await h.app.request(routes.cohortPeople(P, cohort.id))));
+    const roster = await peopleOf(h, study.id);
     expect(roster.items.map((p) => p.name)).toEqual(["Written Person 1", "Written Person 2"]);
     expect(roster.items.every((p) => p.generatedBy === "model")).toBe(true);
 
-    const simulationId = (await ensureSimulation(h.store)).id;
-    const started = (await json(await post(h.app, routes.simulationRuns(P, simulationId)))) as { runId: string };
+    const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
     await h.jobs.idle();
     await h.runs.settled(started.runId);
 
@@ -1677,9 +2201,9 @@ describe("the people in a cohort", () => {
     // tool it reproduced with, and any read model that recomputes the key has to do the same.
     for (const finding of findings) expect(finding.signature).toBe(signatureOf(finding.kind, primaryTool(finding), finding.title));
 
-    // ...and the clusterer reads the cohort and the people straight back out of the agent ids the
-    // roster produced: two of two weekenders hit it, four reports between them.
-    const results = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    // ...and the clusterer reads the cohort and the people straight back out of the participant
+    // ids the roster produced: two of two hit it, four reports between them.
+    const results = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, study.id))));
     const card = results.clusters.find((c) => c.signature === findings[0]!.signature);
     expect(card?.peopleHit).toBe(2);
     expect(card?.peopleTotal).toBe(2);
@@ -1724,7 +2248,7 @@ describe("the store underneath", () => {
 
   it("picks a run whose process died back up rather than calling it failed", async () => {
     const h = await harness();
-    const population = await ensurePopulation(h.store);
+    const population = await thePopulation(h.store);
     await h.store.saveRun({
       id: newRunId(),
       projectId: "default",
@@ -1830,7 +2354,47 @@ describe("the store underneath", () => {
   });
 });
 
-/** One real wake, so the estimator has priced history to read. */
+/**
+ * What an "apply changes" says it changed about who is going (the `run.config` event). A resolved
+ * member is one (cohort, persona) lane, so a cohort mixing two personas is two members sharing a
+ * `cohort`; the counts have to be summed per cohort, or a cohort grown from 3 to 5 is reported
+ * with whichever lane happened to come last — or as no change at all when only the first grew.
+ */
+describe("what an apply says changed", () => {
+  const person = (id: string) => ({ id, name: id, role: "r", backstory: "b", goals: ["g"] });
+  const at = (mobileA: number, mobileB: number, desk = 1): PopulaceConfig =>
+    PopulaceConfigSchema.parse({
+      target: { name: "Tasklet", mcp: [{ url: "http://127.0.0.1:1/" }] },
+      identity: { strategy: "none" },
+      population: {
+        id: "everyone",
+        members: [
+          { cohort: "mobile", cohortName: "Mobile", persona: person("a"), count: mobileA },
+          { cohort: "mobile", cohortName: "Mobile", persona: person("b"), count: mobileB },
+          { cohort: "desk", cohortName: "Desk", persona: person("c"), count: desk },
+        ],
+      },
+    });
+
+  it("sums a cohort's lanes rather than keeping whichever came last", () => {
+    // Both lanes grow: 1 + 2 = 3 becomes 2 + 3 = 5, said once, per cohort.
+    expect(cohortChanges(at(1, 2), at(2, 3))).toEqual({ added: [], removed: [], resized: ["mobile: 3 → 5"] });
+    // Only the FIRST lane grows — the case a last-lane-wins map reported as no change at all.
+    expect(cohortChanges(at(1, 2), at(2, 2)).resized).toEqual(["mobile: 3 → 4"]);
+    // A cohort that neither grew nor shrank is not a change, even if its lanes moved between them.
+    expect(cohortChanges(at(1, 2), at(2, 1)).resized).toEqual([]);
+  });
+
+  it("names a cohort that arrives or leaves, and everything as arriving on a first snapshot", () => {
+    const grown = at(1, 2);
+    expect(cohortChanges(undefined, grown)).toEqual({ added: ["mobile", "desk"], removed: [], resized: [] });
+    const withoutDesk = PopulaceConfigSchema.parse({ ...grown, population: { ...grown.population, members: grown.population.members.filter((m) => m.cohort !== "desk") } });
+    expect(cohortChanges(grown, withoutDesk)).toEqual({ added: [], removed: ["desk"], resized: [] });
+    expect(cohortChanges(withoutDesk, grown)).toEqual({ added: ["desk"], removed: [], resized: [] });
+  });
+});
+
+/** One real visit, so the estimator has priced history to read. */
 async function realRun(store: Store): Promise<void> {
   const cfg = config();
   const runId = newRunId();
@@ -1856,21 +2420,23 @@ async function realRun(store: Store): Promise<void> {
  * merely intended.
  */
 describe("two projects in one store", () => {
-  /** A second project with its own target, its own persona and its own simulation. */
-  const secondProject = async (h: Harness): Promise<{ id: string; simulationId: string; targetId: string }> => {
+  /** A second project with its own target, its own persona, cohort and population, and its own study. */
+  const secondProject = async (h: Harness): Promise<{ id: string; studyId: string; targetId: string }> => {
     const created = await json(await post(h.app, routes.projects, { name: "Other product", description: "somebody else's app" }));
     const id = (created as { id: string }).id;
     await put(h.app, routes.settings(id), { daemon: { tick: "20ms", concurrency: 2 } });
     const identity = { strategy: "self-signup" as const, signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", emailDomain: "populace.test" };
     const theirTarget = StoredTargetViewSchema.parse(await json(await post(h.app, routes.targets(id), { name: "Other target", mcp: [{ name: "default", url: target.mcpUrl }], identity })));
-    await post(h.app, routes.personaStarters(id), { slug: "power-user", count: 1 });
+    const power = await takeStarter(h, "power-user", id);
+    const cohort = await makeCohort(h, { name: "Power users", slug: "power-user", context: "You live in this product all day.", mix: [{ personaId: power.id }] }, id);
+    const population = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(id), { name: "Everyone", members: [{ cohortId: cohort.id, weight: 1 }] })));
     // The cadence is explicit because the DEFAULT jitter is no longer zero: a run started here
     // would otherwise wait up to half a minute for its first visit, which is right for a
     // population and wrong for a test.
-    const simulation = await json(
-      await post(h.app, routes.simulations(id), { name: "Other trial", targetId: theirTarget.id, visitsPerPerson: 1, cadence: { every: "20ms", jitter: "0s" } }),
+    const study = StudySummaryViewSchema.parse(
+      await json(await post(h.app, routes.studies(id), { name: "Other trial", targetId: theirTarget.id, populationId: population.id, size: 1, visitsPerPerson: 1, cadence: { every: "20ms", jitter: "0s" } })),
     );
-    return { id, simulationId: (simulation as { id: string }).id, targetId: theirTarget.id };
+    return { id, studyId: study.id, targetId: theirTarget.id };
   };
 
   it("does not let one project see the other's targets, personas, cohorts or runs", async () => {
@@ -1897,7 +2463,7 @@ describe("two projects in one store", () => {
     const here = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
     await h.jobs.idle();
     await h.runs.settled(here.runId);
-    const there = (await json(await post(h.app, routes.simulationRuns(other.id, other.simulationId)))) as { runId: string };
+    const there = (await json(await post(h.app, routes.studyRuns(other.id, other.studyId)))) as { runId: string };
     await h.jobs.idle();
     await h.runs.settled(there.runId);
 
@@ -1905,25 +2471,31 @@ describe("two projects in one store", () => {
     const others = pageOf(RunSummarySchema).parse(await json(await h.app.request(`${routes.runs}?project=${other.id}`)));
     expect(ours.items.map((r) => r.id)).toEqual([here.runId]);
     expect(others.items.map((r) => r.id)).toEqual([there.runId]);
+    expect(others.items[0]?.studyId).toBe(other.studyId);
     // ...and both are in the unfiltered list, so the filter is a filter and not a broken query.
     expect(pageOf(RunSummarySchema).parse(await json(await h.app.request(routes.runs))).items).toHaveLength(2);
+    // The same filter by study, in the user's word for it.
+    expect(pageOf(RunSummarySchema).parse(await json(await h.app.request(`${routes.runs}?study=${other.studyId}`))).items.map((r) => r.id)).toEqual([there.runId]);
 
     await h.close();
   });
 
   /**
-   * Resolution looks a target up BY ID with no project predicate, so a simulation pointed at
-   * another project's target would run against that project's server — carrying that project's
-   * stored bearer token with it.
+   * Resolution looks a target up BY ID with no project predicate, so a study pointed at another
+   * project's target would run against that project's server — carrying that project's stored
+   * bearer token with it.
    */
-  it("refuses to point a simulation at another project's target or population", async () => {
+  it("refuses to point a study at another project's target or population", async () => {
     const h = await harness();
     const other = await secondProject(h);
     const mine = await ensureSimulation(h.store);
     const theirPopulation = (await h.store.listPopulations(other.id))[0]!;
 
-    expect((await put(h.app, routes.simulation(P, mine.id), { name: "Trial", targetId: other.targetId })).status).toBe(400);
-    expect((await put(h.app, routes.simulation(P, mine.id), { name: "Trial", populationId: theirPopulation.id })).status).toBe(400);
+    expect((await put(h.app, routes.study(P, mine.id), { name: "Trial", targetId: other.targetId })).status).toBe(400);
+    expect((await put(h.app, routes.study(P, mine.id), { name: "Trial", populationId: theirPopulation.id })).status).toBe(400);
+    // ...and a study cannot be MADE that way either, nor priced.
+    expect((await post(h.app, routes.studies(P), { name: "Theirs", targetId: other.targetId, populationId: mine.populationId, size: 1 })).status).toBe(400);
+    expect((await post(h.app, routes.projectEstimate(P), { targetId: mine.targetId, populationId: theirPopulation.id, size: 1 })).status).toBe(400);
     const after = await h.store.getSimulation(mine.id);
     expect(after?.targetId).toBe(mine.targetId);
     expect(after?.populationId).toBe(mine.populationId);
@@ -1936,12 +2508,12 @@ describe("two projects in one store", () => {
     const here = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
     await h.jobs.idle();
     await h.runs.settled(here.runId);
-    const there = (await json(await post(h.app, routes.simulationRuns(other.id, other.simulationId)))) as { runId: string };
+    const there = (await json(await post(h.app, routes.studyRuns(other.id, other.studyId)))) as { runId: string };
     await h.jobs.idle();
     await h.runs.settled(there.runId);
 
-    // The stamp itself: an emitter inside a wake knows its run and nothing else, and the recording
-    // store fills in the project from the run's row.
+    // The stamp itself: an emitter inside a visit knows its run and nothing else, and the
+    // recording store fills in the project from the run's row.
     const stamped = await h.store.listEvents({ runId: here.runId, limit: 500 });
     expect(stamped.length).toBeGreaterThan(0);
     expect(stamped.every((e) => e.projectId === P)).toBe(true);
@@ -1951,15 +2523,24 @@ describe("two projects in one store", () => {
     expect(body).toContain(here.runId);
     expect(body).not.toContain(there.runId);
     expect(body).not.toContain(other.id);
+    // On the wire the study is named by the user's word for it (ADR-0042) — in the column, and
+    // in the `run.started` payload, which is wire content too and used to carry the row's word.
+    expect(body).toContain('"studyId"');
+    expect(body).not.toMatch(/"simulationId"/);
 
-    const mine = pageOf(EventSchema).parse(await json(await h.app.request(`${routes.events}/history?project=${other.id}&after=0`)));
+    const mine = pageOf(EventViewSchema).parse(await json(await h.app.request(`${routes.events}/history?project=${other.id}&after=0`)));
     expect(mine.items.length).toBeGreaterThan(0);
     expect(mine.items.every((e) => e.projectId === other.id)).toBe(true);
     expect(mine.items.every((e) => e.runId === there.runId || e.runId === null)).toBe(true);
+    expect(mine.items.some((e) => e.studyId === other.studyId)).toBe(true);
     expect(JSON.stringify(mine.items)).not.toContain(here.runId);
     // A job is stamped with the project it belongs to, not only with a run: a job that starts one
     // has no run id until the row exists, and an authoring job never has one at all.
     expect(mine.items.some((e) => e.type === "job.updated" && e.runId === null)).toBe(true);
+    // ...and `?study=` narrows the same log to one study's executions.
+    const byStudy = pageOf(EventViewSchema).parse(await json(await h.app.request(`${routes.events}/history?study=${other.studyId}&after=0`)));
+    expect(byStudy.items.length).toBeGreaterThan(0);
+    expect(byStudy.items.every((e) => e.studyId === other.studyId)).toBe(true);
 
     await h.close();
   });
@@ -1971,11 +2552,6 @@ describe("two projects in one store", () => {
  * did not have.
  */
 describe("a screen is a bounded number of queries", () => {
-  const grow = async (h: Harness, size: number): Promise<void> => {
-    const cohort = (await cohortsOf(h.store))[0]!;
-    await resize(h, cohort.id, size);
-  };
-
   const runOnce = async (h: Harness): Promise<string> => {
     const started = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
     await h.jobs.idle();
@@ -1983,30 +2559,45 @@ describe("a screen is a bounded number of queries", () => {
     return started.runId;
   };
 
-  it("serves the results screen and one person's page in the same number of queries for 1 person as for 6", async () => {
+  /**
+   * One study, sized once and run twice, measured on its second execution.
+   *
+   * It is a whole harness per measurement rather than one study grown between the two, and the
+   * reason is that the results screen has exactly one dimension it is allowed to grow along:
+   * `listJobs` takes a single run and has no cross-run form, so reading the report-window
+   * boundaries off the jobs table costs one query per EXECUTION (ADR-0045 §3, and the publisher's
+   * own row load does the same). Sizing one study up between the measurements would have added a
+   * third execution to the second of them, and then the comparison below would be measuring the
+   * study's history rather than its headcount — which is the thing this test says it holds
+   * constant. Two stores, two executions each, and the only difference between them is how many
+   * people went.
+   */
+  const measureScreens = async (size: number): Promise<{ results: number; person: number; heads: number }> => {
     const h = await harness();
-    const simulationId = (await ensureSimulation(h.store)).id;
-
-    const measure = async (runId: string): Promise<{ results: number; person: number; heads: number }> => {
+    try {
+      const studyId = (await sizeStudy(h, size)).id;
+      // Two executions, so the measurement has a sibling execution to look at.
+      await runOnce(h);
+      const runId = await runOnce(h);
       const participants = pageOf(ParticipantSummaryViewSchema).parse(await json(await h.app.request(routes.runParticipants(runId))));
       h.resetCalls();
-      const results = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+      const results = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, studyId))));
       const resultsCalls = h.calls.length;
       h.resetCalls();
       const person = ParticipantDetailViewSchema.parse(await json(await h.app.request(routes.participant(runId, participants.items[0]!.id))));
       expect(person.visits.length).toBeGreaterThan(0);
       expect(results.stats.people).toBe(participants.items.length);
       return { results: resultsCalls, person: h.calls.length, heads: participants.items.length };
-    };
+    } finally {
+      await h.close();
+    }
+  };
 
-    // Two executions before the first measurement, so both measurements have a sibling execution
-    // to look at: what is being held constant here is the HEADCOUNT, not the history.
-    await runOnce(h);
-    const small = await measure(await runOnce(h));
+  it("serves the results screen and one person's page in the same number of queries for 1 person as for 6", async () => {
+    const small = await measureScreens(1);
     expect(small.heads).toBe(1);
 
-    await grow(h, 6);
-    const big = await measure(await runOnce(h));
+    const big = await measureScreens(6);
     expect(big.heads).toBe(6);
 
     // Not "roughly the same": the same. A query per head would make this 6 more, and a query per
@@ -2016,7 +2607,30 @@ describe("a screen is a bounded number of queries", () => {
     // And it is a handful, not an accident of both being enormous.
     expect(big.results).toBeLessThan(40);
     expect(big.person).toBeLessThan(20);
+  });
 
+  /**
+   * The study's People page (ADR-0041): one roster read for the project, one deal per study, and
+   * never a query per person — sixty people cost exactly what one does.
+   */
+  it("serves a study's people in the same number of queries for 1 person as for 60", async () => {
+    const h = await harness();
+    const measure = async (size: number): Promise<number> => {
+      const study = await sizeStudy(h, size);
+      h.resetCalls();
+      const view = await peopleOf(h, study.id);
+      expect(view.items).toHaveLength(size);
+      expect(view.missing).toBe(0);
+      expect(view.sends).toBe(size);
+      // Deal order is ordinal order within the one lane, and nobody is named twice.
+      expect(view.items.map((p) => p.ordinal)).toEqual(view.items.map((_p, index) => index));
+      expect(new Set(view.items.map((p) => p.name)).size).toBe(size);
+      return h.calls.length;
+    };
+    const one = await measure(1);
+    const sixty = await measure(60);
+    expect(sixty).toBe(one);
+    expect(sixty).toBeLessThan(20);
     await h.close();
   });
 });
@@ -2025,12 +2639,10 @@ describe("a screen is a bounded number of queries", () => {
  * SPEC §7.1: the top three levels never name a person. It is enforced by the payload shapes, so
  * breaking the rule takes a new request rather than a new line of JSX.
  */
-describe("the project and simulation screens name nobody", () => {
+describe("the project and study screens name nobody", () => {
   it("carries counts, clusters and cohorts — and not one person's name", async () => {
     const h = await harness({ policy: complains });
-    const simulationId = (await ensureSimulation(h.store)).id;
-    const cohort = (await cohortsOf(h.store))[0]!;
-    await resize(h, cohort.id, 3);
+    const studyId = (await sizeStudy(h, 3)).id;
     const started = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
     await h.jobs.idle();
     await h.runs.settled(started.runId);
@@ -2042,11 +2654,11 @@ describe("the project and simulation screens name nobody", () => {
     const overviewBody = await (await h.app.request(routes.project(P))).text();
     const overview = ProjectOverviewViewSchema.parse(JSON.parse(overviewBody));
     expect(overview.counts.people).toBe(3);
-    expect(overview.simulations.map((s) => s.id)).toContain(simulationId);
+    expect(overview.studies.map((s) => s.id)).toContain(studyId);
     for (const name of names) expect(overviewBody).not.toContain(name);
 
-    const resultsBody = await (await h.app.request(routes.simulationResults(P, simulationId))).text();
-    const results = SimulationResultsViewSchema.parse(JSON.parse(resultsBody));
+    const resultsBody = await (await h.app.request(routes.studyResults(P, studyId))).text();
+    const results = StudyResultsViewSchema.parse(JSON.parse(resultsBody));
     expect(results.clusters.length).toBeGreaterThan(0);
     expect(results.cohortBreakdown.map((c) => c.cohortSlug)).toEqual(["casual-lister"]);
     expect(results.stats.people).toBe(3);
@@ -2055,14 +2667,14 @@ describe("the project and simulation screens name nobody", () => {
 
     // One level further in, on the finding itself, the names appear — as the authors of quotes.
     const signature = results.clusters[0]!.signature;
-    const detail = ClusterDetailViewSchema.parse(await json(await h.app.request(routes.simulationCluster(P, simulationId, signature))));
+    const detail = ClusterDetailViewSchema.parse(await json(await h.app.request(routes.studyCluster(P, studyId, signature))));
     expect(detail.quotes.length).toBeGreaterThan(0);
     expect(names).toContain(detail.quotes[0]!.name);
     expect(detail.peopleHit.length).toBeGreaterThan(0);
 
     /**
      * And the context a reader outside populace needs to act on it. The fix prompt
-     * (`packages/web/src/screens/fix-prompt.ts`) is pasted into a coding agent that is looking at
+     * (`packages/fix-prompt`) is pasted into a coding agent that is looking at
      * the PRODUCT's source and has never heard of this store, so the product's own name and words,
      * the endpoint the calls went to, and what the people making them had been told they were
      * doing all have to cross the wire with the evidence.
@@ -2080,10 +2692,135 @@ describe("the project and simulation screens name nobody", () => {
 });
 
 /**
- * The authoring surfaces the route table adds: the library is a set of rows a user edits, and
- * preflight is the screen that answers "I just set this up — did I set it up right?" without
- * spending anything.
+ * "N still coming back" is a claim about the EXECUTION as much as about the person, and the
+ * participant row cannot carry it on its own.
+ *
+ * Nothing rewrites a participant's `status` when its execution stops: pausing drains the daemon and
+ * leaves every row `active`, and `listDueAgents` selects `status = 'active'`, so those rows will
+ * never be woken again whatever the cadence says. Read off the rows alone, the cohort roll-up had
+ * the dashboard say people were still coming back to a study that stopped days ago — the same class
+ * of false claim `report-windows.ts` fixed in `ProblemReach.stillActive`, on the screen path.
  */
+describe("who is still coming back", () => {
+  it("stops claiming returners once the execution has stopped", async () => {
+    const h = await harness({ policy: complains });
+    // Longitudinal, so nothing but the pause can stop anybody: an ephemeral run retires its people
+    // at the visit cap, and then `active` is false for the ordinary reason and proves nothing.
+    const study = await makeLongitudinal(h.store);
+    const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
+    await waitFor(async () => (await h.store.listWakes({ runIds: [started.runId] })).filter((w) => w.status !== "running").length >= 1);
+
+    const live = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, study.id))));
+    expect(live.cohortBreakdown).toHaveLength(1);
+    expect(live.cohortBreakdown[0]!.people).toBe(1);
+    expect(live.cohortBreakdown[0]!.stillActive).toBe(1);
+
+    const paused = await h.runs.pause(started.runId);
+    expect(paused?.status).toBe("paused");
+    // The fact the count used to be read off, untouched by the pause. This is the assertion that
+    // makes the next one mean something: the row still says `active`, and the answer is nought
+    // anyway, because nobody is woken while a paused execution sits there.
+    expect((await h.store.listAgents({ runId: started.runId }))[0]?.status).toBe("active");
+
+    const after = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, study.id))));
+    expect(after.cohortBreakdown[0]!.people).toBe(1);
+    expect(after.cohortBreakdown[0]!.stillActive).toBe(0);
+    // And on the execution's own cohort roll-up, which is the other reader of the same arithmetic.
+    expect((await new ProjectReadModel(h.store).runCohorts(started.runId))[0]!.stillActive).toBe(0);
+    await h.close();
+  });
+});
+
+/**
+ * One problem, one finding — because populace writes about the same problem TWICE in the same
+ * place: the issue body is written from the detail, and a repeat comment from the card.
+ *
+ * `cardOf` reads its verdict off the clustering's representative, which `pickRepresentative` sorts
+ * on verdict score first. `reportedIn` has no cluster to ask and takes the reporting execution's
+ * first report of the key instead. Two reports in the same words carry the same signature, so both
+ * are candidates — and with a verdict on the later one the card said `confirmed` while the detail's
+ * replay was empty. Two different re-check outcomes for one problem, in one repository.
+ */
+describe("one problem, one finding", () => {
+  it("does not let the card and the detail describe two different reports of it", async () => {
+    const h = await harness({ policy: complains });
+    const study = await ensureSimulation(h.store);
+    const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(started.runId);
+
+    // Two visits, one report each, in the same words — so ONE signature covers both and neither is
+    // distinguishable from the other by key.
+    const filings = await h.store.listFindings({ runIds: [started.runId] });
+    expect(filings).toHaveLength(2);
+    const [first, second] = filings;
+    expect(first!.signature).toBe(second!.signature);
+
+    // The digest's write, and the only one it takes. A confirmed verdict outranks an unverified
+    // sibling, so the LATER report is now the clustering's representative while the earlier one is
+    // still the reporting execution's first report of the key.
+    await h.store.saveVerification(second!.id, { verdict: "confirmed", reason: "replayed and repeated", judge: "heuristic", replay: [], verifiedAt: new Date().toISOString(), costUsd: 0 });
+
+    const results = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, study.id))));
+    expect(results.clusters).toHaveLength(1);
+    const card = results.clusters[0]!;
+    expect(card.verdict).toBe("confirmed");
+
+    const detail = ClusterDetailViewSchema.parse(await json(await h.app.request(routes.studyCluster(P, study.id, card.signature))));
+    expect(detail.representative.id).toBe(second!.id);
+    expect(detail.replay?.verdict).toBe("confirmed");
+    expect(detail.verdict).toBe(card.verdict);
+    expect(detail.reproduction).toEqual(second!.reproduction);
+
+    // And through the path that actually publishes both sentences, off the one context it loads.
+    const publishable = await new ProjectReadModel(h.store).publishable(study, await currentWindow(h.store, study));
+    expect(publishable).toHaveLength(1);
+    // `PublishableCluster.detail` is nullable for the caller that has to invent a candidate for a
+    // signature nothing in the study reported; a problem `publishable()` itself returned always
+    // has one, so the assertion is that it does rather than an optional chain that would pass
+    // silently if it were ever null.
+    const filable = publishable[0]!.detail;
+    expect(filable).not.toBeNull();
+    expect(filable!.representative.id).toBe(second!.id);
+    expect(filable!.replay?.verdict).toBe(publishable[0]!.card.verdict);
+    await h.close();
+  });
+});
+
+/**
+ * ADR-0032 and ADR-0042: the wire speaks the user's words. The rows are `Simulation`s and `Agent`s
+ * with `wake`s, dealt across `lane`s, and every store method still says so — and not one of those
+ * words reaches a screen-sized answer, in a path, a field, a query parameter or a sentence.
+ */
+describe("the wire speaks the user's words", () => {
+  it("says study, people and visits on every screen-sized answer, and never the rows' own words", async () => {
+    const h = await harness();
+    const study = await ensureSimulation(h.store);
+    const targetId = (await h.store.listTargets(P))[0]!.id;
+    const population = await thePopulation(h.store);
+
+    const bodies: Record<string, Response> = {
+      overview: await h.app.request(routes.project(P)),
+      studies: await h.app.request(routes.studies(P)),
+      setup: await h.app.request(routes.projectSetup(P)),
+      preflight: await h.app.request(routes.studyPreflight(P, study.id)),
+      studyEstimate: await post(h.app, routes.studyEstimate(P, study.id)),
+      draftEstimate: await post(h.app, routes.projectEstimate(P), { targetId, populationId: population.id, size: 4, visitsPerPerson: 2 }),
+      people: await h.app.request(routes.studyPeople(P, study.id)),
+    };
+    for (const [name, res] of Object.entries(bodies)) {
+      expect(res.status, name).toBeLessThan(400);
+      const text = await res.clone().text();
+      expect(text, `${name} says one of the rows' own words: ${text.match(ROWS_OWN_WORDS)?.[0] ?? ""}`).not.toMatch(ROWS_OWN_WORDS);
+    }
+    // ...and they are the study-shaped answers, not merely quiet ones.
+    expect(pageOf(StudySummaryViewSchema).parse(await bodies.studies!.json()).items.map((s) => s.id)).toEqual([study.id]);
+    expect(PreflightViewSchema.parse(await bodies.preflight!.json()).study.size).toBe(1);
+    expect(EstimateViewSchema.parse(await bodies.draftEstimate!.json()).people).toBe(4);
+    await h.close();
+  });
+});
+
 /**
  * SPEC §4.3: what a problem DID between executions. "I shipped a fix; did it work?" is answered by
  * a signature being present and then absent, so an absence has to be something the screen shows.
@@ -2092,14 +2829,14 @@ describe("what a problem did between executions", () => {
   it("shows a signature the latest execution did not report as fixed, and as regressed when it comes back", async () => {
     let filing = true;
     const h = await harness({ policy: (ctx: ScriptContext) => (filing ? complains(ctx) : { calls: [call("done", { summary: "all clear", would_return: true })] }) });
-    const simulationId = (await ensureSimulation(h.store)).id;
+    const studyId = (await ensureSimulation(h.store)).id;
     const runOnce = async (): Promise<string> => {
-      const started = (await json(await post(h.app, routes.simulationRuns(P, simulationId)))) as { runId: string };
+      const started = (await json(await post(h.app, routes.studyRuns(P, studyId)))) as { runId: string };
       await h.jobs.idle();
       await h.runs.settled(started.runId);
       return started.runId;
     };
-    const cardIn = async (signature: string) => SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId)))).clusters.find((c) => c.signature === signature);
+    const cardIn = async (signature: string) => StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, studyId)))).clusters.find((c) => c.signature === signature);
 
     const first = await runOnce();
     const reported = await h.store.listFindings({ runIds: [first] });
@@ -2116,7 +2853,7 @@ describe("what a problem did between executions", () => {
     expect(fixed?.reports).toBe(0);
     expect(fixed?.seenIn).toEqual([1]);
     // ...and it is still something you can open: a fix with no evidence behind it is a rumour.
-    const gone = ClusterDetailViewSchema.parse(await json(await h.app.request(routes.simulationCluster(P, simulationId, signature))));
+    const gone = ClusterDetailViewSchema.parse(await json(await h.app.request(routes.studyCluster(P, studyId, signature))));
     expect(gone.quotes.length).toBeGreaterThan(0);
     expect(gone.history.map((entry) => entry.reports)).toEqual([2, 0]);
 
@@ -2127,11 +2864,11 @@ describe("what a problem did between executions", () => {
     expect(back?.seenIn).toEqual([1, 3]);
 
     /**
-     * Agent ids are deterministic within a simulation, so the cross-execution sets the history is
+     * Participant ids are deterministic within a study, so the cross-execution sets the history is
      * built from match every execution's participants. A person's row here is about THIS
      * execution: two reports, not the four they filed across executions 1 and 3.
      */
-    const detail = ClusterDetailViewSchema.parse(await json(await h.app.request(routes.simulationCluster(P, simulationId, signature))));
+    const detail = ClusterDetailViewSchema.parse(await json(await h.app.request(routes.studyCluster(P, studyId, signature))));
     expect(detail.peopleHit).toHaveLength(1);
     expect(detail.peopleHit[0]?.runId).toBe(third);
     expect(detail.peopleHit[0]?.findings).toBe(2);
@@ -2141,13 +2878,775 @@ describe("what a problem did between executions", () => {
 });
 
 /**
- * ADR-0039 end to end: a cohort is a shared condition and a mix, the population says how many,
- * the size is apportioned per lane, growing re-deals nobody, and what is set on a person by hand
- * reaches the prompt after what the cohort shares.
+ * A study's report windows, exactly as the thing that files issues computes them: the rows off the
+ * store and none of the arithmetic repeated here (`report-windows.ts` owns it).
+ */
+async function windowsOf(store: Store, simulation: Simulation): Promise<ReportWindow[]> {
+  const runs = (await store.listRuns({ simulationId: simulation.id })).sort((a, b) => a.seq - b.seq);
+  const runIds = runs.map((run) => run.id);
+  const [wakes, findings, jobs] = await Promise.all([
+    runIds.length === 0 ? Promise.resolve<Wake[]>([]) : store.listWakes({ runIds }),
+    runIds.length === 0 ? Promise.resolve<Finding[]>([]) : store.listFindings({ runIds }),
+    Promise.all(runs.map((run) => store.listJobs({ runId: run.id }))).then((lists) => lists.flat()),
+  ]);
+  return reportWindows({ runs, wakes, findings, jobs });
+}
+
+/** The window a publish reports on: the newest one anybody visited, as the publisher picks it. */
+async function currentWindow(store: Store, simulation: Simulation): Promise<ReportWindow | undefined> {
+  const windows = await windowsOf(store, simulation);
+  return [...windows].reverse().find((window) => window.visited) ?? windows.at(-1);
+}
+
+/**
+ * A cycle that closed a window. A succeeded `issues.cycle` job with an end time is the only thing
+ * that closes one, and it closes it where that job ended — so the boundary goes a millisecond PAST
+ * the visit it is meant to come after, which keeps the reports of that visit on the near side of it
+ * rather than on the hair's-breadth wrong side.
+ */
+async function closeWindow(store: Store, runId: string, afterEndedAt: string, id: string): Promise<void> {
+  const at = new Date(Date.parse(afterEndedAt) + 1).toISOString();
+  await store.saveJob({
+    id,
+    kind: "issues.cycle",
+    status: "succeeded",
+    projectId: P,
+    runId,
+    costUsd: 0,
+    progress: { done: 1, total: 1, label: "" },
+    error: null,
+    createdAt: at,
+    startedAt: at,
+    endedAt: at,
+  });
+}
+
+/**
+ * The dedupe design's one load-bearing claim: a problem populace has already filed still says so
+ * after the representative signature has moved under it.
+ *
+ * That is not a hypothetical. `pickRepresentative` sorts on verdict score FIRST, and the digest
+ * writes verdicts after the run — so a cluster's `signature` can point at a different member
+ * inside one execution with nobody having reworded anything. A card that looked its own filing up
+ * by that key would say "not filed" in exactly the case the ledger exists for, and the next press
+ * of the button would open a second issue for a problem already being read in the first.
+ */
+describe("a problem that has already been filed", () => {
+  /** Two reports of one problem, worded differently enough to carry different signatures. */
+  const twoWordings: ScriptPolicy = (ctx: ScriptContext) => {
+    if (ctx.turn === 1) return { calls: [call("list_tasks", {})] };
+    if (ctx.turn > 2) return { calls: [call("done", { summary: "had a look", would_return: true })] };
+    return {
+      calls: [
+        call("file_finding", {
+          kind: "bug",
+          // The same kind and the same tool, and title token sets that overlap two thirds — well
+          // over the clusterer's 0.3 floor, so these are one cluster with two signatures in it.
+          title: ctx.metadata.wakeNumber === 1 ? "list_tasks paging repeats a row" : "list_tasks paging repeats a row on page two",
+          description: "The second page repeats the last row of the first.",
+          expected: "Each task appears once.",
+          observed: "One task appeared twice.",
+          severity: "high",
+          confidence: 0.9,
+          tool: "list_tasks",
+          evidence_calls: [ctx.lastResults[0]?.ref ?? ""],
+        }),
+      ],
+    };
+  };
+
+  it("still reports its issue after a verdict moves the cluster's representative", async () => {
+    const h = await harness({ policy: twoWordings });
+    const study = await ensureSimulation(h.store);
+    const studyId = study.id;
+    const started = (await json(await post(h.app, routes.studyRuns(P, studyId)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(started.runId);
+
+    const filings = (await h.store.listFindings({ runIds: [started.runId] })).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const [first, second] = filings;
+    expect(filings).toHaveLength(2);
+    expect(first!.signature).not.toBe(second!.signature);
+
+    // The ledger as it stands the moment the FIRST wording has gone out as an issue: one row
+    // holding the signatures that cluster held then, which is not the set it holds now.
+    const at = new Date().toISOString();
+    await h.store.saveFiledIssue({
+      projectId: P,
+      provider: "github",
+      repo: "acme/tasklet",
+      number: 41,
+      url: "https://github.com/acme/tasklet/issues/41",
+      title: "list_tasks paging repeats a row",
+      signatures: [first!.signature],
+      seenIn: [{ studyId, runId: started.runId, seq: 1, window: 1, at }],
+      // Nothing has been announced on this issue: the row is the ledger as it stood the moment the
+      // issue went out, and the gone-quiet notice is written by a later report cycle, not by filing.
+      quietNotices: [],
+      supersededBy: null,
+      filedAt: at,
+      updatedAt: at,
+    });
+
+    const theCluster = async () => {
+      const results = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, studyId))));
+      expect(results.clusters).toHaveLength(1);
+      return results.clusters[0]!;
+    };
+
+    // Before the digest: both members are unverified, so the tie falls to the earlier one and the
+    // cluster presents under the signature the issue was filed against.
+    const before = await theCluster();
+    expect(before.signature).toBe(first!.signature);
+    expect(before.filedIssue?.number).toBe(41);
+
+    // The digest's write, and the only one it takes: a confirmed verdict outranks an unverified
+    // sibling, so the SECOND wording is now the representative.
+    await h.store.saveVerification(second!.id, { verdict: "confirmed", reason: "replayed and repeated", judge: "heuristic", replay: [], verifiedAt: new Date().toISOString(), costUsd: 0 });
+
+    const after = await theCluster();
+    expect(after.signature).toBe(second!.signature);
+    expect(after.signature).not.toBe(before.signature);
+    // The key moved and the answer did not. This is the assertion the whole design rests on: the
+    // match is over the cluster's MEMBER signatures, so the row filed under the first wording is
+    // still found through it.
+    expect(after.filedIssue?.number).toBe(41);
+    expect(after.filedIssue?.repo).toBe("acme/tasklet");
+
+    // And what the thing that files issues reads: the member set, not the representative, plus no
+    // reason to pass this over.
+    const publishable = await new ProjectReadModel(h.store).publishable(study, await currentWindow(h.store, study));
+    expect(publishable).toHaveLength(1);
+    expect([...publishable[0]!.signatures].sort()).toEqual([first!.signature, second!.signature].sort());
+    expect(publishable[0]!.skip).toBe(null);
+    await h.close();
+  });
+
+  /**
+   * The other half of the same argument, and the one that decides what populace FILES rather than
+   * what a screen shows: a human's `wont-fix` is matched on the cluster's member signatures too.
+   *
+   * Matched on the representative, a digest writing a verdict moves the key out from under the
+   * judgement — and populace files an issue for a problem somebody has already declined, which is
+   * the single most expensive thing this feature can get wrong.
+   */
+  it("keeps a wont-fix applying after a verdict has moved the cluster's representative", async () => {
+    const h = await harness({ policy: twoWordings });
+    const study = await ensureSimulation(h.store);
+    const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(started.runId);
+
+    const filings = (await h.store.listFindings({ runIds: [started.runId] })).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const [first, second] = filings;
+    expect(filings).toHaveLength(2);
+    expect(first!.signature).not.toBe(second!.signature);
+
+    const theResults = async () => StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, study.id))));
+
+    // Declined under the wording the problem presented as at the time, which is the only wording
+    // anybody could have clicked.
+    await put(h.app, routes.triage(P), { signature: first!.signature, state: "wont-fix", note: "by design" });
+    const before = await theResults();
+    expect(before.known.map((c) => c.signature)).toEqual([first!.signature]);
+    expect(before.clusters).toHaveLength(0);
+
+    // The digest's write, and the only one it takes: a confirmed verdict outranks an unverified
+    // sibling, so the SECOND wording is now the representative.
+    await h.store.saveVerification(second!.id, { verdict: "confirmed", reason: "replayed and repeated", judge: "heuristic", replay: [], verifiedAt: new Date().toISOString(), costUsd: 0 });
+
+    const after = await theResults();
+    expect(after.known.map((c) => c.signature)).toEqual([second!.signature]);
+    // The key moved and the judgement did not: still below the fold, still carrying the row it was
+    // declined under, and NOT back at the top of the screen as though nobody had ever looked.
+    expect(after.known[0]?.triage?.state).toBe("wont-fix");
+    expect(after.known[0]?.triage?.signature).toBe(first!.signature);
+    expect(after.clusters).toHaveLength(0);
+
+    const publishable = await new ProjectReadModel(h.store).publishable(study, await currentWindow(h.store, study));
+    expect(publishable).toHaveLength(1);
+    expect(publishable[0]!.card.triage?.state).toBe("wont-fix");
+    expect(publishable[0]!.skip).toBe("settled");
+    await h.close();
+  });
+
+  /**
+   * ADR-0028's hard line, carried in the data rather than in a string. An absence is never a fix,
+   * so the card for a problem this window did not report says `inLatest: false` and the selection
+   * passes it over — on both the results screen and the two-execution comparison, whose `fixed`
+   * array is nothing but absences.
+   */
+  it("is never selected for filing when the window did not report it", async () => {
+    let filing = true;
+    const h = await harness({ policy: (ctx: ScriptContext) => (filing ? complains(ctx) : { calls: [call("done", { summary: "all clear", would_return: true })] }) });
+    const study = await ensureSimulation(h.store);
+    const runOnce = async (): Promise<string> => {
+      const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
+      await h.jobs.idle();
+      await h.runs.settled(started.runId);
+      return started.runId;
+    };
+
+    const first = await runOnce();
+    const reported = (await new ProjectReadModel(h.store).publishable(study, await currentWindow(h.store, study)))[0];
+    expect(reported?.card.inLatest).toBe(true);
+    expect(reported?.skip).toBe(null);
+
+    filing = false;
+    const second = await runOnce();
+    const gone = (await new ProjectReadModel(h.store).publishable(study, await currentWindow(h.store, study)))[0];
+    expect(gone?.card.inLatest).toBe(false);
+    expect(gone?.skip).toBe("absent");
+
+    // The comparison's `fixed` array is the same absences, and says so in the same field — its
+    // NUMBERS are still the first execution's, which is what the screen is for.
+    const compared = ExecutionCompareViewSchema.parse(await json(await h.app.request(`${routes.studyCompare(P, study.id)}?a=${first}&b=${second}`)));
+    expect(compared.fixed).toHaveLength(1);
+    expect(compared.fixed[0]?.inLatest).toBe(false);
+    expect(compared.fixed[0]?.state).toBe("fixed");
+    expect(compared.fixed[0]?.reports).toBeGreaterThan(0);
+    await h.close();
+  });
+
+  /**
+   * The same hard line inside ONE execution, which is the case the whole design is built around.
+   *
+   * A longitudinal study has exactly one execution for its whole life, so an execution-scoped
+   * answer to "was this reported in the latest?" is yes for every problem the run has EVER
+   * reported, and the absence above never fires. What populace then does is file a problem that
+   * went quiet three cycles ago as a brand new issue — and comment "gone quiet" a cycle later on
+   * the issue it opened itself. The state machine the comments speak is window-scoped
+   * (`report-windows.ts`), so the candidates must be too.
+   */
+  it("passes over a problem an earlier window reported and this window did not, inside one execution", async () => {
+    // Files once, on the first visit, and is quiet ever after: the offline way of saying a problem
+    // stopped happening without anybody shipping a new execution.
+    const complainsOnce: ScriptPolicy = (ctx: ScriptContext) =>
+      ctx.metadata.wakeNumber === 1 ? complains(ctx) : { calls: [call("done", { summary: "nothing to report", would_return: true })] };
+    const h = await harness({ policy: complainsOnce });
+    const study = await makeLongitudinal(h.store);
+    const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
+    const done = async (): Promise<Wake[]> => (await h.store.listWakes({ runIds: [started.runId] })).filter((w) => w.status !== "running" && w.endedAt !== null);
+    await waitFor(async () => (await done()).length >= 4);
+    await h.runs.pause(started.runId);
+
+    const visits = (await done()).sort((a, b) => a.wakeNumber - b.wakeNumber);
+    const reported = await h.store.listFindings({ runIds: [started.runId] });
+    expect(reported).toHaveLength(1);
+    expect(reported[0]!.wakeId).toBe(visits[0]!.id);
+    // ONE execution, for the whole life of the study. That is what makes this the main case and
+    // not a corner: there is no later execution for an absence to show up in.
+    expect(await h.store.listRuns({ simulationId: study.id })).toHaveLength(1);
+
+    // Two cycles reported, so the execution is three windows: the report is in the first and
+    // nobody has said anything about it since.
+    await closeWindow(h.store, started.runId, visits[0]!.endedAt!, "cycle-1");
+    await closeWindow(h.store, started.runId, visits[1]!.endedAt!, "cycle-2");
+    const windows = await windowsOf(h.store, study);
+    expect(windows).toHaveLength(3);
+    expect(windows[0]!.findings).toHaveLength(1);
+    expect(windows[2]!.findings).toHaveLength(0);
+    // Visited, so its silence is evidence rather than an empty stretch nobody was in.
+    expect(windows[2]!.visited).toBe(true);
+
+    const model = new ProjectReadModel(h.store);
+    const inFirst = (await model.publishable(study, windows[0]))[0];
+    expect(inFirst?.card.inLatest).toBe(true);
+    expect(inFirst?.card.reports).toBe(1);
+    expect(inFirst?.card.peopleHit).toBe(1);
+    expect(inFirst?.skip).toBe(null);
+
+    // The same problem, the same execution, two cycles later: an absence, passed over, and its
+    // numbers zeroed — nobody hit it in THIS window, and a count that belonged to another stretch
+    // of time would be a false claim in the issue it went into.
+    const inThird = (await model.publishable(study, windows[2]))[0];
+    expect(inThird?.card.signature).toBe(inFirst?.card.signature);
+    expect(inThird?.card.inLatest).toBe(false);
+    expect(inThird?.card.reports).toBe(0);
+    expect(inThird?.card.peopleHit).toBe(0);
+    expect(inThird?.skip).toBe("absent");
+    // And it is still something you can open: the detail comes back with the evidence that it was
+    // ever there, which is what a comment on the issue is written from.
+    expect(inThird?.detail?.quotes.length).toBeGreaterThan(0);
+    await h.close();
+  });
+
+  /**
+   * Finding 3: the publisher needs a real `ClusterDetailView` per problem — it is what the fix
+   * prompt is written from — and asking for them one `cluster()` call at a time is the N-times
+   * full recompute this read model exists to avoid.
+   */
+  it("builds every problem's detail from one load of the study, not one load per problem", async () => {
+    /** Three problems in one visit, on three different tools, so they are three clusters. */
+    const threeProblems: ScriptPolicy = (ctx: ScriptContext) => {
+      if (ctx.turn === 1) return { calls: [call("list_tasks", {})] };
+      if (ctx.turn > 2) return { calls: [call("done", { summary: "had a look", would_return: true })] };
+      const evidence = [ctx.lastResults[0]?.ref ?? ""];
+      const problem = (tool: string, title: string): ReturnType<typeof call> =>
+        call("file_finding", {
+          kind: "bug",
+          title,
+          description: "What happened is not what the product promises.",
+          expected: "It does what it says.",
+          observed: "It did something else.",
+          severity: "high",
+          confidence: 0.9,
+          tool,
+          evidence_calls: evidence,
+        });
+      return {
+        calls: [
+          problem("list_tasks", "list_tasks pages badly"),
+          problem("search_tasks", "search_tasks ignores capital letters"),
+          problem("update_task", "update_task quietly drops a due date"),
+        ],
+      };
+    };
+
+    const h = await harness({ policy: threeProblems });
+    const study = await ensureSimulation(h.store);
+    const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(started.runId);
+    // Three problems on each of the study's two visits, which is six reports and still three
+    // problems: the same wording twice is one cluster.
+    expect(await h.store.listFindings({ runIds: [started.runId] })).toHaveLength(6);
+
+    const window = await currentWindow(h.store, study);
+    h.resetCalls();
+    const problems = await new ProjectReadModel(h.store).publishable(study, window);
+    const calls = [...h.calls];
+
+    expect(problems).toHaveLength(3);
+    for (const problem of problems) {
+      expect(problem.detail).not.toBeNull();
+      // The real view and not a partial, parsed against the same schema the route serves.
+      const detail = ClusterDetailViewSchema.parse(problem.detail);
+      expect(detail.signature).toBe(problem.card.signature);
+      expect(detail.representative.signature).toBe(problem.card.signature);
+      expect(detail.quotes.length).toBeGreaterThan(0);
+      expect(detail.peopleHit.length).toBeGreaterThan(0);
+      expect(detail.product.name).toBe("Tasklet");
+    }
+
+    // One load of the study, whatever the number of problems. A `cluster()` call per problem is
+    // three of every one of these, and the accounts are read once per EXECUTION rather than once
+    // per problem for the same reason.
+    expect(calls.filter((name) => name === "listRuns")).toHaveLength(1);
+    expect(calls.filter((name) => name === "listFindings")).toHaveLength(1);
+    expect(calls.filter((name) => name === "listWakes")).toHaveLength(1);
+    expect(calls.filter((name) => name === "listAgents")).toHaveLength(1);
+    expect(calls.filter((name) => name === "listIdentitiesByTag")).toHaveLength(1);
+    // A handful, not three handfuls.
+    expect(calls.length).toBeLessThan(15);
+    await h.close();
+  });
+});
+
+/**
+ * ADR-0045 on the SCREEN, which is the half of that record that had not actually shipped.
+ *
+ * The state machine reads report windows, and the results screen was still reading executions — so
+ * for a longitudinal study, whose whole life is one execution (ADR-0030), `inLatest` was true for
+ * every problem the run had ever reported, every card said `new` for ever, and the two rows of
+ * `stateOfCluster`'s longitudinal branch that say "gone quiet" and "back" were dead code with the
+ * right words already written in them (`packages/web/src/format.ts`).
+ *
+ * It had a second consequence, which is the one that reaches somebody's repository: `publishable()`
+ * is window-scoped and refuses an absence, so a screen scoped to the execution offered the bulk
+ * dialog problems the server then silently passed over.
+ *
+ * Both halves are asserted below, and the ephemeral case is asserted to be unchanged rather than
+ * assumed to be: one window per execution is what it had, and the code path is shared rather than
+ * replaced.
+ */
+describe("a problem's life across report windows", () => {
+  /**
+   * The two states the longitudinal branch of `stateOfCluster` has a row of its OWN for: `fixed`
+   * renders as the badge "gone quiet" with "not reported since <ago>", `regressed` as "back" with
+   * "reported again <ago>". `new` has a row too and `open` falls to the default, so those two were
+   * always reachable; these are the pair that were not. The words cannot be asserted here — the
+   * server does not depend on the web — so the state they are chosen by is.
+   */
+  const OWN_ROW = ["fixed", "regressed"];
+
+  /** Complains on the given visits and has nothing to report on any other. */
+  const complainsOn = (visits: readonly number[]): ScriptPolicy => (ctx: ScriptContext) =>
+    visits.includes(ctx.metadata.wakeNumber) ? complains(ctx) : { calls: [call("done", { summary: "nothing to report", would_return: true })] };
+
+  /** Every finished visit of one execution, in the order they were made. */
+  const visitsOf = async (h: Harness, runId: string): Promise<Wake[]> =>
+    (await h.store.listWakes({ runIds: [runId] })).filter((w) => w.status !== "running" && w.endedAt !== null).sort((a, b) => a.wakeNumber - b.wakeNumber);
+
+  /**
+   * One longitudinal execution, left to run until it has made `visits` visits and filed `reports`,
+   * then paused so the rows stop moving under the assertions.
+   */
+  const soakUntil = async (h: Harness, study: Simulation, visits: number, reports: number): Promise<string> => {
+    const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
+    await waitFor(async () => (await visitsOf(h, started.runId)).length >= visits && (await h.store.listFindings({ runIds: [started.runId] })).length >= reports);
+    await h.runs.pause(started.runId);
+    // ONE execution, for the whole life of the study. That is what makes this the main case and
+    // not a corner: there is no later execution for an absence to turn up in.
+    expect(await h.store.listRuns({ simulationId: study.id })).toHaveLength(1);
+    return started.runId;
+  };
+
+  const cardsOn = async (h: Harness, study: Simulation): Promise<ClusterCardView[]> =>
+    StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, study.id)))).clusters;
+
+  /**
+   * The test that would have caught it. A problem reported in window 1 and in no window since is
+   * an absence on the screen — "gone quiet" — where before this it read `new` for ever, in a
+   * longitudinal study that had been running for as long as anybody left it running.
+   */
+  it("says a problem the newest report window did not report has gone quiet, inside one execution", async () => {
+    const h = await harness({ policy: complainsOn([1]) });
+    const study = await makeLongitudinal(h.store);
+    const runId = await soakUntil(h, study, 3, 1);
+    const visits = await visitsOf(h, runId);
+
+    // Two cycles reported, so the execution is three windows: the report is in the first and
+    // nobody has said anything about it in the two since.
+    await closeWindow(h.store, runId, visits[0]!.endedAt!, "cycle-1");
+    await closeWindow(h.store, runId, visits[1]!.endedAt!, "cycle-2");
+    const windows = await windowsOf(h.store, study);
+    expect(windows).toHaveLength(3);
+    expect(windows[0]!.findings).toHaveLength(1);
+    expect(windows.at(-1)!.findings).toHaveLength(0);
+    // Visited, so its silence is evidence rather than a stretch of time nobody was in.
+    expect(windows.at(-1)!.visited).toBe(true);
+
+    const cards = await cardsOn(h, study);
+    expect(cards).toHaveLength(1);
+    const card = cards[0]!;
+    // "gone quiet", said as an absence and never as a repair. Read off the window and not the
+    // execution: the execution DID report this, and read off it the badge said `new`.
+    expect(card.state).toBe("fixed");
+    expect(OWN_ROW).toContain(card.state);
+    expect(card.inLatest).toBe(false);
+    // Every number on the card belongs to the window the sentence is about. Nobody hit it in this
+    // window, so the incidence is zeroes and the roster is still there under them.
+    expect(card.reports).toBe(0);
+    expect(card.peopleHit).toBe(0);
+    expect(card.peopleTotal).toBeGreaterThan(0);
+    // ...and it is still something you can open: an absence with no evidence behind it is a rumour.
+    const detail = ClusterDetailViewSchema.parse(await json(await h.app.request(routes.studyCluster(P, study.id, card.signature))));
+    expect(detail.quotes.length).toBeGreaterThan(0);
+
+    // The half that reaches a repository: the screen and the publisher now answer the same
+    // question off the same window, so the dialog cannot offer a problem the server passes over.
+    const publishable = await new ProjectReadModel(h.store).publishable(study, await currentWindow(h.store, study));
+    expect(publishable.map((p) => p.card.signature)).toEqual([card.signature]);
+    expect(publishable[0]!.skip).toBe("absent");
+    await h.close();
+  });
+
+  /**
+   * The other live row: reported, quiet for two windows, reported again. `regressed` is about
+   * populace's own observation sequence and nothing else — it says the problem came back, never
+   * that a fix came undone (ADR-0044 §8).
+   */
+  it("says a problem a later report window reported again is back, inside one execution", async () => {
+    const h = await harness({ policy: complainsOn([1, 4]) });
+    const study = await makeLongitudinal(h.store);
+    const runId = await soakUntil(h, study, 4, 2);
+    const visits = await visitsOf(h, runId);
+
+    // Three cycles, so four windows: reported in the first, quiet in the two after it, reported
+    // again in the last. Present, gone, back — the shape that is actually informative.
+    await closeWindow(h.store, runId, visits[0]!.endedAt!, "cycle-1");
+    await closeWindow(h.store, runId, visits[1]!.endedAt!, "cycle-2");
+    await closeWindow(h.store, runId, visits[2]!.endedAt!, "cycle-3");
+    const windows = await windowsOf(h.store, study);
+    expect(windows.map((w) => w.findings.length)).toEqual([1, 0, 0, 1]);
+    expect(windows.every((w) => w.visited)).toBe(true);
+
+    const cards = await cardsOn(h, study);
+    expect(cards).toHaveLength(1);
+    const card = cards[0]!;
+    expect(card.state).toBe("regressed");
+    expect(OWN_ROW).toContain(card.state);
+    expect(card.inLatest).toBe(true);
+    // The newest window's own report, and not the two the execution holds.
+    expect(card.reports).toBe(1);
+    // Windows 1 and 4 by their ordinal across the study, which is what orders the sequence — and
+    // under the field whose name says "window", because the study has had ONE execution and there
+    // is no execution 4 for a screen to name.
+    expect(card.seenInWindows).toEqual([1, 4]);
+    expect(card.seenIn).toEqual([1]);
+
+    // And it is filable: a problem being reported again is the case a comment is for.
+    const publishable = await new ProjectReadModel(h.store).publishable(study, await currentWindow(h.store, study));
+    expect(publishable.map((p) => p.card.signature)).toEqual([card.signature]);
+    expect(publishable[0]!.skip).toBe(null);
+    await h.close();
+  });
+
+  /**
+   * The two scopes, side by side, on one card.
+   *
+   * Scoping the state machine to report windows (ADR-0045) changed what `seenIn` held without
+   * changing its name or its promise, and the results screen read it as it always had: three
+   * window ordinals became "reported in 3 executions" for a study that has had one execution,
+   * and a window ordinal became "first reported in execution 4" for a study whose only execution
+   * is number 1. Every number populace shows has to be true of the scope of its own sentence, so
+   * the card now carries both scopes under two names, and this is the test that says which is
+   * which.
+   */
+  it("counts a longitudinal study's windows and its one execution under separate names", async () => {
+    const h = await harness({ policy: complainsOn([1, 2, 3]) });
+    const study = await makeLongitudinal(h.store);
+    const runId = await soakUntil(h, study, 3, 3);
+    const visits = await visitsOf(h, runId);
+
+    // Two cycles closed, so one execution is three windows — and the problem was reported in all
+    // three of them.
+    await closeWindow(h.store, runId, visits[0]!.endedAt!, "cycle-1");
+    await closeWindow(h.store, runId, visits[1]!.endedAt!, "cycle-2");
+    const windows = await windowsOf(h.store, study);
+    expect(windows).toHaveLength(3);
+    expect(windows.map((w) => w.findings.length)).toEqual([1, 1, 1]);
+    expect(windows.map((w) => w.ordinal)).toEqual([1, 2, 3]);
+    // One execution, which is the whole reason the two scopes can disagree at all.
+    expect(new Set(windows.map((w) => w.seq))).toEqual(new Set([1]));
+
+    const cards = await cardsOn(h, study);
+    expect(cards).toHaveLength(1);
+    const card = cards[0]!;
+    expect(card.state).toBe("open");
+    // Three windows reported it...
+    expect(card.seenInWindows).toEqual([1, 2, 3]);
+    // ...inside one execution, and `seenIn` promises executions. There is no execution 2 or 3 in
+    // this study, and a screen that counted off this list would invent two.
+    expect(card.seenIn).toEqual([1]);
+    expect(card.seenIn.length).toBeLessThan(card.seenInWindows?.length ?? 0);
+    await h.close();
+  });
+
+  /**
+   * The ephemeral case, asserted rather than assumed. Its windows ARE its execution boundaries —
+   * one window per execution, no cycle in sight — so the states below are the values this screen
+   * produced before report windows existed, written out literally so that a change to them shows
+   * up as a failure here rather than as a different badge on somebody's screen.
+   */
+  it("gives an ephemeral study one window per execution, and the states it had before", async () => {
+    let filing = true;
+    const h = await harness({ policy: (ctx: ScriptContext) => (filing ? complains(ctx) : { calls: [call("done", { summary: "all clear", would_return: true })] }) });
+    const study = await ensureSimulation(h.store);
+    const runOnce = async (): Promise<string> => {
+      const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
+      await h.jobs.idle();
+      await h.runs.settled(started.runId);
+      return started.runId;
+    };
+
+    await runOnce();
+    const first = await cardsOn(h, study);
+    expect(first).toHaveLength(1);
+    const signature = first[0]!.signature;
+    expect(first[0]!.state).toBe("new");
+    expect(first[0]!.inLatest).toBe(true);
+    expect(first[0]!.reports).toBe(2); // one per visit
+    expect(first[0]!.seenIn).toEqual([1]);
+
+    filing = false;
+    await runOnce();
+    const gone = (await cardsOn(h, study)).find((c) => c.signature === signature);
+    expect(gone?.state).toBe("fixed");
+    expect(gone?.inLatest).toBe(false);
+    expect(gone?.reports).toBe(0);
+    expect(gone?.peopleHit).toBe(0);
+    expect(gone?.seenIn).toEqual([1]);
+
+    filing = true;
+    await runOnce();
+    const back = (await cardsOn(h, study)).find((c) => c.signature === signature);
+    expect(back?.state).toBe("regressed");
+    expect(back?.inLatest).toBe(true);
+    expect(back?.reports).toBe(2);
+    expect(back?.seenIn).toEqual([1, 3]);
+    // And here the two scopes agree entry for entry, which is what licenses a row to say "reported
+    // in 2 executions" on an ephemeral screen and is the case a longitudinal study is not.
+    expect(back?.seenInWindows).toEqual([1, 3]);
+
+    // And the reason those are unchanged: three executions are three windows, each of them its
+    // execution's first and only cycle, so the window ordinal the arithmetic reads and the `seq` a
+    // reader is shown are the same number.
+    const windows = await windowsOf(h.store, study);
+    expect(windows).toHaveLength(3);
+    expect(windows.map((w) => w.cycle)).toEqual([1, 1, 1]);
+    expect(windows.map((w) => w.ordinal)).toEqual([1, 2, 3]);
+    expect(windows.map((w) => w.seq)).toEqual([1, 2, 3]);
+    await h.close();
+  });
+});
+
+/**
+ * THE FRACTION, which is the one defect class this round is about: a number counted over one scope
+ * printed under a sentence describing another.
+ *
+ * Nearly every incidence number populace shows is half of a fraction — "3 of 12 people hit this" —
+ * and the two halves used to be counted over different stretches of time. `cardOf` took the
+ * numerator off the report WINDOW's clustering and the denominator off the evidence EXECUTION's
+ * roster, and `detailOf` then built the page's own people and quotes off the execution again while
+ * spreading the window-scoped card over the top of them. Those are not the same unit at all
+ * (ADR-0045): an ephemeral study on defaults has one window per execution and everybody dealt to it
+ * went, which is why this survived, but a LONGITUDINAL study has exactly one execution for its
+ * whole life (ADR-0030) and a report cycle is an hour of that life.
+ *
+ * It lands hardest where a reader acts on it. The bulk-file dialog prints the card's fraction and
+ * the issue it then files prints the publisher's, which `publish-issues.ts`'s `thisCycle` has always
+ * counted over the window — so one press produced two different proportions for one problem, one of
+ * them on somebody's repository.
+ */
+describe("a card's fraction and the page behind it", () => {
+  /** Walks away on the first visit and never comes back inside this run. */
+  const walksAway: ScriptPolicy = () => ({
+    calls: [call("give_up", { title: "Not for me", reason: "Too fiddly for a grocery list.", would_return: false, severity: "medium", evidence_calls: [] })],
+  });
+
+  /**
+   * One longitudinal execution whose newest report window saw FEWER people than its roster holds,
+   * which is the only shape in which the two scopes can be told apart at all.
+   *
+   * Two people are dealt. The second walks away on their first visit — `give_up` retires them and
+   * `listDueAgents` only ever selects an active person, so nobody who quit comes back inside one run
+   * — while the first keeps visiting and keeps reporting the same problem. Two cycle boundaries are
+   * then drawn after the quitter's only visit, so the execution's roster still holds two people and
+   * the newest window holds one.
+   */
+  const splitScopes = async (): Promise<{
+    h: Harness;
+    study: Simulation;
+    runId: string;
+    roster: Awaited<ReturnType<Store["listAgents"]>>;
+    stayed: string;
+    newest: ReportWindow;
+  }> => {
+    // `complains` files the same problem in the same words on every visit, so the stayer's reports
+    // are one cluster with one member signature and many reports spread across the windows.
+    const h = await harness({ policy: (ctx: ScriptContext) => (ctx.metadata.agentId.endsWith("#2") ? walksAway(ctx) : complains(ctx)) });
+    await sizeStudy(h, 2);
+    const study = await makeLongitudinal(h.store);
+    const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
+    const runId = started.runId;
+    const finished = async (): Promise<Wake[]> => (await h.store.listWakes({ runIds: [runId] })).filter((w) => w.status !== "running" && w.endedAt !== null).sort((a, b) => a.wakeNumber - b.wakeNumber);
+    const quitterVisits = async (): Promise<Wake[]> => (await finished()).filter((w) => w.agentId.endsWith("#2"));
+    const stayerVisits = async (): Promise<Wake[]> => (await finished()).filter((w) => !w.agentId.endsWith("#2"));
+    // Six visits from the one who stayed, so there is room for a boundary after the quitter's visit
+    // and another after that, with visits and reports left over on the far side of both.
+    await waitFor(async () => (await quitterVisits()).length >= 1 && (await stayerVisits()).length >= 6);
+    await h.runs.pause(runId);
+
+    const quit = (await quitterVisits())[0]!;
+    const stayed = await stayerVisits();
+    // The boundaries go after the quitter's only visit, so that visit sits in the first window and
+    // the two after it are the stayer's alone. A visit that spanned a boundary would be a visitor of
+    // both windows, which `reportWindows` is explicit about and which would defeat the point.
+    const after = stayed.findIndex((visit) => Date.parse(visit.endedAt!) > Date.parse(quit.endedAt!));
+    expect(after).toBeGreaterThanOrEqual(0);
+    expect(stayed.length).toBeGreaterThan(after + 2);
+    await closeWindow(h.store, runId, stayed[after]!.endedAt!, "cycle-1");
+    await closeWindow(h.store, runId, stayed[after + 1]!.endedAt!, "cycle-2");
+
+    const windows = await windowsOf(h.store, study);
+    expect(windows).toHaveLength(3);
+    const newest = (await currentWindow(h.store, study))!;
+    expect(newest.ordinal).toBe(3);
+    const roster = await h.store.listAgents({ runId });
+    // The two scopes, genuinely apart: two people on the execution's roster, one in the window.
+    expect(roster).toHaveLength(2);
+    expect(newest.visitors).toEqual([stayed[0]!.agentId]);
+    expect(newest.findings.length).toBeGreaterThan(0);
+    return { h, study, runId, roster, stayed: stayed[0]!.agentId, newest };
+  };
+
+  /** The card for the problem the stayer keeps reporting, as the results screen serves it. */
+  const theCard = async (h: Harness, study: Simulation): Promise<ClusterCardView> => {
+    const results = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, study.id))));
+    const card = results.clusters.find((candidate) => candidate.kind === "bug" && candidate.inLatest);
+    expect(card).toBeDefined();
+    return card!;
+  };
+
+  /**
+   * Finding 1. The card printed `peopleHit` over `peopleTotal` with the top half counted over the
+   * window and the bottom half over the execution — and that fraction is the one in the bulk-file
+   * dialog a reader presses, where it then contradicted the fraction the filed issue carried.
+   */
+  it("counts both halves of a card's fraction over the window the card is about", async () => {
+    const { h, study, roster, newest } = await splitScopes();
+    const card = await theCard(h, study);
+
+    // Internally consistent: one person in the window, and that person hit it.
+    expect(card.peopleHit).toBe(1);
+    expect(card.peopleTotal).toBe(1);
+    // ...and not the execution's roster, which is the number it used to print under the window's
+    // numerator. "1 of 2" was a proportion that was true of nothing.
+    expect(card.peopleTotal).not.toBe(roster.length);
+    // The bar under the card is the same fraction drawn, so it is the same two scopes.
+    expect(card.cohorts.map((cohort) => ({ hit: cohort.hit, total: cohort.total }))).toEqual([{ hit: 1, total: 1 }]);
+
+    // And it is the publisher's fraction. Derived here exactly as `publish-issues.ts`'s `thisCycle`
+    // derives the one that goes into the issue body — the window's own visitors, counted as PEOPLE
+    // so the unit matches the numerator, plus anybody who reported it because a fraction whose top
+    // half is bigger than its bottom half is the one shape nobody would believe.
+    const went = new Set(newest.visitors.map((agentId) => personIdOfAgentId(agentId)));
+    for (const finding of newest.findings) went.add(personIdOfAgentId(finding.agentId));
+    expect(card.peopleTotal).toBe(went.size);
+
+    // The screen and the publisher are the same two numbers, which is the point: the dialog and the
+    // issue cannot print different proportions for one problem.
+    const publishable = await new ProjectReadModel(h.store).publishable(study, newest);
+    const filable = publishable.find((problem) => problem.card.signature === card.signature);
+    expect(filable?.card.peopleHit).toBe(card.peopleHit);
+    expect(filable?.card.peopleTotal).toBe(card.peopleTotal);
+    await h.close();
+  });
+
+  /**
+   * Finding 2. The detail page spread the window-scoped card and then built its quotes, its people
+   * and its missed people off the reporting EXECUTION — so one page showed two scopes, and the
+   * unlabelled number was the odd one out. `PeopleWhoHit.tsx` adds `peopleHit` and `peopleMissed`
+   * for "N of M who went ran into this" and the fix prompt's `reachLines` does the same for the
+   * sentence that goes into a GitHub issue, so both of those sentences were about a stretch of time
+   * the card above them was not.
+   */
+  it("counts a detail page's people and quotes over the same window as its card", async () => {
+    const { h, study, runId, newest } = await splitScopes();
+    const card = await theCard(h, study);
+    const detail = ClusterDetailViewSchema.parse(await json(await h.app.request(routes.studyCluster(P, study.id, card.signature))));
+
+    // One page, one scope: the people and the reports under the card are the card's own numbers.
+    expect(detail.quotes).toHaveLength(card.reports);
+    expect(detail.peopleHit).toHaveLength(card.peopleHit);
+    // The page's own fraction — the one the lattice is drawn from and the one the issue body prints
+    // — is the card's fraction and not a second answer to the same question.
+    const missed = detail.peopleMissed.reduce((total, cohort) => total + cohort.count, 0);
+    expect(detail.peopleHit.length + missed).toBe(card.peopleTotal);
+    // Nobody who went inside this window failed to report it, and the person who walked away two
+    // windows ago is not counted as somebody who went and did not complain.
+    expect(missed).toBe(0);
+
+    // And it is strictly fewer reports than the execution has made of the same problem, which is
+    // what the page used to show under a card counted over one cycle of it.
+    const everything = (await h.store.listFindings({ runIds: [runId] })).filter((finding) => finding.kind === "bug");
+    expect(everything.length).toBeGreaterThan(card.reports);
+    const inWindow = new Set(newest.findings.map((finding) => finding.id));
+    expect(detail.quotes.every((quote) => newest.findings.some((finding) => finding.wakeId === quote.wakeId))).toBe(true);
+    expect(inWindow.has(detail.representative.id)).toBe(true);
+    await h.close();
+  });
+});
+
+/**
+ * ADR-0039 and ADR-0041 end to end: a cohort is a shared condition and a mix, a population is
+ * cohorts at weights, the study says how many, the size is dealt down both levels, growing
+ * re-deals nobody, and what is set on a person by hand reaches the prompt after what the cohort
+ * shares and what the study says.
  */
 describe("a cohort that mixes personas", () => {
-  const listPeople = async (h: Harness, cohortId: string): Promise<PersonView[]> =>
-    pageOf(PersonViewSchema).parse(await json(await h.app.request(routes.cohortPeople(P, cohortId)))).items;
   const live = (roster: readonly PersonView[], personaSlug: string): PersonView[] => roster.filter((p) => !p.archived && p.personaSlug === personaSlug);
 
   it("refuses a cohort with nothing shared, and one drawn from nobody", async () => {
@@ -2159,65 +3658,150 @@ describe("a cohort that mixes personas", () => {
     await h.close();
   });
 
-  it("apportions the population's size across the mix, and growing re-deals nobody", async () => {
+  it("deals the study's size across the mix, in deal order, and growing re-deals nobody", async () => {
     const h = await harness();
     const casual = (await h.store.listPersonas("default"))[0]!;
-    const power = PersonaViewSchema.parse(await json(await post(h.app, routes.personaStarters(P), { slug: "power-user", count: 0 })));
-    const cohort = CohortViewSchema.parse(
-      await json(await post(h.app, routes.cohorts(P), { name: "Mobile signups", context: "You only ever use this on your phone.", mix: [{ personaId: casual.id, weight: 3 }, { personaId: power.id, weight: 2 }] })),
-    );
-    // No size of its own: nobody until a population sends it.
-    expect(cohort.size).toBe(0);
-    expect(await listPeople(h, cohort.id)).toEqual([]);
+    const power = await takeStarter(h, "power-user");
+    const cohort = await makeCohort(h, { name: "Mobile signups", context: "You only ever use this on your phone.", mix: [{ personaId: casual.id, weight: 3 }, { personaId: power.id, weight: 2 }] });
+    // No size of its own, and no people: the ratio is all a cohort says about how many.
+    expect(cohort.usedBy).toBe(0);
+    expect(cohort.mix.map((entry) => entry.share)).toEqual([0.6, 0.4]);
+    expect(await h.store.listPeople({ cohortId: cohort.id, includeArchived: true })).toHaveLength(0);
 
-    const everyone = await ensurePopulation(h.store);
-    const at10 = PopulationViewSchema.parse(await json(await put(h.app, await populationRoute(h), { members: [{ cohortId: cohort.id, size: 10 }] })));
-    expect(at10.people).toBe(10);
-    expect(at10.members[0]?.personas.map((p) => [p.slug, p.count])).toEqual([[casual.slug, 6], [power.slug, 4]]);
-    const ten = await listPeople(h, cohort.id);
-    expect(live(ten, casual.slug).map((p) => p.id)).toEqual([1, 2, 3, 4, 5, 6].map((n) => `${cohort.slug}.${casual.slug}#${n}`));
-    expect(live(ten, power.slug)).toHaveLength(4);
-    expect(new Set(ten.map((p) => p.name)).size).toBe(10);
+    // The population sends this cohort alone, and the study's ten are dealt 6 : 4.
+    const everyone = await thePopulation(h.store);
+    const composed = PopulationViewSchema.parse(await json(await put(h.app, routes.population_(P, everyone.id), { members: [{ cohortId: cohort.id, weight: 1 }] })));
+    expect(composed.members[0]?.personas.map((p) => [p.slug, p.weight, p.share])).toEqual([[casual.slug, 3, 0.6], [power.slug, 2, 0.4]]);
+    await sizeStudy(h, 10);
+    const ten = await peopleOf(h);
+    expect(ten.sends).toBe(10);
+    expect(ten.missing).toBe(0);
+    expect(live(ten.items, casual.slug).map((p) => p.id)).toEqual([1, 2, 3, 4, 5, 6].map((n) => `${cohort.slug}.${casual.slug}#${n}`));
+    expect(live(ten.items, power.slug)).toHaveLength(4);
+    expect(new Set(ten.items.map((p) => p.name)).size).toBe(10);
+    // Deal order: mix order, then ordinal — the six casual listers come before the four power users.
+    expect(ten.items.map((p) => p.personaSlug)).toEqual([...Array<string>(6).fill(casual.slug), ...Array<string>(4).fill(power.slug)]);
+    expect(ten.items.every((p) => p.cohortName === "Mobile signups" && p.alsoSentBy === 0)).toBe(true);
 
     // Raised to 15: 9 and 6, and the first 6 and 4 are the same people by name.
-    const at15 = PopulationViewSchema.parse(await json(await put(h.app, routes.population_(P, everyone.id), { members: [{ cohortId: cohort.id, size: 15 }] })));
-    expect(at15.members[0]?.personas.map((p) => p.count)).toEqual([9, 6]);
-    const fifteen = await listPeople(h, cohort.id);
-    expect(live(fifteen, casual.slug).slice(0, 6).map((p) => p.name)).toEqual(live(ten, casual.slug).map((p) => p.name));
-    expect(live(fifteen, power.slug).slice(0, 4).map((p) => p.name)).toEqual(live(ten, power.slug).map((p) => p.name));
+    await sizeStudy(h, 15);
+    const fifteen = await peopleOf(h);
+    expect([live(fifteen.items, casual.slug).length, live(fifteen.items, power.slug).length]).toEqual([9, 6]);
+    expect(live(fifteen.items, casual.slug).slice(0, 6).map((p) => p.name)).toEqual(live(ten.items, casual.slug).map((p) => p.name));
+    expect(live(fifteen.items, power.slug).slice(0, 4).map((p) => p.name)).toEqual(live(ten.items, power.slug).map((p) => p.name));
 
     // Back to 10 at 1 : 1 — 5 and 5. One casual is put aside, one power user is drawn, nobody is renamed.
-    await put(h.app, routes.population_(P, everyone.id), { members: [{ cohortId: cohort.id, size: 10 }] });
+    await sizeStudy(h, 10);
     const rebalanced = CohortViewSchema.parse(await json(await put(h.app, routes.cohort(P, cohort.id), { mix: [{ personaId: casual.id, weight: 1 }, { personaId: power.id, weight: 1 }] })));
-    expect(rebalanced.mix.map((entry) => entry.people)).toEqual([5, 5]);
-    const even = await listPeople(h, cohort.id);
-    expect(live(even, casual.slug).map((p) => p.name)).toEqual(live(ten, casual.slug).slice(0, 5).map((p) => p.name));
-    expect(live(even, power.slug).slice(0, 4).map((p) => p.name)).toEqual(live(ten, power.slug).map((p) => p.name));
-    expect(even.filter((p) => p.archived).map((p) => p.name)).toContain(live(ten, casual.slug)[5]?.name);
+    expect(rebalanced.mix.map((entry) => entry.share)).toEqual([0.5, 0.5]);
+    const even = await peopleOf(h);
+    expect(live(even.items, casual.slug).map((p) => p.name)).toEqual(live(ten.items, casual.slug).slice(0, 5).map((p) => p.name));
+    expect(live(even.items, power.slug).slice(0, 4).map((p) => p.name)).toEqual(live(ten.items, power.slug).map((p) => p.name));
+    const aside = (await h.store.listPeople({ cohortId: cohort.id, includeArchived: true })).filter((p) => p.archivedAt !== null).map((p) => p.name);
+    expect(aside).toContain(live(ten.items, casual.slug)[5]?.name);
 
-    // What the next execution sends is that arithmetic, lane by lane, and every lane shares the line.
+    // What the next execution sends is that arithmetic, persona by persona, and every one of them shares the line.
     const resolved = await resolveProject(h.store);
-    const lanes = resolved.config.population.members.filter((m) => m.cohort === cohort.slug);
-    expect(lanes.map((m) => [m.persona.id, m.count])).toEqual([[casual.slug, 5], [power.slug, 5]]);
-    expect(lanes.every((m) => m.context === "You only ever use this on your phone.")).toBe(true);
+    const members = resolved.config.population.members.filter((m) => m.cohort === cohort.slug);
+    expect(members.map((m) => [m.persona.id, m.count])).toEqual([[casual.slug, 5], [power.slug, 5]]);
+    expect(members.every((m) => m.context === "You only ever use this on your phone.")).toBe(true);
     await h.close();
   });
 
-  it("carries what was set on a person by hand into the prompt, after what the cohort shares", async () => {
+  /**
+   * Changing a WEIGHT moves people (ADR-0039 accepts this; the builder says so). A population's
+   * PUT re-lanes every study that sends it, at each study's size: the cohort whose share shrank
+   * puts its tail aside, the one that grew draws new people, and nobody who stays is touched.
+   */
+  it("moves people when a population's weights change, and puts aside the ones it no longer sends", async () => {
     const h = await harness();
-    const cohort = (await cohortsOf(h.store))[0]!;
-    await resize(h, cohort.id, 2);
-    await put(h.app, routes.cohort(P, cohort.id), { context: "You signed up during launch week.", traits: { device: "phone" } });
-    const [first] = await listPeople(h, cohort.id);
-    const tuned = PersonViewSchema.parse(
-      await json(await h.app.request(routes.cohortPerson(P, cohort.id, first!.id), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ details: "Cracked screen.", patience: 1, traits: { device: "tablet" } }) })),
+    const casualCohort = await seededCohort(h.store);
+    const power = await takeStarter(h, "power-user");
+    const powerCohort = await makeCohort(h, { name: "Power users", slug: "power-user", context: "You live in this product all day.", mix: [{ personaId: power.id }] });
+    await weigh(h, powerCohort.id, 1);
+    await sizeStudy(h, 4);
+    const before = await peopleOf(h);
+    expect(before.items.filter((p) => p.cohortSlug === casualCohort.slug)).toHaveLength(2);
+    expect(before.items.filter((p) => p.cohortSlug === "power-user")).toHaveLength(2);
+
+    // 1 : 3 over four people is one and three: a tie at the second seat goes to the earlier member (D2).
+    const reweighed = await weigh(h, powerCohort.id, 3);
+    expect(reweighed.members.map((m) => [m.cohort, m.weight, m.share])).toEqual([[casualCohort.slug, 1, 0.25], ["power-user", 3, 0.75]]);
+    const after = await peopleOf(h);
+    expect(after.items.filter((p) => p.cohortSlug === casualCohort.slug)).toHaveLength(1);
+    expect(after.items.filter((p) => p.cohortSlug === "power-user")).toHaveLength(3);
+    // The whole page in one sequence, not two counts. Deal order is the POPULATION's member order
+    // outermost, then the cohort's mix, then the ordinal — so counting each cohort separately would
+    // pass just as well if the page interleaved the cohorts or put them in either order.
+    expect(after.items.map((p) => p.cohortSlug)).toEqual([casualCohort.slug, "power-user", "power-user", "power-user"]);
+    // The two power users who were already going are still the same two.
+    expect(after.items.filter((p) => p.cohortSlug === "power-user").slice(0, 2).map((p) => p.name)).toEqual(before.items.filter((p) => p.cohortSlug === "power-user").map((p) => p.name));
+    // The casual lister nobody sends any more is aside, not gone.
+    expect(await h.store.listPeople({ cohortId: casualCohort.id })).toHaveLength(1);
+    expect(await h.store.listPeople({ cohortId: casualCohort.id, includeArchived: true })).toHaveLength(2);
+    // ...and reversing the members reverses the page, which is what pins that outer key: the same
+    // four people, the same weights, read the other way round.
+    const population = await thePopulation(h.store);
+    const reversed = PopulationViewSchema.parse(
+      await json(await put(h.app, routes.population_(P, population.id), { members: [...population.members].reverse().map((member) => ({ cohortId: member.cohortId, weight: member.weight })) })),
     );
+    expect(reversed.members.map((m) => m.cohort)).toEqual(["power-user", casualCohort.slug]);
+    expect((await peopleOf(h)).items.map((p) => p.cohortSlug)).toEqual(["power-user", "power-user", "power-user", casualCohort.slug]);
+
+    // Taken out altogether at nought, and the whole cohort is put aside.
+    await weigh(h, casualCohort.id, 0);
+    expect((await thePopulation(h.store)).members.map((m) => m.cohortId)).toEqual([powerCohort.id]);
+    expect(await h.store.listPeople({ cohortId: casualCohort.id })).toHaveLength(0);
+    expect(await h.store.listPeople({ cohortId: powerCohort.id })).toHaveLength(4);
+    await h.close();
+  });
+
+  /**
+   * A person is the cohort's row, met by every study that sends the cohort up to the smaller size
+   * (ADR-0041, D3). The People page says so: `alsoSentBy` counts the OTHER studies whose deal
+   * reaches this ordinal, and a line written in one follows them into the others.
+   */
+  it("shares a cohort's people between two studies up to the smaller size, and says so on each person", async () => {
+    const h = await harness();
+    const cohort = await seededCohort(h.store);
+    const first = await sizeStudy(h, 4);
+    const second = StudySummaryViewSchema.parse(await json(await post(h.app, routes.studies(P), { name: "A smaller look", targetId: first.targetId, populationId: first.populationId, size: 2 })));
+
+    // One roster, sized by the larger study: four rows, not six.
+    expect(await h.store.listPeople({ cohortId: cohort.id })).toHaveLength(4);
+    const four = await peopleOf(h, first.id);
+    const two = await peopleOf(h, second.id);
+    expect(two.items.map((p) => p.id)).toEqual(four.items.slice(0, 2).map((p) => p.id));
+    expect(four.items.map((p) => p.alsoSentBy)).toEqual([1, 1, 0, 0]);
+    expect(two.items.map((p) => p.alsoSentBy)).toEqual([1, 1]);
+
+    // Written in one, read in the other: the row is the cohort's.
+    const tuned = PersonViewSchema.parse(await json(await patch(h.app, routes.studyPerson(P, second.id, two.items[0]!.id), { details: "Cracked screen." })));
+    expect(tuned.alsoSentBy).toBe(1);
+    expect((await peopleOf(h, first.id)).items[0]?.details).toBe("Cracked screen.");
+    // ...and a person the smaller study does not reach is not its to edit.
+    expect((await patch(h.app, routes.studyPerson(P, second.id, four.items[3]!.id), { details: "x" })).status).toBe(404);
+    await h.close();
+  });
+
+  it("carries what was set on a person by hand into the prompt, after what the cohort shares and what the study says", async () => {
+    const h = await harness();
+    const cohort = await seededCohort(h.store);
+    const study = await sizeStudy(h, 2);
+    await put(h.app, routes.cohort(P, cohort.id), { context: "You signed up during launch week.", traits: { device: "phone" } });
+    // The study's brief (D3b): the one per-study text handed to everybody it sends.
+    const briefed = StudySummaryViewSchema.parse(await json(await put(h.app, routes.study(P, study.id), { brief: "Everyone here is trying the new mobile release." })));
+    expect(briefed.brief).toBe("Everyone here is trying the new mobile release.");
+    const [first] = (await peopleOf(h, study.id)).items;
+    const tuned = PersonViewSchema.parse(await json(await patch(h.app, routes.studyPerson(P, study.id, first!.id), { details: "Cracked screen.", patience: 1, traits: { device: "tablet" } })));
     expect(tuned.patience).toBe(1);
     expect(tuned.overrides.patience).toBe(1);
     expect(tuned.traits.device).toBe("tablet");
     expect(tuned.generatedBy).toBe("authored");
 
     const resolved = await resolveProject(h.store);
+    // The brief reaches the resolved config, and so the snapshot.
+    expect(resolved.config.simulation.brief).toBe("Everyone here is trying the new mobile release.");
     const agents = expandPopulation(resolved.config.population, "run_x_aaaaaa", "sim_1").map((e) => e.agent);
     const mine = agents.find((a) => a.personId === first!.id)!;
     const other = agents.find((a) => a.personId !== first!.id)!;
@@ -2225,14 +3809,14 @@ describe("a cohort that mixes personas", () => {
     expect(mine.persona.traits.device).toBe("tablet");
     // The cohort's overlay reaches the person nobody touched; the hand-set value wins for the one somebody did.
     expect(other.persona.traits.device).toBe("phone");
-    const prompt = personaSystemPrompt(mine, resolved.config.target);
+    const prompt = personaSystemPrompt(mine, resolved.config.target, resolved.config.simulation.brief);
+    // The general before the particular: the cohort's line, then the study's, then this person's own.
     expect(prompt.indexOf("You signed up during launch week.")).toBeGreaterThan(prompt.indexOf(mine.persona.backstory));
-    expect(prompt.indexOf("Cracked screen.")).toBeGreaterThan(prompt.indexOf("You signed up during launch week."));
+    expect(prompt.indexOf("Everyone here is trying the new mobile release.")).toBeGreaterThan(prompt.indexOf("You signed up during launch week."));
+    expect(prompt.indexOf("Cracked screen.")).toBeGreaterThan(prompt.indexOf("Everyone here is trying the new mobile release."));
 
     // Null hands the dimension back to the draw.
-    const redrawn = PersonViewSchema.parse(
-      await json(await h.app.request(routes.cohortPerson(P, cohort.id, first!.id), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ patience: null, traits: null }) })),
-    );
+    const redrawn = PersonViewSchema.parse(await json(await patch(h.app, routes.studyPerson(P, study.id, first!.id), { patience: null, traits: null })));
     expect(redrawn.overrides.patience).toBeUndefined();
     expect(redrawn.traits.device).toBe("phone");
     await h.close();
@@ -2240,39 +3824,41 @@ describe("a cohort that mixes personas", () => {
 });
 
 describe("the project library and the pre-flight", () => {
-  it("edits a cohort, reads its roster and renames one person without moving their handle", async () => {
+  it("edits a cohort, reads its people through the study and renames one person without moving their handle", async () => {
     const h = await harness();
     const cohorts = pageOf(CohortViewSchema).parse(await json(await h.app.request(routes.cohorts(P))));
     const cohort = cohorts.items[0]!;
-    expect(cohort.usedByPopulations).toHaveLength(1);
+    expect(cohort.usedBy).toBe(1);
 
-    await resize(h, cohort.id, 4);
-    const grown = CohortViewSchema.parse(await json(await put(h.app, routes.cohort(P, cohort.id), { notes: "the ones who keep lists" })));
-    expect(grown.size).toBe(4);
-    expect(grown.slug).toBe(cohort.slug); // immutable: it is half of every agent id
-    expect(grown.generated.seeded).toBe(4);
+    const study = await sizeStudy(h, 4);
+    const edited = CohortViewSchema.parse(await json(await put(h.app, routes.cohort(P, cohort.id), { notes: "the ones who keep lists" })));
+    expect(edited.notes).toBe("the ones who keep lists");
+    expect(edited.slug).toBe(cohort.slug); // immutable: it is half of every participant id
 
-    const roster = pageOf(PersonViewSchema).parse(await json(await h.app.request(routes.cohortPeople(P, cohort.id))));
+    const roster = await peopleOf(h, study.id);
     expect(roster.items).toHaveLength(4);
     expect(new Set(roster.items.map((p) => p.name)).size).toBe(4);
     const third = roster.items[2]!;
 
-    const renamed = PersonViewSchema.parse(await json(await h.app.request(routes.cohortPerson(P, cohort.id, third.id), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Renamed By Hand" }) })));
+    const renamed = PersonViewSchema.parse(await json(await patch(h.app, routes.studyPerson(P, study.id, third.id), { name: "Renamed By Hand" })));
     expect(renamed.name).toBe("Renamed By Hand");
     // The handle is what the account on the target was signed up with, so a rename must not move it.
     expect(renamed.handle).toBe(third.handle);
     await h.close();
   });
 
-  it("says who is going, what they will meet and what one of them will be told — and spends nothing", async () => {
+  it("says who is going, what they will meet and what one of them will be told — and spends and writes nothing", async () => {
     const h = await harness();
     const simulation = await ensureSimulation(h.store);
     const before = await h.store.listWakes({});
+    h.resetCalls();
 
-    const preflight = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    const preflight = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id))));
+    expect(preflight.study.id).toBe(simulation.id);
     expect(preflight.totalPeople).toBe(1);
     expect(preflight.plannedVisits).toBe(2); // one person, two visits each
     expect(preflight.cohorts[0]?.sampleNames).toHaveLength(1);
+    expect(preflight.cohorts[0]?.personas.map((p) => p.people)).toEqual([1]);
     expect(preflight.target.tools).toContain("search_tasks");
     expect(preflight.estimate.expectedUsd).toBeGreaterThan(0);
     // The actual system prompt, rendered by the runner's own code rather than a second copy of it.
@@ -2281,6 +3867,31 @@ describe("the project library and the pre-flight", () => {
     // Tasklet declares no reset, and the screen says so rather than pretending.
     expect(preflight.target.warnings.join(" ")).toContain("no reset");
     expect(await h.store.listWakes({})).toHaveLength(before.length);
+    // A GET: it resolves, and resolution never writes (ADR-0041).
+    expect(writesIn(h.calls)).toEqual([]);
+    await h.close();
+  });
+
+  /**
+   * The preview is the prompt, including the STUDY's own words. It renders through the runner's
+   * `personaSystemPrompt`, and it has to hand it everything a visit hands it: the brief is the
+   * third argument, and building the preview without it made this page — the one place a user can
+   * read what their study says before spending anything — show a prompt nobody would ever be sent.
+   */
+  it("previews the brief the study hands everybody, between the cohort's line and the person's own", async () => {
+    const h = await harness();
+    const study = await ensureSimulation(h.store);
+    const cohort = await seededCohort(h.store);
+    await put(h.app, routes.cohort(P, cohort.id), { context: "You signed up during launch week." });
+    await put(h.app, routes.study(P, study.id), { brief: "Everyone here is trying the new mobile release." });
+    const [person] = (await peopleOf(h, study.id)).items;
+    await patch(h.app, routes.studyPerson(P, study.id, person!.id), { details: "Cracked screen." });
+
+    const { text } = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, study.id)))).promptPreview;
+    expect(text).toContain("Everyone here is trying the new mobile release.");
+    // The same order the runner renders, and the same assertion: the general before the particular.
+    expect(text.indexOf("Everyone here is trying the new mobile release.")).toBeGreaterThan(text.indexOf("You signed up during launch week."));
+    expect(text.indexOf("Cracked screen.")).toBeGreaterThan(text.indexOf("Everyone here is trying the new mobile release."));
     await h.close();
   });
 
@@ -2300,14 +3911,14 @@ describe("the project library and the pre-flight", () => {
 
     // The same signature, filed again: triaged `fixed` and back is a REGRESSION, and it stays at
     // the top of the screen rather than being buried under "known".
-    const simulationId = (await ensureSimulation(h.store)).id;
-    const results = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    const studyId = (await ensureSimulation(h.store)).id;
+    const results = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, studyId))));
     expect(results.clusters.find((c) => c.signature === signature)?.state).toBe("regressed");
     expect(results.known).toHaveLength(0);
 
     // Won't-fix is the one that goes below the fold, because nobody is going to do anything.
     await put(h.app, routes.triage(P), { signature, state: "wont-fix", note: "by design" });
-    const after = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    const after = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, studyId))));
     expect(after.clusters.map((c) => c.signature)).not.toContain(signature);
     expect(after.known.map((c) => c.signature)).toEqual([signature]);
 
@@ -2318,7 +3929,7 @@ describe("the project library and the pre-flight", () => {
     await h.store.saveTriage({ ...filed, titleAtTriage: "create_project rejects a perfectly good name" });
     const drifted = pageOf(TriageViewSchema).parse(await json(await h.app.request(routes.triage(P))));
     expect(drifted.items[0]?.drifted).toBe(true);
-    const onScreen = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    const onScreen = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, studyId))));
     expect(onScreen.known[0]?.triage?.drifted).toBe(true);
     // Punctuation and case do not move the key, so they are not drift. That is the whole of what
     // this proves: a GENUINE rewording — "list_tasks is paging badly", "the task list repeats a
@@ -2331,7 +3942,7 @@ describe("the project library and the pre-flight", () => {
 
   it("puts a problem the latest execution no longer reports under Known once somebody says it is fixed", async () => {
     // The second execution finds nothing. Flipping the script mid-test is how "we shipped a fix"
-    // is expressed offline: same simulation, same people, a target that no longer complains.
+    // is expressed offline: same study, same people, a target that no longer complains.
     let quiet = false;
     const h = await harness({ policy: (ctx) => (quiet ? { calls: [call("done", { summary: "all fine now", would_return: true })] } : complains(ctx)) });
     const first = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
@@ -2345,10 +3956,10 @@ describe("the project library and the pre-flight", () => {
     await h.runs.settled(second.runId);
     expect(await h.store.listFindings({ runIds: [second.runId] })).toHaveLength(0);
 
-    const simulationId = (await ensureSimulation(h.store)).id;
+    const studyId = (await ensureSimulation(h.store)).id;
     // An absence is something you can LOOK AT: the card is still on the screen, saying it is gone.
     // Vanishing silently is the opposite of the question the screen exists to answer.
-    const before = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    const before = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, studyId))));
     const card = before.clusters.find((c) => c.signature === signature);
     expect(card?.state).toBe("fixed");
     expect(card?.peopleHit).toBe(0);
@@ -2357,7 +3968,7 @@ describe("the project library and the pre-flight", () => {
 
     // And once a human agrees it is fixed, it stops taking up room at the top.
     await put(h.app, routes.triage(P), { signature, state: "fixed", note: "shipped" });
-    const known = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    const known = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, studyId))));
     expect(known.clusters.map((c) => c.signature)).not.toContain(signature);
     expect(known.known.map((c) => c.signature)).toEqual([signature]);
     expect(known.known[0]?.state).toBe("fixed");
@@ -2375,16 +3986,16 @@ describe("the project library and the pre-flight", () => {
     const first = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
     await h.jobs.idle();
     await h.runs.settled(first.runId);
-    const simulationId = (await ensureSimulation(h.store)).id;
+    const studyId = (await ensureSimulation(h.store)).id;
     const signature = (await h.store.listFindings({ runIds: [first.runId] }))[0]!.signature;
 
-    const before = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    const before = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, studyId))));
     expect(before.clusters.find((c) => c.signature === signature)?.state).toBe("new");
 
     const ran = (await h.store.getRun(first.runId))!;
     await h.store.saveRun({ ...ran, id: newRunId(), seq: ran.seq + 1, status: "pending", endedAt: null, totals: { agents: 0, activeAgents: 0, wakes: 0, findings: 0, confirmed: 0, costUsd: 0 } });
 
-    const during = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    const during = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, studyId))));
     const card = during.clusters.find((c) => c.signature === signature);
     expect(card?.state).toBe("new");
     expect(card?.peopleHit).toBeGreaterThan(0);
@@ -2395,7 +4006,7 @@ describe("the project library and the pre-flight", () => {
     expect(during.history.map((e) => e.seq)).toEqual([1, 2]);
     // And the project home does not announce a fix either.
     const overview = ProjectOverviewViewSchema.parse(await json(await h.app.request(routes.project(P))));
-    expect(overview.simulations.find((sim) => sim.id === simulationId)?.fixedSinceLast).toBe(0);
+    expect(overview.studies.find((study) => study.id === studyId)?.fixedSinceLast).toBe(0);
     await h.close();
   });
 
@@ -2435,8 +4046,8 @@ describe("the project library and the pre-flight", () => {
     const secondSignature = (await h.store.listFindings({ runIds: [second.runId] }))[0]!.signature;
     expect(secondSignature).not.toBe(firstSignature); // two keys...
 
-    const simulationId = (await ensureSimulation(h.store)).id;
-    const results = SimulationResultsViewSchema.parse(await json(await h.app.request(routes.simulationResults(P, simulationId))));
+    const studyId = (await ensureSimulation(h.store)).id;
+    const results = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, studyId))));
     // ...and one card. The old wording is not a second, `fixed` problem: it is this one, said
     // differently, and putting both on the screen says the search bug was fixed and is still here.
     expect(results.clusters).toHaveLength(1);
@@ -2448,18 +4059,18 @@ describe("the project library and the pre-flight", () => {
   /** A comparison is counted against the two executions it is comparing, not against the newest. */
   it("counts each side of a comparison against that execution's own roster", async () => {
     const h = await harness({ policy: complains });
-    const simulationId = (await ensureSimulation(h.store)).id;
+    const studyId = (await ensureSimulation(h.store)).id;
     const ids: string[] = [];
     for (const size of [1, 1, 3]) {
-      await resize(h, (await cohortsOf(h.store))[0]!.id, size);
-      const started = (await json(await post(h.app, routes.simulationRuns(P, simulationId)))) as { runId: string };
+      await sizeStudy(h, size);
+      const started = (await json(await post(h.app, routes.studyRuns(P, studyId)))) as { runId: string };
       await h.jobs.idle();
       await h.runs.settled(started.runId);
       ids.push(started.runId);
     }
-    expect((await h.store.listAgents({ runId: ids[2]! }))).toHaveLength(3);
+    expect(await h.store.listAgents({ runId: ids[2]! })).toHaveLength(3);
 
-    const compared = ExecutionCompareViewSchema.parse(await json(await h.app.request(`${routes.simulationCompare(P, simulationId)}?a=${ids[0]!}&b=${ids[1]!}`)));
+    const compared = ExecutionCompareViewSchema.parse(await json(await h.app.request(`${routes.studyCompare(P, studyId)}?a=${ids[0]!}&b=${ids[1]!}`)));
     const card = compared.persisting[0];
     expect(card).toBeDefined();
     // One person went on execution 2, so "1 of 1" — not "1 of 3", which is execution 3's headcount
@@ -2499,7 +4110,7 @@ describe("the project library and the pre-flight", () => {
 describe("taking things out again", () => {
   const del = async (h: Harness, path: string): Promise<Response> => h.app.request(path, { method: "DELETE" });
 
-  /** One real execution of the project's simulation, so there are produced rows to cascade over. */
+  /** One real execution of the project's study, so there are produced rows to cascade over. */
   const oneExecution = async (h: Harness): Promise<string> => {
     const started = (await json(await post(h.app, await runsRoute(h)))) as { runId: string };
     await h.jobs.idle();
@@ -2575,9 +4186,9 @@ describe("taking things out again", () => {
     const h = await harness();
     const runId = await oneExecution(h);
 
-    // The controller's own `runningIds` is what the guard reads, and a scripted wake is over
+    // The controller's own `runningIds` is what the guard reads, and a scripted visit is over
     // before the next line of the test — there is no instant to race for. Holding the id here is
-    // the same thing a live wake does, stated rather than raced for.
+    // the same thing a live visit does, stated rather than raced for.
     const held = [runId];
     Object.defineProperty(h.runs, "runningIds", { get: () => held, configurable: true });
 
@@ -2668,104 +4279,201 @@ describe("taking things out again", () => {
     await h.close();
   });
 
-  it("archives a simulation that has run, and deletes it with its executions when told to", async () => {
+  /**
+   * Archiving a study puts the people it alone was sending aside, not away (ADR-0031): the roster
+   * is re-laned at the sizes the remaining studies give it, and they come back if a study sends
+   * them again.
+   */
+  it("archives a study that has run, puts its people aside, and deletes it with its executions when told to", async () => {
     const h = await harness();
-    const simulationId = (await ensureSimulation(h.store)).id;
+    const cohort = await seededCohort(h.store);
+    const studyId = (await ensureSimulation(h.store)).id;
     const runId = await oneExecution(h);
+    expect(await h.store.listPeople({ cohortId: cohort.id })).toHaveLength(1);
 
-    // The default: off the list, executions untouched.
-    expect((await del(h, routes.simulation(P, simulationId))).status).toBe(204);
+    // The default: off the list, executions untouched, people aside.
+    expect((await del(h, routes.study(P, studyId))).status).toBe(204);
     expect(await h.store.getRun(runId)).toBeDefined();
-    expect((await h.store.getSimulation(simulationId))?.archived).toBe(true);
+    expect((await h.store.getSimulation(studyId))?.archived).toBe(true);
+    expect(await h.store.listPeople({ cohortId: cohort.id })).toHaveLength(0);
+    expect(await h.store.listPeople({ cohortId: cohort.id, includeArchived: true })).toHaveLength(1);
+    // Nothing on the project's list, and no "fixed" claimed about anything.
+    expect(ProjectOverviewViewSchema.parse(await json(await h.app.request(routes.project(P)))).studies).toEqual([]);
 
-    expect((await del(h, `${routes.simulation(P, simulationId)}?runs=delete`)).status).toBe(204);
-    expect(await h.store.getSimulation(simulationId)).toBeUndefined();
+    expect((await del(h, `${routes.study(P, studyId)}?runs=delete`)).status).toBe(204);
+    expect(await h.store.getSimulation(studyId)).toBeUndefined();
     expect(await h.store.getRun(runId)).toBeUndefined();
     await h.close();
   });
 
   /** A refusal that names what to take apart first, not a 500 (SPEC §2.14). */
-  it("refuses a target a simulation still points at, and names the simulation", async () => {
+  it("refuses a target a study still points at, and names the study", async () => {
     const h = await harness();
-    await ensureSimulation(h.store);
+    const study = await ensureSimulation(h.store);
     const targetId = (await h.store.listTargets(P))[0]!.id;
 
     const refused = await del(h, routes.target_(P, targetId));
     expect(refused.status).toBe(409);
-    expect(await refused.text()).toContain("simulation");
+    const why = await reason(refused);
+    expect(why).toContain(`study "${study.name}"`);
+    expect(why).not.toMatch(ROWS_OWN_WORDS);
     expect(await h.store.getTarget(targetId)).toBeDefined();
     await h.close();
   });
 
   /**
-   * `listTargets` orders `updated_at DESC`, so "the first target" always meant "whichever you
-   * edited last" — a coin flip that got frozen onto a simulation row forever. One target still
-   * defaults, because with one there is nothing to choose; several without a `targetId` is a
-   * refusal that names them, because a 400 saying "ambiguous" is a puzzle.
+   * A cohort a population holds is refused with the populations named — the population builder
+   * is where a cohort is taken out. It used to be stripped out of every population on the reader's
+   * behalf, which quietly moved people in every study sending those populations.
    */
-  it("refuses to guess which target a simulation visits, and names the choices", async () => {
+  it("refuses a cohort a population still holds, and names the populations", async () => {
+    const h = await harness();
+    const cohort = await seededCohort(h.store);
+    const population = await thePopulation(h.store);
+    await sizeStudy(h, 2);
+
+    const refused = await del(h, routes.cohort(P, cohort.id));
+    expect(refused.status).toBe(409);
+    expect(await reason(refused)).toContain(`population "${population.name}"`);
+    // Nothing was taken apart on the way to the refusal.
+    expect(await h.store.getCohort(cohort.id)).toBeDefined();
+    expect((await h.store.getPopulation(population.id))?.members.map((m) => m.cohortId)).toEqual([cohort.id]);
+    expect(await h.store.listPeople({ cohortId: cohort.id })).toHaveLength(2);
+
+    // Out of the population, it goes — and its people go aside with it.
+    await weigh(h, cohort.id, 0);
+    expect((await del(h, routes.cohort(P, cohort.id))).status).toBe(204);
+    expect(await h.store.getCohort(cohort.id)).toBeUndefined();
+    await h.close();
+  });
+
+  /**
+   * `:c` answers to the slug as well as the row id, as `:s` does for a study: the slug is what a
+   * bookmark carries and the first half of every person id, so a reader who has one should not
+   * need the other. One project's slug does not reach into another's rows.
+   */
+  it("finds a cohort by its slug as well as its id, on every verb", async () => {
+    const h = await harness();
+    const cohort = await seededCohort(h.store);
+    const other = (await json(await post(h.app, routes.projects, { name: "Other product" }))) as { id: string };
+
+    const byId = CohortViewSchema.parse(await json(await h.app.request(routes.cohort(P, cohort.id))));
+    const bySlug = CohortViewSchema.parse(await json(await h.app.request(routes.cohort(P, cohort.slug))));
+    expect(bySlug.id).toBe(byId.id);
+    expect((await h.app.request(routes.cohort(other.id, cohort.slug))).status).toBe(404);
+
+    const edited = CohortViewSchema.parse(await json(await put(h.app, routes.cohort(P, cohort.slug), { notes: "found by slug" })));
+    expect(edited.id).toBe(cohort.id);
+    expect((await h.store.getCohort(cohort.id))?.notes).toBe("found by slug");
+
+    // Out of its population first, so the delete is a delete and not the refusal tested above.
+    await weigh(h, cohort.id, 0);
+    expect((await del(h, routes.cohort(P, cohort.slug))).status).toBe(204);
+    expect(await h.store.getCohort(cohort.id)).toBeUndefined();
+    await h.close();
+  });
+
+  /** ...and `:pop` likewise, for the same reason. */
+  it("finds a population by its slug as well as its id, on every verb", async () => {
+    const h = await harness();
+    const population = await thePopulation(h.store);
+    const other = (await json(await post(h.app, routes.projects, { name: "Other product" }))) as { id: string };
+
+    const byId = PopulationViewSchema.parse(await json(await h.app.request(routes.population_(P, population.id))));
+    const bySlug = PopulationViewSchema.parse(await json(await h.app.request(routes.population_(P, population.slug))));
+    expect(bySlug.id).toBe(byId.id);
+    expect((await h.app.request(routes.population_(other.id, population.slug))).status).toBe(404);
+
+    const renamed = PopulationViewSchema.parse(await json(await put(h.app, routes.population_(P, population.slug), { name: "Found by slug" })));
+    expect(renamed.id).toBe(population.id);
+    expect((await h.store.getPopulation(population.id))?.name).toBe("Found by slug");
+
+    // A spare that no study names, so the delete is a delete and not a refusal.
+    const spare = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Soak cast" })));
+    expect((await del(h, routes.population_(P, spare.slug))).status).toBe(204);
+    expect(await h.store.getPopulation(spare.id)).toBeUndefined();
+    await h.close();
+  });
+
+  /**
+   * A project holds several targets and several populations, and the server refuses to guess
+   * which a study means (ADR-0035): a POST without either id is a 400 that NAMES the choices,
+   * because "ambiguous" is a puzzle and a list of the two targets is an answer — and it creates
+   * nothing on the way to saying so.
+   */
+  it("refuses to make a study without saying which target and population, names the choices, and creates nothing", async () => {
     const h = await harness();
     const identity = { strategy: "self-signup" as const, signupTool: "sign_up", tokenPath: "token", userIdPath: "user.id", emailDomain: "populace.test" };
+    const tasklet = (await h.store.listTargets(P))[0]!;
+    const population = await thePopulation(h.store);
+    const studiesBefore = (await h.store.listSimulations({ projectId: P, includeArchived: true })).length;
 
-    // One target: it still defaults, and nothing has to say so.
-    const one = await post(h.app, routes.simulations(P), { name: "First" });
-    expect(one.status).toBe(201);
+    // Even with exactly one of each, nothing defaults: the builder always has both.
+    const noTarget = await post(h.app, routes.studies(P), { name: "Second", populationId: population.id, size: 2 });
+    expect(noTarget.status).toBe(400);
+    expect(await noTarget.text()).toContain(`Tasklet (${tasklet.id})`);
+    const noPopulation = await post(h.app, routes.studies(P), { name: "Second", targetId: tasklet.id, size: 2 });
+    expect(noPopulation.status).toBe(400);
+    expect(await noPopulation.text()).toContain(`${population.name} (${population.id})`);
+    // ...and the size is not guessed either.
+    expect((await post(h.app, routes.studies(P), { name: "Second", targetId: tasklet.id, populationId: population.id })).status).toBe(400);
+    expect(await h.store.listSimulations({ projectId: P, includeArchived: true })).toHaveLength(studiesBefore);
 
-    // A second, and the guess stops.
+    // A second target, and the refusal names both.
     const qa = StoredTargetViewSchema.parse(await json(await post(h.app, routes.targets(P), { name: "Tasklet — qa", mcp: [{ name: "default", url: target.mcpUrl }], identity })));
-    const refused = await post(h.app, routes.simulations(P), { name: "Second" });
+    const refused = await post(h.app, routes.studies(P), { name: "Second", populationId: population.id, size: 2 });
     expect(refused.status).toBe(400);
     const why = await refused.text();
-    expect(why).toContain("2 targets");
+    expect(why).toContain("Tasklet (");
     expect(why).toContain("Tasklet — qa");
 
     // Saying which is all it wants.
-    const said = await post(h.app, routes.simulations(P), { name: "Second", targetId: qa.id });
+    const said = await post(h.app, routes.studies(P), { name: "Second", targetId: qa.id, populationId: population.id, size: 2 });
     expect(said.status).toBe(201);
-    expect(SimulationSummaryViewSchema.parse(await json(said)).target.id).toBe(qa.id);
+    const made = StudySummaryViewSchema.parse(await json(said));
+    expect(made.target.id).toBe(qa.id);
+    expect(made.sends).toBe(2);
 
     // The prompt preview is a preview OF a target, so it keeps the same rule.
     const persona = (await h.store.listPersonas("default"))[0]!;
     const blind = await post(h.app, routes.personaPreview(P, persona.id));
     expect(blind.status).toBe(400);
-    expect(await blind.text()).toContain("?target=");
+    expect(await blind.text()).toContain("Tasklet — qa");
     expect((await post(h.app, `${routes.personaPreview(P, persona.id)}?target=${qa.id}`)).status).toBe(200);
     await h.close();
   });
 
   /**
-   * Three different refusals, and the order matters. Everything that has not been told which cast
-   * to use resolves the population slugged `everyone` and falls back to `populations[0]` when
-   * there is none, so deleting the default silently retargets five surfaces and deleting the last
-   * one leaves them creating a fresh empty cast behind the reader's back. The Populations screen
-   * puts a Remove button on exactly that row.
+   * One refusal, not three. Nothing falls back to a population it was not given any more
+   * (ADR-0041), so there is no "only population" or "default population" to protect: the last one
+   * may go, and the one thing that stops a population going is a study that names it.
    */
-  it("keeps the last population, keeps the default, and names the simulation that holds the rest", async () => {
+  it("lets the last population go, and refuses one a study names, naming the study", async () => {
     const h = await harness();
-    await ensureSimulation(h.store);
-    const everyone = await ensurePopulation(h.store, "default");
+    const study = await ensureSimulation(h.store);
+    const everyone = await thePopulation(h.store);
 
-    // The only one does not go — before anything about simulations is considered.
-    const onlyOne = await del(h, routes.population_(P, everyone.id));
-    expect(onlyOne.status).toBe(409);
-    expect(await onlyOne.text()).toContain("only population");
-
-    // With a second one, the default still does not go, and the refusal says why.
+    // A spare with nothing pointing at it goes, whatever else exists.
     const spare = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Soak cast" })));
-    const stillDefault = await del(h, routes.population_(P, everyone.id));
-    expect(stillDefault.status).toBe(409);
-    expect(await stillDefault.text()).toContain("default population");
+    expect((await h.app.request(routes.population_(P, spare.id), { method: "DELETE" })).status).toBe(204);
 
-    // A non-default population with nothing pointing at it goes.
-    expect((await del(h, routes.population_(P, spare.id))).status).toBe(204);
-
-    // ...and one a simulation names does not, with the simulation named.
-    const used = PopulationViewSchema.parse(await json(await post(h.app, routes.populations(P), { name: "Used cast" })));
-    const simulation = await ensureSimulation(h.store);
-    await h.store.saveSimulation({ ...simulation, populationId: used.id, updatedAt: new Date().toISOString() });
-    const refused = await del(h, routes.population_(P, used.id));
+    // The one the study sends does not, and the refusal names the study.
+    const used = PopulationViewSchema.parse(await json(await h.app.request(routes.population_(P, everyone.id))));
+    expect(used.usedBy).toBe(1);
+    const refused = await h.app.request(routes.population_(P, everyone.id), { method: "DELETE" });
     expect(refused.status).toBe(409);
-    expect(await refused.text()).toContain("simulation");
+    const why = await reason(refused);
+    expect(why).toContain(`study "${study.name}"`);
+    expect(why).not.toMatch(ROWS_OWN_WORDS);
+
+    // With the study gone, the last population in the project goes too.
+    expect((await h.app.request(`${routes.study(P, study.id)}?runs=delete`, { method: "DELETE" })).status).toBe(204);
+    expect((await h.app.request(routes.population_(P, everyone.id), { method: "DELETE" })).status).toBe(204);
+    expect(await h.store.listPopulations(P)).toHaveLength(0);
+    // ...and the project says what is left to do, rather than inventing a replacement.
+    const setup = SetupStatusSchema.parse(await json(await h.app.request(routes.projectSetup(P))));
+    expect(setup.needs.map((need) => need.id)).toContain("no-population");
+    expect(await h.store.listPopulations(P)).toHaveLength(0);
     await h.close();
   });
 });
@@ -2891,21 +4599,22 @@ describe("connecting a target keeps it", () => {
     await h.store.saveTarget({ ...seeded, identity: { strategy: "undecided" }, updatedAt: new Date().toISOString() });
 
     const simulation = await ensureSimulation(h.store);
-    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    const view = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id))));
     expect(view.blockers.join(" ")).toContain(seeded.name);
     expect(view.blockers.join(" ")).toContain("how people get accounts");
 
     // The press is refused too, rather than starting a job that dies four layers down.
-    const refused = await post(h.app, routes.simulationRuns(P, simulation.id), {});
+    const refused = await post(h.app, routes.studyRuns(P, simulation.id), {});
     expect(refused.status).toBe(409);
     expect(await refused.text()).toContain(seeded.name);
 
     // The project says it too, as something that stops an execution rather than something left to
-    // do — and it names the simulation, because that is what the reader is about to press.
+    // do — and it names the study, because that is what the reader is about to press.
     const setup = SetupStatusSchema.parse(await json(await h.app.request(routes.projectSetup(P))));
     expect(setup.ready).toBe(false);
     expect(setup.blockers.join(" ")).toContain(seeded.name);
     expect(setup.needs.some((need) => need.scope.kind === "target" && need.sentence.includes("how people get accounts"))).toBe(true);
+    expect(setup.needs.some((need) => need.scope.kind === "study" && need.scope.id === simulation.id && need.blocking)).toBe(true);
 
     // Answering it releases everything, which is the other half of a blocker being honest.
     await put(h.app, routes.target_(P, targetId), {
@@ -2913,7 +4622,7 @@ describe("connecting a target keeps it", () => {
       mcp: seeded.mcp.map((e) => ({ name: e.name, url: e.url })),
       identity: { strategy: "self-signup", signupTool: "sign_up", tokenPath: "token", emailDomain: "populace.test" },
     });
-    const freed = PreflightViewSchema.parse(await json(await h.app.request(routes.simulationPreflight(P, simulation.id))));
+    const freed = PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, simulation.id))));
     expect(freed.blockers.join(" ")).not.toContain("how people get accounts");
     await h.close();
   });
@@ -2934,6 +4643,589 @@ describe("connecting a target keeps it", () => {
     expect(result.handle).toBeNull();
     expect(result.leftBehind).toBeNull();
     expect(result.tornDown).toBe(false);
+    await h.close();
+  });
+});
+
+/**
+ * ADR-0041, D3: resolution is read-only and materialisation is explicit. Reading a cohort, listing
+ * the populations or asking what is left to set up used to write rows on the way past — a default
+ * population, a trial study, a roster — and the row it made was whichever the reader happened not
+ * to have. Every GET here is asserted against the recording store: no write, and no row after.
+ */
+describe("a GET writes nothing", () => {
+  it("lists an empty project's populations, cohorts and setup without inventing a row", async () => {
+    const h = await harness({ seed: false });
+    h.resetCalls();
+
+    expect(pageOf(PopulationViewSchema).parse(await json(await h.app.request(routes.populations(P)))).items).toEqual([]);
+    expect(pageOf(CohortViewSchema).parse(await json(await h.app.request(routes.cohorts(P)))).items).toEqual([]);
+    expect(pageOf(StudySummaryViewSchema).parse(await json(await h.app.request(routes.studies(P)))).items).toEqual([]);
+    const setup = SetupStatusSchema.parse(await json(await h.app.request(routes.projectSetup(P))));
+    expect(setup.ready).toBe(false);
+    expect(setup.studyIds).toEqual([]);
+    expect(setup.needs.map((need) => need.id)).toEqual(["no-target", "no-population"]);
+    const overview = ProjectOverviewViewSchema.parse(await json(await h.app.request(routes.project(P))));
+    expect(overview.counts).toMatchObject({ studies: 0, populations: 0, people: 0 });
+
+    expect(writesIn(h.calls)).toEqual([]);
+    expect(await h.store.listPopulations(P)).toHaveLength(0);
+    expect(await h.store.listSimulations({ projectId: P, includeArchived: true })).toHaveLength(0);
+    expect(await h.store.listPeople({ projectId: P, includeArchived: true })).toHaveLength(0);
+    await h.close();
+  });
+
+  it("reads a cohort, a population and a study's people without writing anybody", async () => {
+    const h = await harness();
+    const study = await ensureSimulation(h.store);
+    // A cohort weighed straight into the population, with no writer run since: the rows it would
+    // have are exactly what a GET must not create.
+    const persona = (await h.store.listPersonas(P))[0]!;
+    const bare = cohortRow({ id: newCohortId(), slug: "hand-made", name: "Hand made", personaId: persona.id });
+    await h.store.saveCohort(bare);
+    const everyone = await thePopulation(h.store);
+    await h.store.savePopulation({ ...everyone, members: [...everyone.members, { cohortId: bare.id, weight: 5 }], updatedAt: new Date().toISOString() });
+    const rows = (await h.store.listPeople({ projectId: P, includeArchived: true })).length;
+    h.resetCalls();
+
+    expect(CohortViewSchema.parse(await json(await h.app.request(routes.cohort(P, bare.id)))).usedBy).toBe(1);
+    expect(PopulationViewSchema.parse(await json(await h.app.request(routes.population_(P, everyone.id)))).members).toHaveLength(2);
+    const people = await peopleOf(h, study.id);
+    // The study's one person goes to the hand-made cohort at 1 : 5, and nobody has written them.
+    expect(people.sends).toBe(1);
+    expect(people.items).toEqual([]);
+    expect(people.missing).toBe(1);
+    expect(PreflightViewSchema.parse(await json(await h.app.request(routes.studyPreflight(P, study.id)))).totalPeople).toBe(1);
+    expect(StudySummaryViewSchema.parse(await json(await h.app.request(routes.study(P, study.id)))).sends).toBe(1);
+
+    expect(writesIn(h.calls)).toEqual([]);
+    expect(await h.store.listPeople({ projectId: P, includeArchived: true })).toHaveLength(rows);
+    await h.close();
+  });
+});
+
+/**
+ * The GitHub surface: the connection, the check, and the two triggers a person presses (ADR-0044).
+ *
+ * The one that matters most is the first. `GithubConnectionView` exists so a form can know that a
+ * token is stored without being shown it, and the route that serves it PARSES rather than building
+ * a literal — because the literal that looks right,
+ * `{ ...connection, tokenSet: … }`, typechecks clean and puts the token on the wire: TypeScript's
+ * excess-property check does not reach across a spread. So the assertion here is against the RAW
+ * response text and not against the parsed view, since a view built by a spread parses perfectly
+ * and carries the secret anyway.
+ */
+const REPO = "acme/tasklet";
+const TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+
+const connect = async (h: Harness, body: object = { repo: REPO, token: TOKEN }): Promise<Response> => put(h.app, routes.github(P), body);
+
+describe("the repository a project files into", () => {
+  it("answers nothing at all before anybody has made one", async () => {
+    const h = await harness();
+    h.resetCalls();
+    const res = await h.app.request(routes.github(P));
+    expect(res.status).toBe(200);
+    // Null, not an empty object: "no repository yet" and "a repository whose token you cannot see"
+    // are different states and the settings screen has to tell them apart.
+    expect(await res.json()).toBeNull();
+    expect(writesIn(h.calls)).toEqual([]);
+    await h.close();
+  });
+
+  it("never puts the token in the response body, even when one is stored", async () => {
+    const h = await harness();
+    const saved = await connect(h);
+    expect(saved.status).toBe(200);
+    // Stored, so there is something to leak.
+    expect((await h.store.getGithubConnection(P))?.token).toBe(TOKEN);
+
+    for (const res of [saved, await h.app.request(routes.github(P))]) {
+      const raw = await res.clone().text();
+      // The whole test. A parsed view would be clean either way.
+      expect(raw).not.toContain(TOKEN);
+      expect(raw).not.toContain("token\":");
+      const view = GithubConnectionViewSchema.parse(await res.json());
+      expect(view.tokenSet).toBe(true);
+      expect(view.repo).toBe(REPO);
+      // Never checked, so unknown — and `unknown` rather than `private`, so nothing reads an
+      // unchecked connection as safe.
+      expect(view.visibility).toBe("unknown");
+      expect(view.checkedAt).toBeNull();
+      expect(view.autoFile).toBe(false);
+    }
+    await h.close();
+  });
+
+  it("keeps the stored token when a PUT does not mention it, clears it on a blank and replaces it on a value", async () => {
+    const h = await harness();
+    await connect(h);
+
+    // Absent keeps. This is the case a form editing anything else sends, having never been shown
+    // the token it is not editing.
+    const kept = GithubConnectionViewSchema.parse(await json(await connect(h, { autoFile: true, labels: ["populace", "found-by-populace"] })));
+    expect(kept.tokenSet).toBe(true);
+    expect(kept.autoFile).toBe(true);
+    expect(kept.labels).toEqual(["populace", "found-by-populace"]);
+    expect(kept.repo).toBe(REPO);
+    expect((await h.store.getGithubConnection(P))?.token).toBe(TOKEN);
+
+    // A partial filter narrows one field and keeps the rest: the body carries no defaults, so
+    // `minSeverity` alone must not overwrite `kinds` with the schema's default.
+    const narrowed = GithubConnectionViewSchema.parse(await json(await connect(h, { filter: { minSeverity: "high" } })));
+    expect(narrowed.filter.minSeverity).toBe("high");
+    expect(narrowed.filter.kinds).toEqual(["bug", "coverage-gap", "abandonment"]);
+
+    // The empty string clears, which is the only way to remove a token without deleting the
+    // connection — and therefore has to be a value rather than an absence.
+    const cleared = GithubConnectionViewSchema.parse(await json(await connect(h, { token: "" })));
+    expect(cleared.tokenSet).toBe(false);
+    expect((await h.store.getGithubConnection(P))?.token).toBeUndefined();
+    // Everything else survived the clear.
+    expect(cleared.labels).toEqual(["populace", "found-by-populace"]);
+    expect(cleared.filter.minSeverity).toBe("high");
+
+    // A value replaces.
+    const replaced = GithubConnectionViewSchema.parse(await json(await connect(h, { token: "ghp_second_one_entirely" })));
+    expect(replaced.tokenSet).toBe(true);
+    expect((await h.store.getGithubConnection(P))?.token).toBe("ghp_second_one_entirely");
+    await h.close();
+  });
+
+  it("names the missing field rather than inventing a repository on a first PUT", async () => {
+    const h = await harness();
+    const res = await connect(h, { autoFile: true });
+    expect(res.status).toBe(400);
+    expect(await reason(res)).toContain("owner/name");
+    expect(await h.store.getGithubConnection(P)).toBeUndefined();
+    await h.close();
+  });
+
+  it("forgets the whole thing, token included, on DELETE", async () => {
+    const h = await harness();
+    await connect(h);
+    const res = await h.app.request(routes.github(P), { method: "DELETE" });
+    expect(res.status).toBe(204);
+    expect(await h.store.getGithubConnection(P)).toBeUndefined();
+    expect(await (await h.app.request(routes.github(P))).json()).toBeNull();
+    await h.close();
+  });
+
+  /**
+   * What the check learned was about a repository. Point the connection somewhere else and it is
+   * no longer true — and carrying it over is how an unchecked address comes to read as checked and
+   * private, which is exactly the state the public-repository confirmation exists to catch.
+   */
+  it("forgets what the check learned when the repository changes", async () => {
+    const h = await harness();
+    await connect(h);
+    h.github.repoCheck = { outcome: "ready", detail: null, visibility: "public", expiresAt: null };
+    await post(h.app, routes.githubCheck(P), { repo: REPO });
+    const checked = GithubConnectionViewSchema.parse(await json(await h.app.request(routes.github(P))));
+    expect(checked.visibility).toBe("public");
+    expect(checked.checkedAt).not.toBeNull();
+
+    const moved = GithubConnectionViewSchema.parse(await json(await connect(h, { repo: "acme/somewhere-else" })));
+    expect(moved.visibility).toBe("unknown");
+    expect(moved.checkedAt).toBeNull();
+    // The token is not what moved, so it is still there.
+    expect(moved.tokenSet).toBe(true);
+    await h.close();
+  });
+});
+
+describe("checking the repository", () => {
+  it("uses the stored token when the body carries none, and writes what it learned", async () => {
+    const h = await harness();
+    await connect(h);
+    h.github.repoCheck = { outcome: "ready", detail: null, visibility: "private", expiresAt: "2026-12-01T00:00:00.000Z" };
+    const result = GithubCheckResultSchema.parse(await json(await post(h.app, routes.githubCheck(P), { repo: REPO })));
+    expect(result.outcome).toBe("ready");
+    expect(result.visibility).toBe("private");
+    expect(result.expiresAt).toBe("2026-12-01T00:00:00.000Z");
+    expect(result.summary).toContain(REPO);
+    // The form has never been shown the token it is editing, so the check falls back to the
+    // stored one rather than asking github.com as nobody.
+    expect(h.github.asked).toEqual([{ repo: REPO, token: TOKEN }]);
+    // And a POST may write: this is the other reason it is not a GET.
+    const stored = await h.store.getGithubConnection(P);
+    expect(stored?.visibility).toBe("private");
+    expect(stored?.checkedAt).not.toBeNull();
+    await h.close();
+  });
+
+  it("prefers a token typed into the form over the stored one, and can check before a save", async () => {
+    const h = await harness();
+    const result = GithubCheckResultSchema.parse(await json(await post(h.app, routes.githubCheck(P), { repo: REPO, token: "ghp_not_saved_yet_abcdef" })));
+    expect(result.outcome).toBe("ready");
+    expect(h.github.asked).toEqual([{ repo: REPO, token: "ghp_not_saved_yet_abcdef" }]);
+    // Nothing was saved: a check is not a save, and the connect screen may ask before there is a row.
+    expect(await h.store.getGithubConnection(P)).toBeUndefined();
+    await h.close();
+  });
+
+  it("sends nothing at all when there is no token to send", async () => {
+    const h = await harness();
+    await connect(h, { repo: REPO });
+    const result = GithubCheckResultSchema.parse(await json(await post(h.app, routes.githubCheck(P), { repo: REPO })));
+    expect(result.outcome).toBe("refused");
+    expect(result.summary).toContain("no token");
+    expect(result.visibility).toBe("unknown");
+    // An unauthenticated request to a private repository is answered 404, which reads as "no such
+    // repository" and would send somebody hunting for a typo in a correct name.
+    expect(h.github.asked).toEqual([]);
+    await h.close();
+  });
+
+  it("says out loud that a public repository is public", async () => {
+    const h = await harness();
+    await connect(h);
+    h.github.repoCheck = { outcome: "ready", detail: null, visibility: "public", expiresAt: null };
+    const result = GithubCheckResultSchema.parse(await json(await post(h.app, routes.githubCheck(P), { repo: REPO })));
+    expect(result.visibility).toBe("public");
+    expect(result.summary).toContain("PUBLIC");
+    await h.close();
+  });
+
+  /**
+   * A check that did not reach github.com learned nothing, so it must record nothing.
+   *
+   * `checkedAt` means "when the check reached the repository". A timestamp written beside
+   * `visibility: "unknown"` would be a row claiming it had been checked and found to be neither
+   * public nor private — and the public-repository confirmation is decided off that field.
+   */
+  it("records nothing when github.com did not answer", async () => {
+    const h = await harness();
+    await connect(h);
+    h.github.repoCheck = { outcome: "ready", detail: null, visibility: "public", expiresAt: null };
+    await post(h.app, routes.githubCheck(P), { repo: REPO });
+    const checked = await h.store.getGithubConnection(P);
+    expect(checked?.visibility).toBe("public");
+
+    h.github.repoCheck = { outcome: "unreachable", detail: "the request timed out.", visibility: "unknown", expiresAt: null };
+    const result = GithubCheckResultSchema.parse(await json(await post(h.app, routes.githubCheck(P), { repo: REPO })));
+    expect(result.outcome).toBe("unreachable");
+    const after = await h.store.getGithubConnection(P);
+    expect(after?.visibility).toBe("public");
+    expect(after?.checkedAt).toBe(checked?.checkedAt);
+    await h.close();
+  });
+
+  it("reports each of the other outcomes in its own words", async () => {
+    const h = await harness();
+    await connect(h);
+    const cases: { check: RepoCheck; says: string }[] = [
+      { check: { outcome: "no-issues", detail: "acme/tasklet has its issue tracker switched off.", visibility: "private", expiresAt: null }, says: "switched off" },
+      { check: { outcome: "expired", detail: "that token expired on 1 May.", visibility: "unknown", expiresAt: "2026-05-01T00:00:00.000Z" }, says: "expired" },
+      { check: { outcome: "refused", detail: "Not Found", visibility: "unknown", expiresAt: null }, says: "refused this token" },
+      { check: { outcome: "unreachable", detail: "the request timed out.", visibility: "unknown", expiresAt: null }, says: "did not answer" },
+    ];
+    for (const { check, says } of cases) {
+      h.github.repoCheck = check;
+      const result = GithubCheckResultSchema.parse(await json(await post(h.app, routes.githubCheck(P), { repo: REPO })));
+      expect(result.outcome).toBe(check.outcome);
+      expect(result.summary).toContain(says);
+      expect(result.detail).toBe(check.detail);
+    }
+    await h.close();
+  });
+});
+
+/** A study with one problem reported in it, and the signature the results screen keys it by. */
+async function oneProblemFiled(h: Harness): Promise<{ study: Simulation; runId: string; signature: string }> {
+  const study = await ensureSimulation(h.store);
+  const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
+  await h.jobs.idle();
+  await h.runs.settled(started.runId);
+  const results = StudyResultsViewSchema.parse(await json(await h.app.request(routes.studyResults(P, study.id))));
+  const card = results.clusters[0];
+  if (!card) throw new Error("nothing was reported in that execution");
+  return { study, runId: started.runId, signature: card.signature };
+}
+
+describe("filing one problem", () => {
+  it("files it, answers 201 with the issue, and writes a ledger row", async () => {
+    const h = await harness({ policy: complains });
+    const { study, signature } = await oneProblemFiled(h);
+    await connect(h);
+
+    const res = await post(h.app, routes.studyIssue(P, study.id, signature));
+    expect(res.status).toBe(201);
+    const result = PublishIssueResultSchema.parse(await res.json());
+    expect(result.outcome).toBe("filed");
+    expect(result.issue?.number).toBe(1);
+    expect(result.issue?.repo).toBe(REPO);
+    expect(h.github.created).toHaveLength(1);
+    expect(await h.store.listFiledIssues(P)).toHaveLength(1);
+
+    // Pressed twice — a double click, or a click while a bulk job is running. The ledger is what
+    // makes the second press a comment rather than a second issue.
+    const again = await post(h.app, routes.studyIssue(P, study.id, signature));
+    expect(again.status).toBe(200);
+    expect(PublishIssueResultSchema.parse(await again.json()).outcome).not.toBe("filed");
+    expect(h.github.created).toHaveLength(1);
+    await h.close();
+  });
+
+  it("refuses clearly when there is nowhere to file", async () => {
+    const h = await harness({ policy: complains });
+    const { study, signature } = await oneProblemFiled(h);
+
+    const none = await post(h.app, routes.studyIssue(P, study.id, signature));
+    expect(none.status).toBe(409);
+    expect(await reason(none)).toContain("no repository");
+
+    // A repository with no token is a different refusal, and it names what is missing without
+    // saying anything about what is stored.
+    await connect(h, { repo: REPO });
+    const noToken = await post(h.app, routes.studyIssue(P, study.id, signature));
+    expect(noToken.status).toBe(409);
+    expect(await reason(noToken)).toContain("no token");
+    expect(h.github.created).toEqual([]);
+    await h.close();
+  });
+
+  it("is a 404 for a signature this study never reported", async () => {
+    const h = await harness({ policy: complains });
+    const { study } = await oneProblemFiled(h);
+    await connect(h);
+    const res = await post(h.app, routes.studyIssue(P, study.id, "bug:list_tasks:nothing-like-this"));
+    expect(res.status).toBe(404);
+    expect(h.github.created).toEqual([]);
+    await h.close();
+  });
+});
+
+describe("filing a study's problems in bulk", () => {
+  /** Two problems on two tools in one visit, so there are two clusters to file. */
+  const twoProblems: ScriptPolicy = (ctx: ScriptContext) => {
+    if (ctx.turn === 1) return { calls: [call("list_tasks", {})] };
+    if (ctx.turn > 2) return { calls: [call("done", { summary: "had a look", would_return: true })] };
+    const problem = (tool: string, title: string): ReturnType<typeof call> =>
+      call("file_finding", {
+        kind: "bug",
+        title,
+        description: "What happened is not what the product promises.",
+        expected: "It does what it says.",
+        observed: "It did something else.",
+        severity: "high",
+        confidence: 0.9,
+        tool,
+        evidence_calls: [ctx.lastResults[0]?.ref ?? ""],
+      });
+    return { calls: [problem("list_tasks", "list_tasks pages badly"), problem("search_tasks", "search_tasks ignores capital letters")] };
+  };
+
+  it("answers 202 with a job, and enqueues it under the kind that does NOT close a report window", async () => {
+    const h = await harness({ policy: twoProblems });
+    const { study, runId } = await oneProblemFiled(h);
+    await connect(h);
+    const before = await windowsOf(h.store, study);
+
+    const res = await post(h.app, routes.studyIssues(P, study.id));
+    expect(res.status).toBe(202);
+    const job = JobViewSchema.parse(await res.json());
+    // `issues.publish`, never `issues.cycle`. A succeeded cycle is the one thing that closes a
+    // report window, and "populace has reported on everything up to here" is a claim the
+    // automatic cycle makes and a button press does not — under the cycle's kind, one press would
+    // move that boundary and the next cycle would tell every issue its problem had gone quiet.
+    expect(job.kind).toBe("issues.publish");
+    expect(job.projectId).toBe(P);
+    // Named the execution too, so the progress rows land on its live feed — which also puts this
+    // row into the list `report-windows.ts` reads boundaries out of, and is what makes the kind
+    // above load-bearing rather than decorative.
+    expect(job.runId).toBe(runId);
+
+    await h.jobs.idle();
+    const settled = await h.store.getJob(job.id);
+    expect(settled?.status).toBe("succeeded");
+    expect(settled?.progress.label).toContain("filed");
+    expect(settled?.progress.label).toContain(REPO);
+    // Publishing spends no model money, by construction: nothing here verifies and nothing calls
+    // a model (ADR-0044).
+    expect(settled?.costUsd).toBe(0);
+    expect(h.github.created).toHaveLength(2);
+    expect(await h.store.listFiledIssues(P)).toHaveLength(2);
+
+    // And said at the altitude the boundary is actually read at: `reportWindows` takes only a
+    // succeeded job of the cycle's kind out of the run's job list, so the claim to assert is that
+    // this press left none there. The window count is a sanity check on top of it and not the
+    // discriminator — a boundary that lands after the last visit of a finished execution closes
+    // the window it was already in rather than opening another.
+    expect((await h.store.listJobs({ runId })).filter((row) => row.kind === "issues.cycle")).toEqual([]);
+    expect(await windowsOf(h.store, study)).toHaveLength(before.length);
+    await h.close();
+  });
+
+  it("keeps what it filed when one issue fails, and names the counts in the error", async () => {
+    const h = await harness({ policy: twoProblems });
+    const { study } = await oneProblemFiled(h);
+    await connect(h);
+    // The second create is refused; the first has already been filed and its ledger row written.
+    h.github.refuseCreatesFrom = 2;
+
+    const job = JobViewSchema.parse(await json(await post(h.app, routes.studyIssues(P, study.id))));
+    await h.jobs.idle();
+    const settled = await h.store.getJob(job.id);
+    expect(settled?.status).toBe("failed");
+    expect(settled?.error).toContain("1 filed");
+    expect(settled?.error).toContain("1 not filed");
+    expect(settled?.error).toContain("somebody's repository said no");
+    // The counts survive the failure on the row a person reads, and so does the issue itself: the
+    // ledger row is written per issue, before the next one is started.
+    expect(settled?.progress.label).toContain("1 filed");
+    expect(h.github.created).toHaveLength(1);
+    expect(await h.store.listFiledIssues(P)).toHaveLength(1);
+    await h.close();
+  });
+
+  it("refuses before enqueueing anything when there is nowhere to file", async () => {
+    const h = await harness({ policy: twoProblems });
+    const { study } = await oneProblemFiled(h);
+    const jobsBefore = (await h.store.listJobs({})).length;
+    const res = await post(h.app, routes.studyIssues(P, study.id));
+    expect(res.status).toBe(409);
+    expect(await reason(res)).toContain("no repository");
+    // A person who presses a button reads the reason on the press, not in a failed job row.
+    expect((await h.store.listJobs({})).length).toBe(jobsBefore);
+    await h.close();
+  });
+});
+
+/**
+ * What a digest job SPENDS, which was invisible to the only dollar ceiling in the system.
+ *
+ * `costSince` sums `wakes.cost_usd` for visits and `jobs.cost_usd` by `project_id` for everything
+ * spent outside a wake. The digest job charged nothing and carried no project, so a `model` judge
+ * at the default `claude-opus-5` on `effort: "high"`, up to `maxFindings` of them, spent money that
+ * no ceiling and no project overview could see — and an automatic report cycle is a digest on a
+ * timer for as long as a study runs.
+ */
+describe("what a digest job spends", () => {
+  const judgeBy = async (h: Harness, judge: "model" | "typesafe" | "heuristic"): Promise<void> => {
+    const res = await put(h.app, routes.settings(P), { verifier: { judge } });
+    expect(res.status, await res.clone().text()).toBe(200);
+  };
+
+  it("charges the judge's dollars to the project's day", async () => {
+    const h = await harness({ policy: complains, judges: true });
+    await judgeBy(h, "model");
+    const { runId } = await oneProblemFiled(h);
+    const since = new Date(Date.now() - 86_400_000);
+    const beforeSpend = await h.store.costSince({ projectId: P, kind: "authoring" }, since);
+
+    const job = JobViewSchema.parse(await json(await post(h.app, routes.runDigestJob(runId))));
+    // The project is on the row from the moment it is QUEUED: a job that only learns its project
+    // once it runs is a job whose spend is unattributable for as long as it sits in the queue.
+    expect(job.projectId).toBe(P);
+    await h.jobs.idle();
+
+    const settled = await h.store.getJob(job.id);
+    expect(settled?.status).toBe("succeeded");
+    expect(settled?.costUsd).toBeGreaterThan(0);
+    // And the ceiling can see it. This is the whole point: `costSince({ projectId })` is what the
+    // project's daily ceiling is read through, so a runaway cycle now stops itself.
+    const after = await h.store.costSince({ projectId: P, kind: "authoring" }, since);
+    expect(after - beforeSpend).toBeCloseTo(settled?.costUsd ?? 0, 8);
+    await h.close();
+  });
+
+  it("refuses to check anything when the project is already at its ceiling", async () => {
+    const h = await harness({ policy: complains, judges: true });
+    await judgeBy(h, "model");
+    const { runId } = await oneProblemFiled(h);
+    // Somebody else's spend today, on this project, over the $50 default ceiling.
+    const at = new Date().toISOString();
+    await h.store.saveJob({ id: "spent-it-all", kind: "people.generate", status: "succeeded", projectId: P, runId: null, costUsd: 60, progress: { done: 1, total: 1, label: "" }, error: null, createdAt: at, startedAt: at, endedAt: at });
+
+    const job = JobViewSchema.parse(await json(await post(h.app, routes.runDigestJob(runId))));
+    await h.jobs.idle();
+    const settled = await h.store.getJob(job.id);
+    expect(settled?.status).toBe("failed");
+    expect(settled?.error).toContain("ceiling");
+    expect(settled?.costUsd).toBe(0);
+    // Refused rather than trimmed: nothing was checked, so nothing carries a verdict.
+    expect((await h.store.listFindings({ runIds: [runId], unverifiedOnly: true })).length).toBeGreaterThan(0);
+    await h.close();
+  });
+
+  /**
+   * The typed judge was DEAD: nothing built a client, so `verifier.judge: "typesafe"` threw from
+   * inside `verifyFinding` once per finding — a stack trace per problem instead of one sentence
+   * naming the key, and nothing at all when there was no problem to throw on.
+   *
+   * That last case is what this pair of tests turns on, because it is the dangerous one: with the
+   * refusal only inside the verifier, a digest over an execution that reported nothing SUCCEEDS
+   * with a misconfigured judge, and the operator is told everything is fine by a pass that checked
+   * nothing and could not have.
+   */
+  it("refuses a typed judge with no key, and checks nothing", async () => {
+    const h = await harness({ policy: complains, judges: true });
+    await judgeBy(h, "typesafe");
+    const { runId } = await oneProblemFiled(h);
+
+    const job = JobViewSchema.parse(await json(await post(h.app, routes.runDigestJob(runId))));
+    await h.jobs.idle();
+    const settled = await h.store.getJob(job.id);
+    expect(settled?.status).toBe("failed");
+    expect(settled?.error).toContain("TYPESAFE_API_KEY");
+    // Named the key and stopped. Nothing was checked, and nothing was charged.
+    expect(settled?.costUsd).toBe(0);
+    const findings = await h.store.listFindings({ runIds: [runId] });
+    expect(findings.every((finding) => finding.verification === null)).toBe(true);
+    await h.close();
+  });
+
+  it("refuses a typed judge with no key even when there is nothing to check", async () => {
+    // Nobody reports anything, so there is no finding for the verifier to throw on: the refusal
+    // has to come from the PRE-FLIGHT or it does not come at all.
+    const h = await harness({ judges: true });
+    await judgeBy(h, "typesafe");
+    const study = await ensureSimulation(h.store);
+    const started = (await json(await post(h.app, routes.studyRuns(P, study.id)))) as { runId: string };
+    await h.jobs.idle();
+    await h.runs.settled(started.runId);
+    expect(await h.store.listFindings({ runIds: [started.runId] })).toEqual([]);
+
+    const job = JobViewSchema.parse(await json(await post(h.app, routes.runDigestJob(started.runId))));
+    await h.jobs.idle();
+    const settled = await h.store.getJob(job.id);
+    expect(settled?.status).toBe("failed");
+    expect(settled?.error).toContain("TYPESAFE_API_KEY");
+    await h.close();
+  });
+
+  it("runs the typed judge when a client is there, and charges what it cost", async () => {
+    const asked: number[] = [];
+    const typesafe: TypesafeClient = {
+      ask: (request) => {
+        asked.push(Object.keys(request.questions).length);
+        return Promise.resolve({
+          model: "jev-1.13.0",
+          answers: {
+            environmental: { type: "noul", noul: 0.02 },
+            recurred: { type: "choice", choice: "same_problem", probabilities: { same_problem: 0.96, not_the_same_problem: 0.04 }, confidence: 0.96 },
+          },
+          usage: { input_tokens: 5_000, output_tokens: 0 },
+        });
+      },
+    };
+    const h = await harness({ policy: complains, typesafe });
+    await judgeBy(h, "typesafe");
+    const { runId } = await oneProblemFiled(h);
+
+    const job = JobViewSchema.parse(await json(await post(h.app, routes.runDigestJob(runId))));
+    await h.jobs.idle();
+    const settled = await h.store.getJob(job.id);
+    expect(settled?.status, settled?.error ?? "").toBe("succeeded");
+    expect(asked.length).toBeGreaterThan(0);
+    // Two narrow questions in ONE request, composed in code — not one call per question.
+    expect(asked.every((count) => count === 2)).toBe(true);
+    const judged = (await h.store.listFindings({ runIds: [runId] })).filter((finding) => finding.verification !== null);
+    expect(judged.length).toBeGreaterThan(0);
+    expect(judged.every((finding) => finding.verification?.judge === "typesafe")).toBe(true);
+    // Jev's input price, charged onto the job and therefore onto the project's day.
+    expect(settled?.costUsd).toBeGreaterThan(0);
     await h.close();
   });
 });

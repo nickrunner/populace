@@ -34,22 +34,24 @@ give up?"
 ## 2. The vocabulary, as it now stands
 
 The restructure (ADR-0029) replaced the one noun between "the app" and "an agent" with five, and
-that changes how every screen and every roadmap item is named.
+that changes how every screen and every roadmap item is named. Three later decisions moved two
+things without adding a noun: the headcount now belongs to the study (ADR-0041), the product's word
+for a simulation is now study (ADR-0042), and every noun has a list page and a builder (ADR-0043).
 
 | Noun | What it owns | What it replaced |
 | --- | --- | --- |
-| **Project** | Scopes authoring: targets, personas, cohorts, populations, simulations, settings, triage. | Nothing; new. |
+| **Project** | Scopes authoring: targets, personas, cohorts, populations, studies, settings, triage. | Nothing; new. |
 | **Target** | The app under test, its MCP endpoints, its identity strategy, **and its tool policy** (ADR-0033). | A `target` block in YAML with no policy of its own. |
 | **Persona** | A template: role, backstory, goals, constraints, traits. **No headcount.** | A persona that also carried its count. |
 | **Cohort** | **A shared condition and a mix of personas** (ADR-0039): `context`, `mix[{personaId, weight}]`, an overlay, the seed, cadence and visit-cap overrides. No headcount. | "N people on one persona" owning `size` (ADR-0029), which forced a cohort per persona per condition. |
 | **Person** | A durable named individual in a lane, `cohortSlug.personaSlug#ordinal`, stored once and never silently overwritten, with the sampled dimensions settable by hand (ADR-0031, amended). | Nothing; new, and it is the most product-visible addition. |
-| **Population** | Which cohorts go and how many of each: `members[{cohortId, size}]`. Setting the number writes the people. | Composition and nothing else, with the size on the cohort. |
-| **Simulation** | A population, a target and a mode — **ephemeral** or **longitudinal** (ADR-0030). What a user presses go on and what results belong to. | Nothing; new. The thing a user actually has in their head. |
-| **Run** | One execution of a simulation, with a `seq` counting from 1 and a frozen config snapshot. | An unnumbered run id. |
+| **Population** | Which cohorts go and in what ratio: `members[{cohortId, weight}]` (ADR-0041). Reusable across studies; **no headcount.** | `members[{cohortId, size}]`, the only headcount (ADR-0039) — which made a population at ten and the same at forty two populations. |
+| **Study** | A population, a target, a mode — **ephemeral** or **longitudinal** (ADR-0030) — and a **size**, the one headcount, dealt across the population's and cohorts' weights; optionally a **brief** told to everyone it sends. What a user presses go on and what results belong to. The code calls it a `Simulation` (ADR-0032). | "Simulation" (ADR-0029, renamed by ADR-0042). The thing a user actually has in their head, under the word they use for it. |
+| **Run** | One execution of a study, with a `seq` counting from 1 and a frozen config snapshot. | An unnumbered run id. |
 
-Two translations matter for everything user-facing (ADR-0032): **an agent is a participant, and a
-wake is a visit**, on the wire and on every screen. The rows keep their old names; the product
-does not use them. This document uses the product's words.
+Three translations matter for everything user-facing (ADR-0032, ADR-0042): **an agent is a
+participant, a wake is a visit, and a simulation is a study**, on the wire and on every screen. The
+rows keep their old names; the product does not use them. This document uses the product's words.
 
 ### What the restructure got right that the old roadmap missed
 
@@ -83,7 +85,9 @@ surfaces exist: results, gaps, who walked away, a person's history, and the visi
 (ADR-0024). The store is the source of truth for configuration and YAML is an import
 (ADR-0025) — which is D3, decided and now implemented. Live updates run over SSE on a persisted,
 resumable event log (ADR-0026). Long operations are persisted jobs (ADR-0027). The library
-screens author targets, personas, cohorts, people and populations. Cost is estimated before a run
+screens author targets, personas, cohorts and populations, and the studies dashboard authors studies,
+each noun with a list and one builder (ADR-0043); people are met and edited through the study that
+sends them (ADR-0041). Cost is estimated before a run
 starts, and `preflight` says who is going, what they will meet and what it will cost.
 
 **Most of the loop (was M3).** Findings carry a content-derived `signature`; triage is keyed by
@@ -112,10 +116,38 @@ from *provision-failed* from *rejected* from *accepted* from *connected-only* �
 whole value, because a user cannot infer any of that from a 401. The old roadmap's "connect
 wizard" implied this and never named it.
 
+**Filing a problem as a GitHub issue (ADR-0044), and a report cycle (ADR-0045).** R2's *results*
+half has shipped, and more than its line asked for. A project connects one repository with a
+fine-grained token; a problem becomes an issue whose body is the fix prompt, with its reproduction
+and evidence intact and its credentials redacted, readable by somebody with no populace install. The
+same problem is not filed twice — the ledger is keyed on the cluster's **member** signatures, because
+the representative moves when a digest writes a verdict, and a hidden marker in each body survives
+the local database being rebuilt. A problem reported again gets a comment every window it is reported in;
+a problem that has gone quiet gets one **once per piece of news**, recorded on the ledger row, since
+the alternative was the same absence restated on the hour for the life of the study. A closed issue
+is reopened without any claim about why it was closed.
+
+Beyond R2's line, and named as such: a **bulk** action, and an **automatic** path. The automatic one
+required fixing something that had been quietly broken — `new`/`open`/`gone quiet`/`back` was
+computed over *executions*, and a longitudinal study has exactly one, so three of those four states
+were unreachable for the mode this product's loop depends on. A **report cycle** is now a window
+boundary inside a run, which makes the existing arithmetic work unchanged and gives a continuously
+running study a state machine on its own results page — with one caveat worth knowing before
+relying on it: a window boundary inside a run is a succeeded `issues.cycle` job, and only an armed
+cycle enqueues one, so a study with no repository connected still has a single window and the
+`gone quiet`/`back` states stay out of reach for it.
+
+Two honest limits. A complaint reworded from scratch still gets a second issue (§5's 0% number is
+what bounds this, and nothing here improves it). And filing spends no model money and opens no
+session to the target, but the **digest** the automatic cycle runs first does spend, on a judge whose
+default is the strongest model at high effort — see D5 and ADR-0045's open items.
+
 ### Not shipped
 
-- **The returning verdict.** See §5 — this is the gap that matters most.
-- **Export to an issue tracker.** No GitHub export exists.
+- **The returning verdict.** See §5 — this is **still** the gap that matters most, and R2's results
+  half (below) jumped ahead of it deliberately: filing issues needs no better verdict than the one
+  that exists, and until something leaves the building there is nothing for anybody to act on. That
+  ordering was a choice, not a re-ranking. R1 is still next.
 - **A shareable digest.** Markdown export exists from the CLI; there is no shareable result.
 - **YAML export.** Import works: a `populace.yaml` seeds the authored tables the first time a store
   is opened, and it is an import rather than a sync. There is no way back out. A cohort cast in the
@@ -123,7 +155,7 @@ wizard" implied this and never named it.
   local SQLite file (DATA-MODEL §12). The old roadmap said YAML would become "an export and an
   import"; only half of that is true.
 - **Persisted digests and clusters.** Computed per request, deliberately, and fine at local scale.
-- **Scheduled or unattended runs.** A longitudinal simulation runs only as long as `serve` does.
+- **Scheduled or unattended runs.** A longitudinal study runs only as long as `serve` does.
   There is no cron, no daemonisation, no wake-on-boot. See D6.
 - **A CI mode.** Nothing consumes the API non-interactively.
 - **A migration framework.** Deliberately deleted, with a named trigger for its return. See D5.
@@ -135,7 +167,7 @@ Nick's D1 stands: **v1 serves the developer and the product owner together.** Th
 framing survives the restructure and is strengthened by it, because the new nouns split cleanly
 along the same seam.
 
-**The evidence surface — for the product owner.** A simulation's results: problems clustered by
+**The evidence surface — for the product owner.** A study's results: problems clustered by
 signature, how many people hit each one, which cohorts, coverage gaps, who walked away and over
 what, in their own words with their own names. Nothing here requires knowing what MCP is. The
 unit is *an errand a person could not finish*.
@@ -146,7 +178,7 @@ replay. Token and dollar cost per visit. First contact's failure modes. The unit
 that went wrong*.
 
 The architecture enforces the seam rather than leaving it to screen discipline: the project
-overview and simulation results payloads **carry no person names at all**, and a name first
+overview and study results payloads **carry no person names at all**, and a name first
 appears on a cluster detail as the author of a quote, asserted by a test that reads the raw
 response bodies (ADR-0032, WEB-ARCHITECTURE §5). That is a better mechanism than the old
 roadmap's rule, and it should stay.
@@ -213,7 +245,7 @@ Ranked by value to a real user. The surface each lands on is noted.
 
 ### 6.1 Pre-launch readiness — "can anyone actually use this?" *(both)*
 
-Point a simulation at an MCP server, send a cohort, read the results. The repository still proves
+Point a study at an MCP server, give it a size, read the results. The repository still proves
 it: a healthy population finds all four of Tasklet's planted defects and the reports tests assert
 exactly that.
 
@@ -268,10 +300,13 @@ whether it is fixed — without composing a CLI command or reasoning about a set
 
 ### R2 — Work that leaves the building
 
-Everything a user makes is currently trapped in one local database. Two halves:
+Everything a user makes is currently trapped in one local database. Two halves, and the first has
+shipped:
 
-- **Results.** Export a problem to a GitHub issue, carrying its reproduction steps and its
-  evidence. A shareable result a product owner can send to somebody who does not run `serve`.
+- ~~**Results.** Export a problem to a GitHub issue, carrying its reproduction steps and its
+  evidence.~~ **Shipped 2026-09-30** (ADR-0044, ADR-0045). What is left of this half is *a shareable
+  result a product owner can send to somebody who does not run `serve`* — a filed issue is that for
+  one problem and for a reader who has a GitHub account; a shareable **digest** is not built.
 - **Config.** YAML export, so the authored layer can go back into a repository.
 
 The config half is a D1 consequence and is easy to under-rate. v1 serves developers, and a
@@ -282,9 +317,9 @@ framework exists (D5), can be dropped by the next schema change. Import-only was
 for getting the database to be the source of truth; leaving it import-only makes the authored
 layer unshareable and unbacked.
 
-*Done when:* a problem becomes a filed issue with its reproduction intact; a result can be read by
-somebody with no populace install; and a project authored entirely in the browser can be written
-out as YAML, committed, and used to seed a fresh store.
+*Done when:* ~~a problem becomes a filed issue with its reproduction intact~~ (done); a result can be
+read by somebody with no populace install; and a project authored entirely in the browser can be
+written out as YAML, committed, and used to seed a fresh store.
 
 ### R3 — Unattended running
 
@@ -326,7 +361,7 @@ model carries no target-kind discriminator, and `Target` is an MCP connection co
 (DATA-MODEL §12).
 
 **D3 — Where does configuration live? The database, with YAML as import.** Decided as an assumed
-default; now implemented as ADR-0025. YAML can create cohorts and simulations on first open; it
+default; now implemented as ADR-0025. YAML can create cohorts and studies on first open; it
 is an import, not a sync.
 
 **D4 — Who pays for model calls in the cloud? Bring your own key.** Unchanged, and still only
@@ -345,11 +380,35 @@ before the next schema change, not an R5 item.
 R2, because authored rows are the user's work and the cost of being wrong is somebody's typed
 credentials and cast cohorts.
 
+*Sharpened 2026-09-30 (ADR-0044).* R2's results half shipped before the migration runner, and it
+made this worse in two specific ways rather than one general one. A long-lived database now holds a
+**fine-grained GitHub token** — which is arguably the named trigger itself, without waiting for
+anybody else's laptop — and an **issue ledger**, which a `SCHEMA_SHAPE` bump drops, and which when
+dropped re-files every issue in somebody's repository. The hidden marker in each issue body is what
+makes that survivable in the meantime, and it is the strongest argument for reconciling against the
+repository rather than trusting local state; it is a mitigation, not a reason to wait longer.
+
+**And one hazard worth reading beside this has since been closed, in a way worth recording.** The
+verifier's default judge was `claude-opus-5` at `effort: "high"` with `maxFindings: 50` — chosen
+when a digest was something a person asked for. ADR-0045's report cycle runs a digest **on a clock,
+for as long as a study runs**, so a longitudinal study left going on default config could spend on
+the most expensive model in the table indefinitely, regardless of what the population itself ran.
+The argument for leaving it was that lowering it quietly would change every digest anybody asks for
+— which had it backwards: the danger was that the same setting served both the digest a person
+requested and the cycle nobody watches. The paid judge is now opt-in (`judge: "heuristic"` by
+default, ADR-0006 amendment), so asking for a written verdict is a choice, and the agents' own
+default moved to `claude-sonnet-5-5` at `effort: "low"` for the same reason — a study pays for
+deliberation on every visit by every person it sends.
+
+**What is still open:** the project's daily ceiling is read before anything is spent and bounds the
+damage per day and not per study, so a judge deliberately armed on a repeating cycle remains a
+standing bill with no per-study limit. A per-study ceiling is the missing piece.
+
 **D6 — Does unattended running come before cloud?**
 
-A longitudinal simulation is the product's answer to "what happens to people who use this for a
+A longitudinal study is the product's answer to "what happens to people who use this for a
 fortnight", and today it stops when `serve` stops. Either populace grows a local always-on mode
-before cloud, or longitudinal simulations stay a supervised activity until R5.
+before cloud, or longitudinal studies stay a supervised activity until R5.
 
 *Recommendation:* let it wait for cloud. A local always-on service is a different support surface
 — process management, restarts, log rotation — for a product that is still local-first, and R5

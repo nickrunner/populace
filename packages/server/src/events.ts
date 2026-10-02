@@ -170,6 +170,17 @@ export class RecordingStore implements Store {
   getSignInGrant: Store["getSignInGrant"] = (...args) => this.inner.getSignInGrant(...args);
   listSignInGrants: Store["listSignInGrants"] = (...args) => this.inner.listSignInGrants(...args);
   deleteSignInGrant: Store["deleteSignInGrant"] = (...args) => this.inner.deleteSignInGrant(...args);
+
+  /* The GitHub connection holds a token and the ledger holds issue numbers; neither is a row a run
+     produced, so both pass through unlogged. Logging either would be the one way a token reaches an
+     event payload, which is the thing ADR-0040 forbids outright. */
+  saveGithubConnection: Store["saveGithubConnection"] = (...args) => this.inner.saveGithubConnection(...args);
+  getGithubConnection: Store["getGithubConnection"] = (...args) => this.inner.getGithubConnection(...args);
+  deleteGithubConnection: Store["deleteGithubConnection"] = (...args) => this.inner.deleteGithubConnection(...args);
+  saveFiledIssue: Store["saveFiledIssue"] = (...args) => this.inner.saveFiledIssue(...args);
+  listFiledIssues: Store["listFiledIssues"] = (...args) => this.inner.listFiledIssues(...args);
+  matchFiledIssues: Store["matchFiledIssues"] = (...args) => this.inner.matchFiledIssues(...args);
+  growFiledIssue: Store["growFiledIssue"] = (...args) => this.inner.growFiledIssue(...args);
   savePersona: Store["savePersona"] = (...args) => this.inner.savePersona(...args);
   getPersona: Store["getPersona"] = (...args) => this.inner.getPersona(...args);
   listPersonas: Store["listPersonas"] = (...args) => this.inner.listPersonas(...args);
@@ -217,6 +228,10 @@ function summarise(event: TraceEvent): string {
       return event.tool;
     case "identity":
       return `${event.event} (${event.strategy})`;
+    case "tools":
+      return event.added.length > 0 || event.removed.length > 0
+        ? `the app's tools changed (${[...event.added.map((name) => `+${name}`), ...event.removed.map((name) => `-${name}`)].join(", ")})`
+        : "the app said its tools changed";
     case "finding":
       return event.title;
     case "memory":

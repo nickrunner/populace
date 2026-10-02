@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { q } from "../queries.js";
-import { useSimulation } from "../context.jsx";
+import { useStudy } from "../context.jsx";
 import { inTheirWords } from "../format.js";
 import {
   Card,
@@ -56,7 +56,7 @@ import {
  * person is missing, which is the opposite of what this screen is for.
  */
 export function WhoLeft({ runId }: { runId: string }) {
-  const { href } = useSimulation();
+  const { href } = useStudy();
   const findings = useQuery(q.findings(runId, "?kind=abandonment"));
   const participants = useQuery(q.participants(runId));
 

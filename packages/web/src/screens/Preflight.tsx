@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api.js";
 import { q } from "../queries.js";
-import { useProject, useSimulation } from "../context.jsx";
+import { useProject, useStudy } from "../context.jsx";
 import { people, plural } from "../format.js";
 import {
   Badge,
@@ -59,8 +59,8 @@ import {
  *
  * **It is in the rail** (§6.3 row 13, "promote it"). It was a footnote link inside `GetStarted`'s
  * last step, which meant the only way to read what an execution will cost was to already be
- * halfway through setting one up. It is a row in the simulation's own navigation group now, so it
- * is reachable from anywhere inside the simulation, including from the results of the last one.
+ * halfway through setting one up. It is a row in the study's own navigation group now, so it
+ * is reachable from anywhere inside the study, including from the results of the last one.
  *
  * **Each cohort is drawn as the mark draws one** (DESIGN-SYSTEM §1.2 M4). The hand-sized 420px
  * proportion bar is gone: a `CohortCapsule`'s length *is* its headcount, so a column of them is a
@@ -73,7 +73,7 @@ import {
  */
 
 /**
- * The Settings blocks a simulation sets for itself, in the words the Settings screen uses for
+ * The Settings blocks a study sets for itself, in the words the Settings screen uses for
  * them. It asks each override block what it HOLDS rather than comparing it to a set of defaults,
  * so it carries no fingerprint of the old ones to go stale on a row written before the fix.
  */
@@ -110,16 +110,16 @@ function castOf(cohort: {
 
 export function Preflight() {
   const { key, href } = useProject();
-  const { key: simKey, simulation, href: simHref } = useSimulation();
+  const { key: studyKey, study, href: studyHref } = useStudy();
   const navigate = useNavigate();
   const queries = useQueryClient();
-  const preflight = useQuery(q.preflight(key, simKey));
+  const preflight = useQuery(q.preflight(key, studyKey));
 
   const start = useMutation({
-    mutationFn: () => api.startRun(key, simKey, {}),
+    mutationFn: () => api.startStudyRun(key, studyKey, {}),
     onSuccess: async () => {
       await queries.invalidateQueries();
-      void navigate(simHref("live"));
+      void navigate(studyHref("live"));
     },
   });
 
@@ -128,7 +128,7 @@ export function Preflight() {
   const view = preflight.data;
   const blockersId = useId();
   const ready = view !== undefined && view.blockers.length === 0;
-  const running = view?.simulation.status === "running";
+  const running = view?.study.status === "running";
 
   const state: StateKind | undefined = preflight.isPending
     ? "loading"
@@ -142,8 +142,8 @@ export function Preflight() {
         <PageHeader
           title="Before you send them"
           crumbs={[
-            { label: "Simulations", to: href() },
-            { label: simulation.name, to: simHref() },
+            { label: "Studies", to: href() },
+            { label: study.name, to: studyHref() },
             { label: "Before you send them" },
           ]}
           lede={
@@ -217,7 +217,7 @@ export function Preflight() {
           <CostEstimate
             people={view.totalPeople}
             cohorts={view.cohorts.length}
-            plan={visitPlanOf(view.estimate, view.simulation.visitsPerPerson)}
+            plan={visitPlanOf(view.estimate, view.study.visitsPerPerson)}
             basis={costBasisOf(view.estimate, true)}
             trailing={
               <Stat
@@ -238,9 +238,9 @@ export function Preflight() {
             and this is the last screen before the money. A `MetaSentence`, not a `Card` — it is
             a qualification of the number above, not an aside beside it (§3, organism 1).
           */}
-          {view.simulation.overriding.length === 0 ? null : (
+          {view.study.overriding.length === 0 ? null : (
             <MetaSentence>
-              This simulation carries its own {listOf(view.simulation.overriding)}, so what
+              This study carries its own {listOf(view.study.overriding)}, so what
               Settings says is not what this run is held to.
             </MetaSentence>
           )}
@@ -261,8 +261,17 @@ export function Preflight() {
                     />
                     <MetaLine
                       facts={[
-                        // Who they are drawn from at this size: "6 First-time visitor, 4 Power user".
-                        { key: "persona", node: cohort.personas.map((persona) => `${String(persona.people)} ${persona.name}`).join(", ") },
+                        // Who they are drawn from at this size, as the deal reads (ADR-0041): one
+                        // fact per persona in this cohort, named as "First-time visitors in Mobile
+                        // signups: 3". A persona the deal reaches nobody from at this size says so
+                        // in words, because a silent zero here is the cue the size needs raising.
+                        ...cohort.personas.map((persona) => ({
+                          key: `persona-${persona.name}`,
+                          node:
+                            persona.people === 0
+                              ? `${persona.name} in ${cohort.name} would send nobody at this size`
+                              : `${persona.name} in ${cohort.name}: ${String(persona.people)}`,
+                        })),
                         { key: "slug", node: <Mono size="code-sm">{cohort.slug}</Mono> },
                         ...(cohort.sampleNames.length === 0
                           ? []
@@ -414,7 +423,7 @@ export function Preflight() {
           <Card pad="roomy">
             <Inline gap={6} align="center" wrap>
               <Text size="read" tone="soft" as="p" className="min-w-0 flex-1">
-                {view.simulation.mode === "ephemeral"
+                {view.study.mode === "ephemeral"
                   ? "Everyone arrives remembering nothing and stops when their visits are used up. Run it again later and it starts over — different people will try different things, so expect the numbers to move even when nothing has changed."
                   : "They keep coming back, building on what they remember, until you pause it."}
               </Text>

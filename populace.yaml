@@ -56,13 +56,15 @@ verifier:
 
 digestDir: digests
 
-# Who exists. A COHORT is N people who share one persona; the population is the cohorts together.
-# There is no scale factor: a cohort's size is the only number that decides how many people exist.
+# Who exists. A COHORT is people who share a condition, drawn from a mix of personas; the population is
+# the cohorts together. In this file each cohort's persona carries a count (`size`), which the CLI daemon
+# runs directly. On import the counts become weights, and the study's `size` is their sum (ADR-0041).
 population:
   id: tasklet-trial
   name: Everyone
 
-# What to run. A simulation is the population against the target, in one of two modes:
+# What to run. A STUDY is the population against the target, in one of two modes. The key is also read
+# as `studies:`, and a study may carry `size:`; without one it sends the cohorts' counts summed.
 #   ephemeral    - clean slate every execution, bounded by visitsPerPerson, ends on its own
 #   longitudinal - memory, accounts and visits accumulate; paused and resumed rather than re-run
 simulations:
@@ -130,5 +132,3 @@ cohorts:
       budgetUsd: 20
       # This cohort pushes hardest on scale and paging, so it gets the stronger model.
       model: { model: claude-opus-5, effort: high }
-      tools:
-        destructive: confirm

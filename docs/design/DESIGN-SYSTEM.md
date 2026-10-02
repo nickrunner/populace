@@ -19,7 +19,7 @@ by sending people in. So the interface is built like a **ruled instrument with a
 
 - **Space Grotesk names things. Source Serif 4 says things. IBM Plex Mono is what the machine
   emitted.** That is the whole typographic system, and it is semantic rather than size-based. A
-  simulation's name is sans because it is a name. "47 visits turned up 4 problems" is serif
+  study's name is sans because it is a name. "47 visits turned up 4 problems" is serif
   because it is a sentence. `search_tasks` is mono because the target app is speaking.
 - **Structure is carried by rules and alignment, not by boxes.** The app today has 85 `<Card>`s
   and `className="p-4"` fifty times; a finding, a form, an error and a stat strip all arrive as
@@ -43,7 +43,7 @@ by sending people in. So the interface is built like a **ruled instrument with a
 A reviewer should be able to point at any one of these and say "this is missing."
 
 **M1 — Three voices, one grammar.** The page tells you what *kind* of thing each string is by
-which typeface sets it. Peaks on the Results screen: a sans `<h1>` naming the simulation, a 30px
+which typeface sets it. Peaks on the Results screen: a sans `<h1>` naming the study, a 30px
 serif sentence saying what happened, a row of sans figures measuring it, then serif
 finding-sentences each carrying a sans severity word and a mono tool name. Four registers in
 400px of vertical space and not one box drawn. It survives total webfont failure, because the law
@@ -589,7 +589,7 @@ All Space Grotesk. Weight ceiling **700** (verified: the shipped variable TTF ha
 | Utility | Size / line | wght | tracking | Case | For |
 |---|---|---|---|---|---|
 | `t-masthead` | `clamp(2.75rem, 6.4vw, 4.25rem)` 44→68 | **300** | −0.03em | sentence | the landing hero headline, once per site |
-| `t-title` | 24 / 30 | 500 | −0.015em | sentence | `<h1>`: the name of a project, simulation, person, target, persona |
+| `t-title` | 24 / 30 | 500 | −0.015em | sentence | `<h1>`: the name of a project, study, person, target, persona |
 | `t-figure` | 32 / 36 | 500 | −0.02em | — | a `Stat` value |
 | `t-figure-sm` | 18 / 24 | 500 | −0.01em | — | inline counts, ledger fractions, the rail's numbers |
 | `t-name` | 15 / 20 | 500 | −0.005em | sentence | a record's name inside a row, cell or card |
@@ -832,8 +832,11 @@ carried by **three redundant channels at once**: the **count** (the severity sta
 the **word** (`t-label` in the severity colour), and the **hue**. Remove any one and it still
 reads. The same discipline applies everywhere state exists:
 
-- A verdict is a square `Badge` with the word — `confirmed` / `not reproduced` / `inconclusive` /
-  `not checked yet`.
+- A verdict is a square `Badge` with the word — `confirmed` / `did not recur` / `unsure` /
+  `not checked yet`. Those four are `verdictWords` in `@populace/fix-prompt` and nothing spells
+  its own: the badge and the filed issue are two accounts of one event, so one verdict had to stop
+  having three spellings (it was `not reproduced` here, `did not recur` in the issue body). The
+  enum is still `not-reproduced`/`inconclusive`; only the words a reader sees changed.
 - An error payload gets the word `error` in a `Badge` above the well **and** a 2px `critical` left
   edge, never a colour change alone. (Today `WatchAVisit` colours a suspect step `text-critical`
   with no word at all.)
@@ -1074,7 +1077,7 @@ serif does not endanger that, because the serif is never used for chrome: the th
 **Two screen classes**, and every screen declares which it is (the port plan in
 `ATOMIC-INVENTORY.md` assigns them):
 
-- **Document-class** — SimulationResults, FindingInFull, Person, Gaps, WhoLeft, Cohort, Preflight,
+- **Document-class** — StudyResults, FindingInFull, Person, Gaps, WhoLeft, the builders, Preflight,
   GetStarted, ProjectHome, Settings, Projects, the landing. Ledger stub on, serif reading column
   at `--measure-read`, an optional 264px sticky instrument rail at ≥1240px carrying the numbers.
   The full direction applies.
@@ -1212,7 +1215,8 @@ announcement.)* `Field` uses Radix `Label` with an explicit `htmlFor`, and the *
 out of the `<label>` onto `aria-describedby`** — today it sits inside the label and is read as
 part of it. An error message is `role="alert"`, wired by `aria-describedby`, with `aria-invalid`
 on the control. Every radio and checkbox group is a Radix `RadioGroup` / fieldset with a legend;
-`NewSimulation`'s two bare radios have no group semantics today.
+the old new-study page's two bare mode radios had no group semantics, and the study builder's are a
+`RadioGroup` inside a `ConditionalFieldset`.
 
 **Never colour alone.** §4.2. Enforced additionally on: `Bar`/`Meter` (`role="progressbar"` with
 `aria-valuenow/min/max` and an `aria-valuetext` that is a sentence — the spend meter's number
@@ -1253,23 +1257,41 @@ direction: an instrument is labelled.
 
 ### 7.1 The vocabulary the wire and the UI speak
 
-A user sets up a **project**, composes **people** into **cohorts** and a **population**, and runs
-a **simulation** whose **executions** send those people on **visits**, which produce **findings**
-that cluster into **problems**. Use exactly these words, in this shape:
+A user sets up a **project**, composes **personas** into **cohorts** and cohorts into a
+**population**, and runs a **study** — a population, a target, a mode and a **size** — whose
+**executions** send those people on **visits**, which produce **findings** that cluster into
+**problems**. Use exactly these words, in this shape:
 
 | Word | Means | Never say instead |
 |---|---|---|
-| **project** | one product under test; scopes targets, personas, cohorts, populations, simulations, settings, triage | workspace, org |
+| **project** | one product under test; scopes targets, personas, cohorts, populations, studies, settings, triage | workspace, org |
 | **target** | the app's MCP endpoint and its policy | server, system under test |
 | **persona** | a kind of person | archetype, profile |
-| **person** | a durable named individual, `cohortSlug.personaSlug#ordinal` | agent, user ID, instance |
-| **cohort** | people who share a condition, drawn from a mix of personas in a ratio; no headcount of its own | group, batch, scale, lane (internal: one persona's share of a cohort) |
-| **population** | which cohorts go and how many of each; the **only** place a headcount lives (`size`) | fleet, swarm, squad |
-| **simulation** | a population + a target + a mode; the thing you press go on | job, campaign, test |
+| **person** | a durable named individual, `cohortSlug.personaSlug#ordinal`; instantiated by a study and met only inside one | agent, user ID, instance |
+| **cohort** | people who share a condition, drawn from personas **by weight**; owns what they are told they share, the seed and their cadence; **no headcount** | group, batch, scale, lane |
+| **population** | which cohorts go, each **with a weight**; composition and nothing else; **no headcount** | fleet, swarm, squad, roster |
+| **study** | a population, a target, a mode and a **size** — the **only** place a headcount lives; the thing you press go on | simulation, job, campaign, test |
+| **weight** | a cohort's or a persona's share of the mix, in parts; the deal turns weights and a size into counts | ratio (as a bare word), quota, allocation |
 | **execution** | one time you pressed go | run (in copy — "run" survives only in `runId` and the CLI) |
 | **visit** | one session one person had | wake, session, episode |
 | **finding** | one problem with receipts | issue, bug report, log entry |
 | **mode** | *a few visits each, then stop* / *keep coming back until I stop it* | ephemeral/longitudinal as a bare word without its gloss on first use |
+
+> **Amendment (2026-09-25, ADR-0041, ADR-0042). Three rows changed and one was added.** The table
+> above used to read *"a simulation whose executions…"*, gave **population** *"the only place a
+> headcount lives (`size`)"*, and gave **cohort** a mix *"in a ratio"* with `lane` as a
+> parenthetical internal. All three were true of the code and none of them survived contact
+> with a reader: the Cohorts page showed how cohorts were used in populations and forced a
+> persona before a name, and a reader could not say which of three screens set how many people
+> would go. ADR-0041 moves the one headcount to the **study**: a cohort is personas with weights,
+> a population is cohorts with weights, and a study picks a population and gives it a size. So
+> **population** and **cohort** now say composition and never a count, **study** carries the
+> size, and **weight** gets a row because the builders ask a reader to set one. ADR-0042 renames
+> the thing you press go on: **simulation** is what the rows and the code still call it (ADR-0032
+> keeps `Simulation`, `runWake` and every store method), and it is in the never-say column
+> because no screen, route, query parameter or sentence a reader meets may use it. **Lane** —
+> one persona's share of a cohort, `cohortSlug.personaSlug` — is likewise internal only: a screen
+> says *"First-time visitors in Mobile signups"*, never *"lane"*. See §7.2.
 
 ### 7.2 Forbidden words
 
@@ -1278,11 +1300,26 @@ empty states, tooltips, `aria-label`, `title`, route paths, query parameters, te
 messages. Internally the rows are still `Agent` and `Wake` and every store method keeps its name;
 that stays under `packages/contract`, which is the translation layer.
 
+> **Amendment (2026-09-25, ADR-0041, ADR-0042). "simulation" and "lane" join them.** Both are
+> banned in exactly the same places and for the same reason: they are the code's words, not the
+> reader's. The thing you press go on is a **study** on the wire (`/studies/`, `StudySummaryView`,
+> `studyId`), in the URL bar and in every sentence; `Simulation` stays the row and the runner's
+> name under `packages/contract`'s translation, exactly as `Agent` does. A **lane** is one
+> persona's share of a cohort and a screen never prints one — a person is "someone from *Mobile
+> signups* (*First-time visitors*)", a count is "*First-time visitors* in *Mobile signups*: 3".
+> `laneSlug` reaches no view type. The design system's own docstrings were swept for both words
+> on the same date; the historical amendments in this document and in `ATOMIC-INVENTORY.md`
+> keep the old screen names (`NewSimulation`, `SimulationResults`) where they record what a port
+> found, because rewriting a record is how a record stops being one.
+
 Two live leaks this rebuild inherits and must not widen:
 - The route `visits/:wakeId` and every link built from it. **Out of scope for this rebuild** (it
   is routing, not design), but it should be renamed `:visitId` the next time someone touches
   routing, and the design system will not print the param anywhere. Where the id must be shown, it
   is labelled *"this visit's id"* in a `t-code-sm` line.
+  > **Amendment (2026-09-25, ADR-0042 §2).** Closed: the route is `visits/:visitId`. Same segment,
+  > a different param name, so no redirect was needed. The remaining leak of that family is the
+  > `wakeId` FIELD on `ParticipantLiveSchema` and the trace views, carried as debt in ADR-0042.
 - `WatchAVisit`'s generic detail pane prints `event.type` raw, which puts `wake.start` on screen,
   and the `wake.start` sub-line prints `agentId · runId`. Both are replaced by a lookup of human
   nouns and by a `MetaSentence`.

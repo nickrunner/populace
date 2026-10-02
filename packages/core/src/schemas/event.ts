@@ -23,6 +23,17 @@ export const EventTypeSchema = z.enum([
   "guardrail.tripped",
   "identity.created",
   "job.updated",
+  /**
+   * populace opened, or added to, an issue in somebody's repository. Both comparable actions that
+   * mutate a third party's state already append an event — `target.reset` and a sweep — and this
+   * is the first one that writes somewhere the study never visited, so it is the last place that
+   * should be silent.
+   *
+   * Not `*.filed`: `finding.filed` already means a PERSON wrote a report, and reusing the word for
+   * what populace did afterwards would make the log say a thing happened twice.
+   */
+  "issue.opened",
+  "issue.commented",
 ]);
 export type EventType = z.infer<typeof EventTypeSchema>;
 

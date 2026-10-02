@@ -29,12 +29,12 @@ const cursor = z.object({
 
 /**
  * Run reads stay flat rather than nesting under a project: a run id is globally unique and the
- * row carries its project and its simulation, so a filter is a query parameter and a link to a
- * run never has to know which project it belongs to (SPEC §6.1).
+ * row carries its project and its study, so a filter is a query parameter and a link to a run
+ * never has to know which project it belongs to (SPEC §6.1).
  */
 export const RunListQuerySchema = cursor.extend({
   project: z.string().optional(),
-  simulation: z.string().optional(),
+  study: z.string().optional(),
 });
 export type RunListQuery = z.infer<typeof RunListQuerySchema>;
 
@@ -75,14 +75,14 @@ export type FindingListQuery = z.infer<typeof FindingListQuerySchema>;
 /**
  * `after` is the event-log cursor; a reconnect resumes from it instead of losing the gap.
  *
- * `project` and `simulation` sit alongside `run` so a project page follows every simulation in it
- * on ONE stream rather than opening a connection per run — which is what the `events.project_id`
- * and `events.simulation_id` columns are for.
+ * `project` and `study` sit alongside `run` so a project page follows every study in it on ONE
+ * stream rather than opening a connection per run — which is what the event log's project and
+ * study columns are for.
  */
 export const EventStreamQuerySchema = z.object({
   after: z.coerce.number().int().nonnegative().optional(),
   project: z.string().optional(),
-  simulation: z.string().optional(),
+  study: z.string().optional(),
   run: z.string().optional(),
 });
 export type EventStreamQuery = z.infer<typeof EventStreamQuerySchema>;
@@ -167,18 +167,31 @@ export const routes = {
   provisioningCheck: (p: string) => `${API_BASE}/projects/${seg(p)}/provisioning/check`,
 
   personas: (p: string) => `${API_BASE}/projects/${seg(p)}/personas`,
-  /** Registered before `/personas/:x` so the literal path is not captured as an id. */
+  /**
+   * GET only: the prebuilt personas, each with its full `spec` and a suggested cohort `context`,
+   * offered INSIDE the persona builder as a starting point (ADR-0043). There is no POST here any
+   * more — taking a starter is `POST /personas` with the starter's spec and `origin: "starter"`, so
+   * the builder is the one way a persona is made. Registered before `/personas/:x` so the literal
+   * path is not captured as an id.
+   */
   personaStarters: (p: string) => `${API_BASE}/projects/${seg(p)}/personas/starters`,
+  /**
+   * POST: the system prompt a DRAFT persona would produce, rendered by the runner's own code from
+   * the body's `spec` — so the builder previews what it has not saved yet, in both modes. Registered
+   * before `/personas/:x` for the same reason as `starters`.
+   */
+  personasPreview: (p: string) => `${API_BASE}/projects/${seg(p)}/personas/preview`,
   persona: (p: string, x: string) => `${API_BASE}/projects/${seg(p)}/personas/${seg(x)}`,
-  /** The system prompt this persona would produce, rendered by the runner's own code. */
+  /** The saved persona's prompt. Delegates to `personasPreview` with the stored spec. */
   personaPreview: (p: string, x: string) => `${API_BASE}/projects/${seg(p)}/personas/${seg(x)}/preview`,
 
+  /**
+   * A cohort has no people routes. People are numbered per cohort and persona, but which of them
+   * are IN is a study's decision (its size, dealt), so they are read and written through the study
+   * (`studyPeople`, `studyPerson`) and nowhere else (ADR-0041).
+   */
   cohorts: (p: string) => `${API_BASE}/projects/${seg(p)}/cohorts`,
   cohort: (p: string, c: string) => `${API_BASE}/projects/${seg(p)}/cohorts/${seg(c)}`,
-  cohortPeople: (p: string, c: string) => `${API_BASE}/projects/${seg(p)}/cohorts/${seg(c)}/people`,
-  cohortPeopleRegenerate: (p: string, c: string) => `${API_BASE}/projects/${seg(p)}/cohorts/${seg(c)}/people/regenerate`,
-  /** `person` is the person id (`cohortSlug.personaSlug#n`); the `#` is encoded on the way in. */
-  cohortPerson: (p: string, c: string, person: string) => `${API_BASE}/projects/${seg(p)}/cohorts/${seg(c)}/people/${seg(person)}`,
 
   populations: (p: string) => `${API_BASE}/projects/${seg(p)}/populations`,
   population_: (p: string, pop: string) => `${API_BASE}/projects/${seg(p)}/populations/${seg(pop)}`,
@@ -186,21 +199,75 @@ export const routes = {
   settings: (p: string) => `${API_BASE}/projects/${seg(p)}/settings`,
   /** Human judgement about a problem, keyed by signature so it survives a re-execution. */
   triage: (p: string) => `${API_BASE}/projects/${seg(p)}/triage`,
+  /**
+   * Arithmetic over history for a study that does not exist yet, or one whose form has changed:
+   * the body is the draft (`ProjectEstimateBody`). It spends nothing, writes nothing and never
+   * starts a run; a POST only because the draft is too large for a query string.
+   */
+  projectEstimate: (p: string) => `${API_BASE}/projects/${seg(p)}/estimate`,
 
-  // ---- simulations ---------------------------------------------------------
-  simulations: (p: string) => `${API_BASE}/projects/${seg(p)}/simulations`,
-  simulation: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/simulations/${seg(s)}`,
-  /** Arithmetic over history. It spends nothing and never starts a run. */
-  simulationEstimate: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/simulations/${seg(s)}/estimate`,
-  /** Who is going, and what they will meet — before a penny is spent. */
-  simulationPreflight: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/simulations/${seg(s)}/preflight`,
-  simulationRuns: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/simulations/${seg(s)}/runs`,
+  // ---- studies -------------------------------------------------------------
+  studies: (p: string) => `${API_BASE}/projects/${seg(p)}/studies`,
+  study: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}`,
+  /** Arithmetic over history for a saved study. It spends nothing and never starts a run. */
+  studyEstimate: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/estimate`,
+  /** Who is going, and what they will meet — before a penny is spent. A GET, so it writes nothing. */
+  studyPreflight: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/preflight`,
+  studyRuns: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/runs`,
   /** The whole results screen, in one request. */
-  simulationResults: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/simulations/${seg(s)}/results`,
-  simulationCluster: (p: string, s: string, signature: string) => `${API_BASE}/projects/${seg(p)}/simulations/${seg(s)}/results/${seg(signature)}`,
-  simulationCompare: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/simulations/${seg(s)}/compare`,
+  studyResults: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/results`,
+  studyCluster: (p: string, s: string, signature: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/results/${seg(signature)}`,
+  studyCompare: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/compare`,
   /** Re-resolve and re-snapshot a live longitudinal execution (SPEC §4.2). */
-  simulationApply: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/simulations/${seg(s)}/apply`,
+  studyApply: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/apply`,
+  /**
+   * The people this study sends, in deal order (ADR-0041). GET pages `StudyPeopleView`; POST writes
+   * details for the placeholders among them (202, a job). A person row is shared by every study
+   * that sends the cohort, and the screen says so once.
+   */
+  studyPeople: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/people`,
+  studyPeopleRegenerate: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/people/regenerate`,
+  /** `person` is the person id (`cohortSlug.personaSlug#n`); the `#` is encoded on the way in. */
+  studyPerson: (p: string, s: string, person: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/people/${seg(person)}`,
+
+  // ---- github --------------------------------------------------------------
+  /**
+   * The repository this project files its problems in, and the token that lets it (ADR-0044).
+   *
+   * One per PROJECT, for the same reason everything else in the library is project-scoped: nothing
+   * is shared across projects and a project's finding signatures only roll up within one, so its
+   * issues only roll up within one repository too (ADR-0035). GET answers the connection with
+   * `tokenSet` in place of the token, or `null` when nobody has made one; PUT is a patch
+   * (absent keeps the stored token, the empty string clears it); DELETE forgets the whole thing,
+   * token included.
+   */
+  github: (p: string) => `${API_BASE}/projects/${seg(p)}/github`,
+  /**
+   * "Will this token open an issue in that repository?" — asked before anything is filed.
+   *
+   * A POST because the body may carry a token nobody has saved yet, which is the same reason
+   * `provisioningCheck` is one, and because it reaches somebody else's server. It writes what it
+   * learned onto the connection — whether the repository is world-readable, and when it was
+   * asked — which a GET may not do (ADR-0023's rule) and which is the other reason this is a POST.
+   */
+  githubCheck: (p: string) => `${API_BASE}/projects/${seg(p)}/github/check`,
+  /**
+   * File this study's surviving problems, in bulk: 202 and a job row, because forty issues is
+   * forty round trips to somebody else's server (ADR-0027). The body may name the signatures to
+   * file; without one, everything that passes the connection's filter goes.
+   */
+  studyIssues: (p: string, s: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/issues`,
+  /**
+   * One problem, filed now: 201 and the outcome, because one issue is one round trip and a reader
+   * who pressed a button on a finding page wants the link rather than a job to watch.
+   *
+   * It hangs off the result and not off the finding because a signature is what a study's results
+   * are keyed by — this is `studyCluster`'s path with the action on the end — and because the
+   * ledger this writes is keyed by signature too. It runs OUTSIDE the serial job queue, so it
+   * takes the same ledger-and-marker path the job does: a double click, or a click while a bulk
+   * job is running, must not file the same problem twice.
+   */
+  studyIssue: (p: string, s: string, signature: string) => `${API_BASE}/projects/${seg(p)}/studies/${seg(s)}/results/${seg(signature)}/issue`,
 
   // ---- runs, read ----------------------------------------------------------
   runs: `${API_BASE}/runs`,

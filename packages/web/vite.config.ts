@@ -42,6 +42,7 @@ export default defineConfig({
     alias: [
       { find: /^@populace\/core\/isomorphic$/, replacement: `${root}../core/src/isomorphic.ts` },
       { find: /^@populace\/contract$/, replacement: `${root}../contract/src/index.ts` },
+      { find: /^@populace\/fix-prompt$/, replacement: `${root}../fix-prompt/src/index.ts` },
     ],
   },
   build: { outDir: `${root}../server/public`, emptyOutDir: true },

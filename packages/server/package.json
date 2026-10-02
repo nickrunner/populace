@@ -21,6 +21,7 @@
     "@populace/adapters": "workspace:*",
     "@populace/contract": "workspace:*",
     "@populace/core": "workspace:*",
+    "@populace/fix-prompt": "workspace:*",
     "@populace/reports": "workspace:*",
     "@populace/runner": "workspace:*",
     "@populace/store-sqlite": "workspace:*",

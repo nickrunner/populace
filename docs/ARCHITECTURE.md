@@ -20,13 +20,13 @@ the point of the split (ADR-0021 through ADR-0028).
 | --- | --- | --- |
 | **Target** | The app under test: one or more MCP endpoints (Streamable HTTP, bearer auth), optional web base URL, optional product description. | `@populace/core` `TargetSchema` |
 | **IdentityProvider** | Adapter yielding credentials for a persona. Strategies: `provision-url`, `self-signup`, `none`, `static`, `admin-mint`. All support `teardown` and `listByTag`. | interface in core, implementations in `@populace/adapters/*` |
-| **Project** | What scopes authoring: targets, personas, cohorts, populations, simulations, settings and triage belong to one and are never shared. | core `ProjectSchema` |
+| **Project** | What scopes authoring: targets, personas, cohorts, populations, studies, settings and triage belong to one and are never shared. | core `ProjectSchema` |
 | **Persona** | Static description: role, traits, goals, patience, budget, constraints, backstory. A template with no headcount. | core `PersonaSchema` |
 | **Cohort** | People who share a condition (`context`, required, told to every one of them) drawn from a mix of personas in a ratio. Owns the seed, a fixed-trait overlay, a narrowing tool policy, a model override and cadence / visit-cap overrides. **No headcount** (ADR-0039). | core `CohortSchema` |
 | **Person** | A durable individual in a cohort's lane, `cohortSlug.personaSlug#ordinal`, with a stored name, detail line, handle, and whatever was set on them by hand (patience, budget, traits). Written once, never silently overwritten. | core `PersonSchema` |
-| **Population** | Which cohorts go and how many of each: `members[{cohortId, size}]`. The only place a headcount lives; setting it writes the people. | core `StoredPopulationSchema`, `expandPopulation()` |
-| **Simulation** | A population, a target and a mode — `ephemeral` (clean slate, bounded) or `longitudinal` (accumulating, unbounded). What a user presses go on. | core `SimulationSchema` |
-| **Run** | One execution of a simulation, carrying `simulationId` and a `seq` counting from 1, plus the config snapshot it froze. | core `RunSchema`, `runs` table |
+| **Population** | Which cohorts go and in what ratio: `members[{cohortId, weight}]`. **No headcount** (ADR-0041); reusable across studies. | core `StoredPopulationSchema` |
+| **Study** | A population, a target, a mode — `ephemeral` (clean slate, bounded) or `longitudinal` (accumulating, unbounded) — and a **`size`**, the only headcount there is, dealt across the population's weights and then each cohort's mix by `dealStudy` (Sainte-Laguë at both levels, ties to the earlier entry). May carry a `brief` told to everyone it sends. What a user presses go on. **The code calls it a `Simulation`** (ADR-0032, ADR-0042). | core `SimulationSchema`, `apportion.ts` (`apportion`, `dealStudy`), `expandPopulation()` |
+| **Run** | One execution of a study, carrying `simulationId` and a `seq` counting from 1, plus the config snapshot it froze. | core `RunSchema`, `runs` table |
 | **Agent** | A persona instance with a person's name, an identity, persistent memory and a schedule. **The wire calls it a participant** (ADR-0032). | core `AgentSchema`, rows in the store |
 | **Wake** | One scheduled execution of an agent — **a visit**, on the wire and on every screen. A stateless job: load memory, run one session, persist memory/trace/findings/cost, exit. A wake that ends in `give_up` retires the agent. | `@populace/runner` `runWake()` |
 | **Trace** | Ordered log of one wake: every tool call, model turn, token usage, dollar cost. | core `TraceEventSchema`, `trace_events` table |
@@ -39,7 +39,8 @@ the point of the split (ADR-0021 through ADR-0028).
 ```
 packages/
   core          vocabulary types + zod schemas, Store/Scheduler/IdentityProvider
-                interfaces, run ids and tagging, population expansion, pricing
+                interfaces, run ids and tagging, the deal (apportion, dealStudy;
+                browser-safe) and population expansion, pricing
   runner        wake loop, MCP client wrapper with interception, reporter
                 toolset, memory, guardrails, trace writer, model provider
   adapters      identity providers: provision-url, self-signup, no-accounts,
@@ -47,6 +48,12 @@ packages/
                 (each on its own subpath so provider SDKs stay optional)
   store-sqlite  Store implementation on node:sqlite
   reports       verifier, dedup/clustering, digest renderer, exporters
+  fix-prompt    one problem written for a reader with no populace access:
+                the reproduction, the reach, the intent, the verdict,
+                credential-redacted. The copy button's text and a GitHub
+                issue body are the same function (ADR-0044); depends only
+                on contract, so the server can write bodies without the
+                dashboard
   cli           init, validate, run, wake, scale, digest, sweep, kill
   mock-target   reference app with its own MCP server, self-signup and
                 planted defects; all development and CI runs against it
@@ -72,6 +79,7 @@ process; a local daemon and a cloud job both just call `runWake()`.
       |
  system prompt = persona + behaviour        stable, cached
  tools        = target tools + reporter     stable order, cached
+                (rebuilt mid-visit if the target says its list changed)
  model/effort = persona override or global  resolveModel()
  user turn 1  = wake context: wake #, date, memory, identity state, goals
       |
@@ -85,12 +93,40 @@ process; a local daemon and a cloud job both just call `runWake()`.
  |                         signup capture, call target, trace: tool.call
  |         |
  +--- append tool_result user turn (history is append-only)
+ |       |
+ |    any session told its tools changed? re-list, rebuild the surface
+ |                                                  -> trace: tools changed
       |
  persist memory, findings, wake row (status, usage, cost), trace
 ```
 
 Every model call and every tool call is a trace event. If it is not in the
 trace, it did not happen.
+
+### A tool list that changes mid-visit
+
+A target may grow or shrink what it offers part-way through a visit — gaining
+host tools on creating an organisation, losing them on leaving one — and says so
+with `notifications/tools/list_changed`. A stateless Streamable HTTP server has
+no standalone stream to notify on, so it sends the notification down the
+response stream of the very call that caused the change, ahead of that call's
+result: by the time `session.call()` resolves, `McpSession`'s handler has already
+set a flag. The runner checks that flag between a turn's tool results and the
+next model request — no polling, no timers — and on a stale session re-lists
+(`refreshTools()`, following `nextCursor` to the end) and rebuilds the whole tool
+surface: the dispatch table, the tool schemas the model is given, and the system
+prompt's "The product exposes these tools" paragraph, which must not disagree
+with each other.
+
+It does not reconnect; re-running `initialize` would buy nothing. A newly listed
+tool goes through the same merged allow/deny gate and the same
+destructive-confirmation policy as one listed at connect, so a refresh can only
+narrow the surface and never widen what the policy permits. The trace event
+records what the TARGET's listing gained and lost, before the policy narrows it,
+so a reader can tell "the app added this" from "this person may call it". A
+changed list invalidates the prompt cache from that turn on; that is the price of
+the next turn being told the truth, and the message history is untouched — an
+earlier `tool_use` block naming a tool that is now gone stays exactly as it was.
 
 ### Reporter toolset
 
@@ -146,7 +182,7 @@ is no saved target yet (ADR-0036).
 **That grant is one human's account, and it never reaches a population.** `McpSession` takes a
 sign-in provider as a third argument and only the callers acting as the user pass one — the
 connection check and the tool list behind it. `runWake` passes an identity's bearer and nothing
-else, and an explicit token wins over a provider inside `connect()`. How the STRANGERS a simulation
+else, and an explicit token wins over a provider inside `connect()`. How the STRANGERS a study
 sends get accounts of their own is the next section, and it is a different mechanism on purpose:
 signing in yourself does not mean a population can run.
 

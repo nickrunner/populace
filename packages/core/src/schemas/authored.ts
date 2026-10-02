@@ -87,19 +87,38 @@ export const StoredPersonaSchema = z.object({
 });
 export type StoredPersona = z.infer<typeof StoredPersonaSchema>;
 
-/** One cohort in a population, and how many of its people go. */
-export const PopulationMemberRefSchema = z.object({
-  cohortId: z.string().min(1),
-  /** The headcount for this cohort in this population: apportioned across the cohort's mix. */
-  size: z.number().int().positive().default(1),
-});
+/**
+ * One cohort in a population, and its WEIGHT: a ratio against the other members, not a headcount.
+ * The study that sends the population says how many go, and `dealStudy` apportions that size
+ * across the members by these weights (ADR-0041).
+ *
+ * The preprocess is the ADR-0001 boundary for a blob written before ADR-0041, when a member had a
+ * `size` and no `weight`. Sainte-Laguë returns a target vector exactly when the weights are
+ * proportional to it and sum to the size, so reading the old sizes as weights deals an upgraded
+ * study exactly the people it had. `raw` is deliberately un-annotated and narrowed in place: the
+ * parameter is raw JSON, and the schema underneath is what types it.
+ */
+export const PopulationMemberRefSchema = z.preprocess(
+  (raw) => {
+    if (typeof raw === "object" && raw !== null && "size" in raw && !("weight" in raw)) {
+      const { size, ...rest } = raw;
+      return { ...rest, weight: size };
+    }
+    return raw;
+  },
+  z.object({
+    cohortId: z.string().min(1),
+    /** This cohort's share of whatever size a study gives the population. `3 : 2` is legal. */
+    weight: z.number().positive().default(1),
+  }),
+);
 export type PopulationMemberRef = z.infer<typeof PopulationMemberRefSchema>;
 
 /**
- * Which cohorts go, and how many of each (ADR-0039). This is the ONLY place a headcount lives:
- * a cohort has no size of its own, and setting a member's size here is what instantiates its
- * people. The execution plan — cadence, cap, mode — belongs to the simulation, and the seed to
- * the cohort that owns the people.
+ * Which cohorts go, and in what ratio (ADR-0039, ADR-0041). There is NO headcount here: a cohort
+ * has no size of its own, a population has none either, and the one size there is belongs to the
+ * study (`Simulation.size`), which is what writes the people. The execution plan — cadence, cap,
+ * mode — belongs to the study too, and the seed to the cohort that owns the people.
  */
 export const StoredPopulationSchema = z
   .object({

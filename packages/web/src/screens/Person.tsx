@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api, isMissing, type ParticipantDetail, type RunSummary } from "../api.js";
 import { q } from "../queries.js";
-import { useProject, useSimulation } from "../context.jsx";
+import { useProject, useStudy } from "../context.jsx";
 import { plural, wakeOutcome, when } from "../format.js";
 import {
   Avatar,
@@ -47,7 +47,7 @@ import {
  *
  * It is ONE request. The screen this replaces fired a memory query per head and re-polled it
  * every five seconds; `ParticipantDetailView` exists so that a person's whole page — identity,
- * traits, memory, visits, findings and their other simulations — arrives together (SPEC §6.2).
+ * traits, memory, visits, findings and their other studies — arrives together (SPEC §6.2).
  *
  * **Ported to the design system** — ATOMIC-INVENTORY §6.3, row 17. `SplitPage ratio="narrow-right"`
  * is the sidecar split: the long column of what they did on the left, the steady column of who
@@ -165,7 +165,7 @@ const VISIT_COLUMNS: Column<ParticipantDetail["visits"][number]>[] = [
 
 /**
  * The page itself, given a run and a participant in it. Both entry points render this: the one
- * inside a simulation, and the project-level one that resolves a durable person to their most
+ * inside a study, and the project-level one that resolves a durable person to their most
  * recent participation first.
  */
 export function PersonPage({
@@ -404,7 +404,7 @@ function WhoTheyAre({ who }: { who: ParticipantDetail }) {
               >
                 <Stack gap={1}>
                   <Text size="ui" truncate>
-                    {elsewhere.simulationName}
+                    {elsewhere.studyName}
                   </Text>
                   <MetaLine
                     facts={[
@@ -524,18 +524,18 @@ function Memory({ who }: { who: ParticipantDetail }) {
   );
 }
 
-/** Inside a simulation: the person as they were in the execution these results are of. */
-export function PersonInSimulation() {
+/** Inside a study: the person as they were in the execution these results are of. */
+export function PersonInStudy() {
   const { pid = "" } = useParams();
   const [params] = useSearchParams();
-  const { simulation, href, runId } = useSimulation();
+  const { study, href, runId } = useStudy();
   // The execution the LINK came from, when it said — a problem the latest execution did not report
   // is read against the one that did, and its people are that execution's people. Falling back to
-  // the simulation's latest is what the common path does, where the two are the same thing.
+  // the study's latest is what the common path does, where the two are the same thing.
   const execution = params.get("execution") ?? runId;
 
-  // Not a failure: a simulation nobody has pressed go on yet has no people in it, which is the
-  // common state of a new simulation and is said in a sentence with a way on (§6.5).
+  // Not a failure: a study nobody has pressed go on yet has no people in it, which is the
+  // common state of a new study and is said in a sentence with a way on (§6.5).
   if (execution === null)
     return (
       <SplitPage
@@ -543,7 +543,7 @@ export function PersonInSimulation() {
         header={
           <PageHeader
             title="This person"
-            crumbs={[{ label: simulation.name, to: href() }, { label: "This person" }]}
+            crumbs={[{ label: study.name, to: href() }, { label: "This person" }]}
           />
         }
         state="empty"
@@ -551,7 +551,7 @@ export function PersonInSimulation() {
           <StateBlock kind="empty" what="this person">
             <Stack gap={3} align="start">
               <span>
-                {simulation.name} has not been run yet, so nobody has been anywhere. Send them in
+                {study.name} has not been run yet, so nobody has been anywhere. Send them in
                 and this page fills with what they did.
               </span>
               <Button variant="secondary" asChild>
@@ -570,7 +570,7 @@ export function PersonInSimulation() {
       runId={execution}
       pid={pid}
       linkTo={(path) => href(path)}
-      trail={[{ label: simulation.name, to: href() }]}
+      trail={[{ label: study.name, to: href() }]}
     />
   );
 }
@@ -619,7 +619,7 @@ function TheWalk({ executions, checked }: { executions: readonly RunSummary[]; c
 }
 
 /**
- * At project level: one person across every simulation.
+ * At project level: one person across every study.
  *
  * A durable person (`cohort#ordinal`) is not a row in any one execution, so the page is reached
  * by finding their most recent participation and reading it — the executions are walked newest
@@ -651,13 +651,13 @@ export function PersonAcrossProject() {
   const found = useQuery({
     queryKey: ["person-lookup", key, personId] as const,
     enabled: runs.data !== undefined,
-    queryFn: async (): Promise<{ runId: string; pid: string; simulationId: string } | null> => {
+    queryFn: async (): Promise<{ runId: string; pid: string; studyId: string } | null> => {
       const newestFirst = walkOrder(runs.data?.items ?? []);
       setChecked(0);
       for (const run of newestFirst) {
         const people = await api.participants(run.id);
         const match = people.items.find((person) => person.personId === personId || person.id === personId);
-        if (match) return { runId: run.id, pid: match.id, simulationId: run.simulationId };
+        if (match) return { runId: run.id, pid: match.id, studyId: run.studyId };
         setChecked((done) => done + 1);
       }
       return null;
@@ -726,7 +726,7 @@ export function PersonAcrossProject() {
       />
     );
 
-  const base = `${href()}/s/${encodeURIComponent(found.data?.simulationId ?? "")}`;
+  const base = `${href()}/studies/${encodeURIComponent(found.data?.studyId ?? "")}`;
   return (
     <PersonPage
       runId={found.data?.runId ?? ""}

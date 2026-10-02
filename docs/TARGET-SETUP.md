@@ -4,17 +4,22 @@ This is for somebody pointing populace at their own product for the first time.
 
 populace sends a population of AI people at your app through its MCP server. They behave like
 prospective users: they discover the product through its tools, try to get their own errands done,
-come back on a schedule, and file what went wrong. For that to be a simulation of anything, they
+come back on a schedule, and file what went wrong. For that to tell you anything, they
 have to be **strangers with accounts of their own** — forty people, forty accounts, forty separate
 piles of data.
 
-So there are two credentials in this setup, they are different things, and mixing them up is the
+So there are two credentials in *this* setup, they are different things, and mixing them up is the
 single most common confusion here:
 
 | | Whose | What it is for |
 | --- | --- | --- |
 | **Connecting** | Yours | populace reads your tool list as you, once, to see what is there. One human, one sign-in. |
-| **Getting accounts** | Theirs | Each of the people a simulation sends gets their own account on your product. |
+| **Getting accounts** | Theirs | Each of the people a study sends gets their own account on your product. |
+
+There is a third, and it belongs to a different job rather than to this one: a GitHub token, if you
+want the problems a study finds filed as issues. It is yours, it points at your repository rather
+than at your product, and it never goes anywhere near the people a study sends. It is set up in
+[filing problems as issues](ISSUE-FILING.md) and is not needed to run a study at all.
 
 Connecting is settled and mostly automatic: if your MCP server refuses anonymous callers and
 publishes OAuth metadata, press **Sign in** on the Connect screen and populace does the rest. If it
@@ -24,7 +29,7 @@ is gated by a static token instead, there is a field for it beside the address.
 what it has — the address, the token if you typed one, and a name — and the page's URL gains the
 target's id. Everything after that is configuration of something that exists, so you can close the
 tab, reload, or go and change something in your app and come back. Until you answer the last
-question the target is listed as **Unfinished**, no simulation will start against it, and every
+question the target is listed as **Unfinished**, no study will start against it, and every
 refusal says which target and what is missing. Save is then *Finish*, not *Create*.
 
 **This page is about the other one.**

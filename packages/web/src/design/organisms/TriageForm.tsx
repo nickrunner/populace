@@ -16,7 +16,7 @@ import { Disclosure, Field, FieldWarning, RelativeTime } from "../molecules/inde
  * would not.
  *
  * **The decision is kept against the signature, not against the execution.** That is what makes a
- * longitudinal simulation legible instead of a firehose: without it, execution 40 shows the same
+ * longitudinal study legible instead of a firehose: without it, execution 40 shows the same
  * forty problems execution 1 showed. The form says so in its own foot, because a reader who does
  * not know that will re-triage the same problem every time they look.
  *
@@ -181,7 +181,7 @@ export const TriageForm = forwardRef<HTMLDivElement, TriageFormProps>(function T
 
           <Text as="p" size="read-sm" tone="soft">
             This decision is kept against the problem, not against this execution, so it is still
-            here the next time the simulation runs.
+            here the next time the study runs.
           </Text>
         </Stack>
       </Disclosure>

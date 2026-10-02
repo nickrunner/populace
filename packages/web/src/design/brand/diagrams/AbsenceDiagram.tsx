@@ -77,11 +77,13 @@ const SAMPLE_FINDING: ClusterCardView = {
     { slug: "early-adopters", name: "Early adopters", hit: 5, total: 6 },
     { slug: "reluctant-switchers", name: "Reluctant switchers", hit: 4, total: 6 },
   ],
+  inLatest: true,
   state: "open",
   seenIn: [1],
   firstSeenAt: null,
   lastSeenAt: null,
   triage: null,
+  filedIssue: null,
 };
 
 /**

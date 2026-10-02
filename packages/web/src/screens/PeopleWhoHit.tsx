@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { isMissing, type Participant } from "../api.js";
 import { q } from "../queries.js";
-import { useProject, useSimulation } from "../context.jsx";
+import { useProject, useStudy } from "../context.jsx";
 import { people } from "../format.js";
 import {
   Button,
@@ -33,9 +33,9 @@ import {
  */
 export function PeopleWhoHit() {
   const { key } = useProject();
-  const { key: sim, href } = useSimulation();
+  const { key: studyKey, href } = useStudy();
   const { signature = "" } = useParams();
-  const cluster = useQuery(q.cluster(key, sim, signature));
+  const cluster = useQuery(q.cluster(key, studyKey, signature));
 
   const card = cluster.data;
 
@@ -72,8 +72,8 @@ export function PeopleWhoHit() {
         }
         gone={
           <StateBlock kind="gone" what="this problem">
-            No problem in this simulation carries that signature. The link may be from another
-            simulation. <Link to={href()}>Open the results</Link> to see what is there.
+            No problem in this study carries that signature. The link may be from another
+            study. <Link to={href()}>Open the results</Link> to see what is there.
           </StateBlock>
         }
         error={
@@ -108,22 +108,24 @@ export function PeopleWhoHit() {
   const position = new Map(card.peopleHit.map((person, index) => [person.id, index + 1]));
 
   /**
-   * **A DISPLAYED FIGURE CHANGED HERE, deliberately.** The headline used to read
-   * `${card.peopleHit.length} of the ${card.peopleTotal} people who went`, and the denominator is
-   * now computed from this page's own two lists. Both numbers are correct; they are answers to
-   * different questions, and only one of them is this page's question.
+   * **The denominator is this page's own two lists, and since ADR-0045 that is no longer a
+   * divergence from the card — it is the same number arrived at the same way.**
    *
-   * `peopleTotal` is the whole population of the NEWEST execution — the server sums the census the
-   * results screen was built from. Every row on this page, by contrast, is a person as they were
-   * in the execution that REPORTED this problem (`representative.runId`), which for a problem the
-   * newest execution did not report is an earlier one, possibly with a different cast. Against
-   * `peopleTotal` the sentence would then read "3 of 20" while the twelve dots beside it said
-   * otherwise, because the lattice is drawn from `peopleHit` + `peopleMissed` — the roster of that
-   * one execution, which is exactly what the server sends this view for.
+   * Both halves are now scoped to one REPORT WINDOW. `peopleHit` and `peopleMissed` are the people
+   * of the window that reported this problem, and `ClusterCardView.peopleTotal` is that window's
+   * census (its visitors, unioned with its reporters) rather than the newest execution's roster —
+   * `project-read-model.ts` builds the pair from one `windowCensus`, and a test asserts
+   * `peopleHit + Σ peopleMissed === card.peopleTotal`. So the sentence and the lattice beside it
+   * cannot disagree, which is what the earlier version of this comment was written to explain
+   * away.
    *
-   * So: the denominator is the execution these rows are of, the picture and the sentence agree,
-   * and the number moves only for a problem that has gone quiet. Nothing here says the newest
-   * execution repaired anything — an execution that did not report it is an absence (ADR-0028).
+   * It is still summed locally rather than read off the card, because the LATTICE is drawn from
+   * these two lists: a denominator taken from anywhere else could drift from the dots it counts,
+   * and that drift is exactly the class of defect ADR-0045's window scoping kept producing.
+   *
+   * What has not changed: for a problem the newest window did not report, these rows are the
+   * people of an earlier window, and the number moving is an absence rather than a repair
+   * (ADR-0028). Nothing here says anything was fixed.
    */
   const missed = card.peopleMissed.reduce((total, cohort) => total + cohort.count, 0);
   const roster = card.peopleHit.length + missed;
@@ -236,7 +238,7 @@ export function PeopleWhoHit() {
           keyOf={(person) => person.id}
           stub={(person) => position.get(person.id)}
           caption="Everyone who hit this problem"
-          empty="Nobody hit this in the execution these results are of."
+          empty="Nobody reported this in the window these results are of."
           columns={columns}
         />
       </Stack>

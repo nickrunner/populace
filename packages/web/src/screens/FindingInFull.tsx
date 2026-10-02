@@ -1,16 +1,17 @@
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import type { TriageInput } from "@populace/contract";
 import type { ClusterDetail } from "../api.js";
-import { api, isMissing } from "../api.js";
+import { api, isMissing, isRefused } from "../api.js";
 import { keys, q } from "../queries.js";
-import { useProject, useSimulation } from "../context.jsx";
+import { useProject, useStudy } from "../context.jsx";
 import { people, plural, stateOfCluster } from "../format.js";
-import { buildFixPrompt } from "./fix-prompt.js";
+import { buildFixPrompt } from "@populace/fix-prompt";
 import {
   Badge,
   Button,
+  ConfirmButton,
   CopyButton,
   Dot,
   EvidenceSteps,
@@ -23,6 +24,7 @@ import {
   PageHeader,
   PayloadBlock,
   PersonQuoteCard,
+  RelativeTime,
   ReplayVerdict,
   Section,
   Skeleton,
@@ -31,6 +33,7 @@ import {
   StateBlock,
   Text,
   ToolName,
+  Tooltip,
   SeverityTag,
   TriageForm,
   VerdictTag,
@@ -78,11 +81,28 @@ import {
  * decisions, where a human types it about their own product.
  *
  * **The last section on the right is the way OUT of this screen** — the evidence written as a
- * prompt for a coding agent working on the reader's own product. It is here and nowhere else
+ * prompt for a coding assistant working on the reader's own product. It is here and nowhere else
  * because a prompt about one problem needs the whole of one problem: the reproduction call by
- * call, the reach, the intent, the verdict. `buildFixPrompt` assembles it in `fix-prompt.ts`,
- * where the redaction and the clipping are tested; this screen draws the string and says, in its
- * own right and not only inside the string, how much of the transcript was altered on the way.
+ * call, the reach, the intent, the verdict. `buildFixPrompt` assembles it in
+ * `@populace/fix-prompt`, where the redaction and the clipping are tested; this screen draws the
+ * string and says, in its own right and not only inside the string, how much of the transcript
+ * was altered on the way.
+ *
+ * **Filing the problem as an issue lives in that same section, beside the copy control**
+ * (ADR-0044). The reason is the reason the prompt is there: an issue about one problem needs the
+ * whole of one problem, and this panel has already assembled it — the body github.com receives IS
+ * that prompt, with the ledger's markers above it. So the two acts sit on one rule: hand it to an
+ * assistant, or hand it to a tracker.
+ *
+ * **Once it is filed, the control is the issue.** `ClusterCardView.filedIssue` is populace's own
+ * record of an outbound write it made, and it is on the CARD rather than only on `triage` because
+ * filing writes no triage row — so a problem that has been filed and never ruled on has nowhere
+ * else to say so. The screen never offers to file a second time: a problem reported again gets a
+ * comment on the issue it already has, which is the whole point of the ledger.
+ *
+ * **Nothing here claims anything about the issue's own state.** populace knows it opened it; it
+ * does not know whether somebody has closed it, fixed it, or read it. The copy says what populace
+ * did and stops (§7.3).
  *
  * **Four sibling `<h2>`s become one `<h2>` per `Section`** with `<h3>`s beneath (§6, "Heading
  * order"), and the two divergent proportion markups become one `IncidenceBars`: a cohort nobody
@@ -104,11 +124,18 @@ const STATE_TONE = {
 } satisfies Record<ClusterDetail["state"], BadgeTone>;
 
 export function FindingInFull() {
-  const { key } = useProject();
-  const { key: sim, simulation, href } = useSimulation();
+  const { key, href: projectHref } = useProject();
+  const { key: studyKey, study, href } = useStudy();
   const { signature = "" } = useParams();
-  const cluster = useQuery(q.cluster(key, sim, signature));
-  const results = useQuery(q.results(key, sim));
+  const cluster = useQuery(q.cluster(key, studyKey, signature));
+  const results = useQuery(q.results(key, studyKey));
+  /**
+   * Where this project files, or `null` because nobody has connected anywhere yet — which is an
+   * answer and not a failure to get one, so an unconnected project renders a sentence rather than
+   * an error. It carries `tokenSet` and never a token (ADR-0040): all this screen needs to know is
+   * whether there is something to file with, and it can be told that without being shown it.
+   */
+  const connection = useQuery(q.github(key));
   const queries = useQueryClient();
 
   /**
@@ -120,13 +147,41 @@ export function FindingInFull() {
     mutationFn: (triage: TriageInput) => api.setTriage(key, triage),
     onSuccess: async () => {
       await Promise.all([
-        queries.invalidateQueries({ queryKey: keys.cluster(key, sim, signature) }),
-        queries.invalidateQueries({ queryKey: keys.results(key, sim) }),
+        queries.invalidateQueries({ queryKey: keys.cluster(key, studyKey, signature) }),
+        queries.invalidateQueries({ queryKey: keys.results(key, studyKey) }),
         queries.invalidateQueries({ queryKey: keys.triage(key) }),
         queries.invalidateQueries({ queryKey: keys.project(key) }),
       ]);
     },
   });
+
+  /**
+   * One problem, filed now. Synchronous, because one issue is one round trip and somebody who
+   * pressed a button on this page wants the link rather than a job to watch.
+   *
+   * The same four invalidations the decision above sends, and for the same reason: the filing is
+   * on the cluster's own card, on the row inside this study's results, on the project's triage
+   * list — `TriageView.filedIssue` is the one project-keyed read that carries a filing — and in
+   * the project overview that counts what has been dealt with.
+   *
+   * It is deliberately NOT thrown away on a `skipped` or a `failed` outcome. The route answers 200
+   * for both, because the pass ran and its outcome is the answer; the sentence it carries is the
+   * only place the reason lives, and a screen that treated a non-201 as nothing would swallow it.
+   */
+  const fileIssue = useMutation({
+    mutationFn: () => api.fileIssue(key, studyKey, signature),
+    onSuccess: async () => {
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: keys.cluster(key, studyKey, signature) }),
+        queries.invalidateQueries({ queryKey: keys.results(key, studyKey) }),
+        queries.invalidateQueries({ queryKey: keys.triage(key) }),
+        queries.invalidateQueries({ queryKey: keys.project(key) }),
+      ]);
+    },
+  });
+
+  /** The line the filing control names in `aria-describedby` when it is at a bound (§6.5). */
+  const fileReasonId = useId();
 
   const crumbs: Crumb[] = [{ label: "Results", to: href() }];
   const card = cluster.data;
@@ -164,12 +219,12 @@ export function FindingInFull() {
           />
         }
         gone={
-          // The state this screen never had. A signature that is not in this simulation is a
-          // stale bookmark or a link from a sibling simulation, which is not a failure and must
+          // The state this screen never had. A signature that is not in this study is a
+          // stale bookmark or a link from a sibling study, which is not a failure and must
           // not be dressed as one.
           <StateBlock kind="gone" what="this problem">
-            No problem in this simulation carries that signature. The link may be from another
-            simulation, or from an execution whose reports have been swept.{" "}
+            No problem in this study carries that signature. The link may be from another
+            study, or from an execution whose reports have been swept.{" "}
             <Link to={href()}>Open the results</Link> to see what is there.
           </StateBlock>
         }
@@ -190,8 +245,41 @@ export function FindingInFull() {
   }
 
   const seqs = (results.data?.history ?? []).map((entry) => entry.seq).sort((a, b) => a - b);
-  const state = stateOfCluster(card, simulation.mode, seqs);
+  const state = stateOfCluster(card, study.mode, seqs);
   const representative = card.representative;
+
+  /**
+   * Where this problem would go, once it is known. `undefined` is the read not having landed and
+   * `null` is the project having connected nowhere, and the two are different sentences — which is
+   * why neither is collapsed into the other here.
+   */
+  const where = connection.data ?? null;
+
+  /**
+   * Why filing cannot be pressed, or `undefined`. These are the server's own two refusals
+   * (`notConnected` in `control.ts`) said before the round trip rather than after it, so the
+   * reader learns there is nowhere to file from the page they are on instead of from a failure.
+   *
+   * It is local knowledge and can trail the server — a token forgotten in another tab is gone
+   * before this read knows — so a refusal that does arrive is shown below in the server's own
+   * words rather than folded into this sentence.
+   */
+  const fileBound: string | undefined = connection.isPending
+    ? "populace is still reading where this project files."
+    : connection.isError
+      ? "populace could not read where this project files, so it will not send anything anywhere."
+      : where === null || where.repo === ""
+        ? "This project has no repository to file into."
+        : !where.tokenSet
+          ? `populace has ${where.repo} to file into, and no token to file with.`
+          : undefined;
+
+  /**
+   * The connection this screen may actually file with, or null — the same test `fileBound` makes,
+   * written as a value. It exists so the confirm body can name the repository and read its
+   * visibility without the compiler being asked to take a sentence's word for it.
+   */
+  const fileTo = where !== null && where.repo !== "" && where.tokenSet ? where : null;
 
   /**
    * One column of proportions, not two. `cohorts` carries the cohorts somebody in them hit, and
@@ -367,13 +455,104 @@ export function FindingInFull() {
 
           {prompt === null ? null : (
             <Section
-              title="Hand it to a coding agent"
-              actions={<CopyButton text={prompt.text} label="Copy the prompt" />}
+              title="Hand it to a coding assistant"
+              actions={
+                /*
+                  Two acts on one rule, both of them handing this problem somewhere else: to an
+                  assistant through the clipboard, or to github.com as an issue. The second is here
+                  and not in the header's `actions` slot for the reason the prompt is here — an
+                  issue about one problem needs the whole of one problem, and this is the panel that
+                  assembled it.
+                */
+                <Inline gap={3} align="center" wrap>
+                  <CopyButton text={prompt.text} label="Copy the prompt" />
+                  {card.filedIssue !== null ? (
+                    /*
+                      Filed, so the control IS the issue: there is nothing left to press, and
+                      offering the press again would offer a second issue for one problem. The
+                      name is the publisher's own spelling, `owner/repo#41`, and the `url` comes
+                      off `FiledIssueSchema` where it is a parsed `z.url()` — so this is an href
+                      the contract has already vouched for.
+                    */
+                    <Link size="meta" href={card.filedIssue.url}>
+                      {`${card.filedIssue.repo}#${String(card.filedIssue.number)}`}
+                    </Link>
+                  ) : fileTo === null ? (
+                    /*
+                      At a bound, never disabled: `atBound` keeps the tab stop, the accessible name
+                      and the tooltip, and the reason is also a line in the body below that
+                      `aria-describedby` points at — a dead button with the reason in a hover is
+                      the failure §6.5 exists to forbid.
+                    */
+                    <Tooltip content={fileBound}>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        atBound
+                        aria-describedby={fileReasonId}
+                      >
+                        File as a GitHub issue
+                      </Button>
+                    </Tooltip>
+                  ) : (
+                    <ConfirmButton
+                      title="File this as an issue?"
+                      variant="primary"
+                      confirmLabel="File it"
+                      pending={fileIssue.isPending}
+                      onConfirm={() => {
+                        fileIssue.mutate();
+                      }}
+                      body={
+                        <Stack gap={3} align="stretch">
+                          <span>
+                            populace opens one issue in <Mono size="ref">{fileTo.repo}</Mono>. Its
+                            body is the prompt on this page: the calls in order with their arguments
+                            and their results, the people&rsquo;s own words, the product&rsquo;s own
+                            description, and what everybody in each cohort that hit this had been
+                            told they were in the middle of.
+                          </span>
+                          {fileTo.visibility === "public" ? (
+                            /*
+                              The honest limit, and it is not softened anywhere. `withoutAddresses`
+                              reduces every absolute URL whose host is one of THIS target's own —
+                              in the endpoint list and inside the quoted results alike, each one
+                              marked where it was reduced. It reduces nothing else, and it is not
+                              a scrubber: the description and the briefs are what make the report
+                              actionable and they go out as written, which is exactly what naming
+                              the repository as public is asking somebody to take on knowingly.
+                            */
+                            <span>
+                              That repository is public, so anybody can read what goes into it.
+                              populace first reduces every address this target is known by to its
+                              bare host — in the endpoint list and inside the quoted results alike,
+                              each reduction marked where it was made. Nothing else is reduced: the
+                              product&rsquo;s description and every cohort&rsquo;s brief go out
+                              exactly as written, and anything else the product printed in its own
+                              output is left as the product printed it.
+                            </span>
+                          ) : (
+                            <span>
+                              {fileTo.visibility === "private"
+                                ? "The last check found that repository private, so the address and the briefs go out as written."
+                                : "Nobody has checked yet whether that repository is world-readable. Check it in the project’s settings if it matters that the address and the briefs go out as written."}
+                            </span>
+                          )}
+                        </Stack>
+                      }
+                    >
+                      <Button variant="secondary" size="sm" disabled={fileIssue.isPending}>
+                        File as a GitHub issue
+                      </Button>
+                    </ConfirmButton>
+                  )}
+                </Inline>
+              }
             >
               <Stack gap={4} align="stretch">
                 <Measure width="read">
                   <Text as="p" size="read" tone="soft">
-                    Everything on this page, written for a coding agent working on your product
+                    Everything on this page, written for a coding assistant working on your product
                     rather than on this one: the calls in order with their arguments and their
                     results, who was trying to do what, and — before any of it — that this is a
                     simulated user&rsquo;s report and not a confirmed defect.
@@ -382,11 +561,20 @@ export function FindingInFull() {
 
                 {/*
                   In the payload well rather than in prose, because it is a payload: it is read to
-                  be checked and then copied whole. `copyable` is off because the well's own
-                  control only appears on hover, and the one affordance this section exists for
-                  cannot be the one nobody can see (DESIGN-SYSTEM §6).
+                  be checked and then copied whole.
+
+                  **The well keeps its own corner control, and the section rule keeps its button.**
+                  This well used to pass `copyable={false}`, reasoning that a hover-only affordance
+                  cannot be the only way to reach the one thing the section exists for
+                  (DESIGN-SYSTEM §6). True, and already answered by the `CopyButton` in the rule
+                  above, which is always drawn — so switching the corner off bought nothing and
+                  cost the habit: this was the single `PayloadBlock` in the product without the
+                  control every other well has in the same place, which reads as a bug at exactly
+                  the moment somebody reaches for it. Two controls, one clipboard, and the visible
+                  one is still visible. Both put the same string on it: the prompt opens `#`, so
+                  the well's `prettyPrint` returns it verbatim rather than reshaping it as JSON.
                 */}
-                <PayloadBlock caption="The prompt" value={prompt.text} copyable={false} />
+                <PayloadBlock caption="The prompt" value={prompt.text} />
 
                 {/*
                   Said on the screen as well as inside the prompt. Somebody about to paste this
@@ -404,11 +592,74 @@ export function FindingInFull() {
                       : ` ${plural(prompt.clips, "result")} ${prompt.clips === 1 ? "was" : "were"} too long to include whole and ${prompt.clips === 1 ? "was" : "were"} cut from the middle, each marked where it was cut.`}
                   </Text>
                 </Measure>
+
+                {/*
+                  Everything the filing control cannot say from inside a rule: why it is at a bound
+                  and where to go about it, what populace did the last time it was pressed, and a
+                  refusal in the server's own words.
+
+                  The bound's sentence is here rather than only in the tooltip because that is what
+                  `aria-describedby` on the control above points at (§6.5) — a reason a keyboard
+                  reader can reach, not a reason a pointer can hover.
+                */}
+                <Stack gap={2} align="stretch">
+                  {card.filedIssue === null ? (
+                    fileBound === undefined ? null : (
+                      <Measure width="read">
+                        <Text as="p" size="meta" tone="muted" id={fileReasonId}>
+                          {`${fileBound} `}
+                          {connection.isPending ? null : (
+                            <Link size="meta" to={projectHref("settings")}>
+                              Set one up in this project&rsquo;s settings
+                            </Link>
+                          )}
+                        </Text>
+                      </Measure>
+                    )
+                  ) : (
+                    <Measure width="read">
+                      <Text as="p" size="meta" tone="muted">
+                        populace opened that issue{" "}
+                        <RelativeTime at={card.filedIssue.filedAt} mode="ago" /> and will comment on
+                        it if this is reported again, rather than opening a second one. What has
+                        become of it since is github.com&rsquo;s to say, not populace&rsquo;s.
+                      </Text>
+                    </Measure>
+                  )}
+
+                  {/*
+                    What the pass actually did, in the server's sentence. A `skipped` and a `failed`
+                    both answer 200 — the pass ran, and its outcome is the answer — so this is the
+                    only place the reason appears, and `failed` carries github.com's own words.
+                  */}
+                  {fileIssue.data === undefined ? null : (
+                    <Measure width="read">
+                      <Text
+                        as="p"
+                        size="meta"
+                        tone={fileIssue.data.outcome === "failed" ? "critical" : "muted"}
+                      >
+                        {fileIssue.data.summary}
+                      </Text>
+                    </Measure>
+                  )}
+
+                  {fileIssue.error === null ? null : (
+                    <WhatWentWrong
+                      says={
+                        isRefused(fileIssue.error)
+                          ? "Nothing was filed: the server declined, and says why below. This problem still carries whatever it carried before."
+                          : "Nothing was filed. This problem still carries whatever it carried before."
+                      }
+                      error={fileIssue.error}
+                    />
+                  )}
+                </Stack>
               </Stack>
             </Section>
           )}
 
-          <AcrossExecutions card={card} mode={simulation.mode} />
+          <AcrossExecutions card={card} mode={study.mode} seqs={seqs} />
         </Stack>
       }
     />
@@ -432,12 +683,22 @@ export function FindingInFull() {
 function AcrossExecutions({
   card,
   mode,
+  seqs,
 }: {
   card: ClusterDetail;
   mode: "ephemeral" | "longitudinal";
+  /**
+   * The study's real execution sequence numbers. It is a PROP rather than a `[]` rebuilt here,
+   * because `stateOfCluster` no longer branches on `mode` -- it asks `executionScoped` whether the
+   * card's two ordinal lists describe the same stretches (format.ts), which is the one place that
+   * judgement lives. A longitudinal study whose lists agree therefore reaches the execution-scoped
+   * arm, and that arm divides by `seqs.length`: passing `[]` printed "reported in 2 of 0
+   * executions" for a study stopped and restarted once. The denominator has to be the real one.
+   */
+  seqs: number[];
 }) {
   if (mode === "longitudinal") {
-    const words = stateOfCluster(card, mode, []);
+    const words = stateOfCluster(card, mode, seqs);
     return (
       <Section title="Over this execution">
         <Measure width="read">
@@ -491,7 +752,7 @@ function AcrossExecutions({
         <Measure width="read">
           <Text as="p" size="read" tone="soft">
             {seen.size === card.history.length
-              ? "Reported in every execution this simulation has had."
+              ? "Reported in every execution this study has had."
               : `Reported in ${seen.size} of ${card.history.length} executions. An execution that did not report it is an absence, not a repair — the same complaint worded differently is a different key.`}
           </Text>
         </Measure>

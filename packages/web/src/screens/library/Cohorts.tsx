@@ -1,284 +1,122 @@
-import { useEffect, useId, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { costOf, priceFor } from "@populace/core/isomorphic";
-import { api, type CohortView, type Settings } from "../../api.js";
-import { q } from "../../queries.js";
+import { Link as RouterLink } from "react-router-dom";
+import { api, type CohortView } from "../../api.js";
+import { keys, q } from "../../queries.js";
 import { useProject } from "../../context.jsx";
-import { people, plural } from "../../format.js";
+import { plural } from "../../format.js";
 import {
   AlertDialog,
   Button,
-  Card,
-  CardFooter,
-  CohortCapsule,
-  CostEstimate,
-  costBasisOf,
-  Field,
-  FieldGrid,
+  Capsule,
+  DocumentPage,
+  DropdownMenu,
+  IconButton,
   Inline,
-  Input,
-  JobProgress,
   Ledger,
   LedgerRow,
   Link,
-  MetaLine,
-  MetaSentence,
-  Money,
-  Mono,
   PageHeader,
-  RosterLattice,
-  Section,
-  Select,
   Skeleton,
-  Spacer,
-  SplitPage,
   Stack,
-  Stat,
   StateBlock,
   Text,
-  TextArea,
   WhatWentWrong,
-  visitPlanOf,
-  type LatticeDot,
-  type MetaFact,
   type StateKind,
 } from "../../design/index.js";
 
 /**
- * Cohorts — the library of groups (ADR-0039): cohorts on the left, the casts that send them on
- * the right.
+ * Cohorts — the list of groups this project has cut (ADR-0039, ADR-0043).
  *
- * **A cohort is a shared condition and a mix of personas, and it has no size.** Cutting one here
- * asks for three things — what its people have in common, a name, and a persona to draw them
- * from — and not a number. The number is the population's: "how many go" is set on the cast that
- * sends them, and setting it is what writes the people. So the row has no stepper any more, and
- * the right column names the populations, each with its headcount and a way to change it.
+ * **A cohort is a shared condition and a mix of personas, and it has no size.** So this page
+ * lists cohorts and nothing else: a name, the first sentence of what its people share, and how
+ * many personas it is drawn from. It shows no people, no headcounts and no populations, because
+ * none of those is a fact about a cohort — how many go is a study's size dealt through a
+ * population's weights (ADR-0041), and the People page of that study is where they are seen.
  *
- * **It used to be called `People`, at `library/people`, and the rename is the whole of stage 1's
- * argument in one file.** The screen creates cohorts, resizes cohorts and lists cohorts; it was
- * the only item in a library reading Targets / Personas / ? / Populations that was not named
- * after the thing it holds. "People" also had to mean three things at once here — a cohort, a
- * population and a roster — while `people/:personId` one level up already means an individual.
- * `cohort` is in the closed vocabulary (§7.1); "the people" is not. The old path redirects.
+ * **This page used to try to be three pages.** It listed cohorts on the left, the populations
+ * that sent them and their headcounts on the right, and a two-field form at the bottom that made
+ * a cohort out of a persona before it had a name — which was the confusion the redesign was
+ * asked to end (ADR-0043 §0). Everything about MAKING a cohort lives in the builder now
+ * (`library/cohorts/new`), which has room for the whole definition; everything about HOW MANY
+ * lives on the study. What is left here is a list, and the list follows the rules every list
+ * page in the product follows: `DocumentPage` + `PageHeader` with the one primary "New cohort" +
+ * a `Ledger` whose rows open the builder.
  *
- * **Ported to the design system** — ATOMIC-INVENTORY §6.3, row 18. `SplitPage` owns the split;
- * `grid-cols-[1fr_1fr] gap-6`, `sticky top-9` and `max-w-[320px]` are gone with it, along with
- * the template's own answer to the thing none of those had: below 1000px it stacks with the
- * total **above** the list, which is what a narrow reader wants first.
+ * **The row's aside is the one sanctioned menu** (ATOMIC-INVENTORY §3, organism 4 amendment):
+ * one `IconButton` opening a `DropdownMenu` with Edit and Delete, and a CONTROLLED `AlertDialog`
+ * as the menu's sibling — never inside an item, because Radix unmounts the item on select and
+ * would take the dialog with it. Delete copy says what the server will do, including refusal: a
+ * cohort a population still holds cannot go (the server answers 409 naming the populations), so
+ * its Delete item is at a bound with the reason as its label rather than gone, and a 409 that
+ * arrives anyway shows through `WhatWentWrong`.
  *
- * **The bars are gone, because the bar is the people** (DESIGN-SYSTEM §1.2 M4). Each cohort is a
- * `CohortCapsule` — a stadium whose *length* is its headcount, with one dot per person inside
- * it — so the left column is the composition drawn at its own scale rather than a column of
- * proportion bars a reader has to convert back into people. "Who sends them" draws every person
- * in the project as one `RosterLattice`, four rows high, at the mark's ratio.
- * Everybody is `provisional`, the grammar's word for *this has not happened yet*, because a cast
- * that has not been sent anywhere has been nowhere (§8.6, and Preflight's own reading of it).
- *
- * **The writer's progress is the `JobProgress` organism** (§6.3 row 18, "two `JobProgress`
- * implementations unify"). They had not: this screen and `Cohort` each kept a local
- * `WritingProgress`, and the two had already drifted on something a reader can see — one hid the
- * meter on `total === 0` and the other on `total === null || total === 0`, one took the first
- * non-empty label across several jobs and the other read a single job's. The organism takes both
- * shapes, and this screen hands it the jobs it started at once.
- *
- * **Removing a cohort is destructive and says so first.** It goes through the same `AlertDialog`
- * that removing a persona does on `Personas`, because it is the same act from the other end: the
- * population lets go, the people are archived, and executions that have already run keep naming
- * them. A `Tooltip` is not a confirmation (§7.4).
- *
- * Nothing here promises what an execution will produce. The estimate is the `CostEstimate`
- * organism, which names its own basis and says outright that it is a range, not a bill
- * (ADR-0028, §7.3).
+ * **The stub is a mark, not a count.** A capsule is the mark grammar's word for a cohort
+ * (§1.2 M4); it is a locator here, and its length says nothing, because a cohort has no headcount
+ * for a length to mean.
  */
 
-/**
- * What it costs to have the model write the people who have no details yet.
- *
- * The writer makes one call per batch of `maxPeoplePerGenerate` and asks for a name and a
- * sentence each, so the arithmetic is the prompt once per batch and about seventy tokens a
- * person, at this project's own model's price. It is an estimate and the copy says so; what was
- * actually spent lands on the job row afterwards.
- */
-function priceOfWriting(people: number, settings: Settings | undefined): number | null {
-  if (settings === undefined || people === 0) return null;
-  const batches = Math.ceil(people / Math.max(1, settings.guardrails.maxPeoplePerGenerate));
-  return costOf({ inputTokens: 700 * batches, outputTokens: 70 * people, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, priceFor(settings.model.model, settings.model.prices));
+/** The first sentence of what a cohort's people share: enough to tell two cohorts apart. */
+export function firstSentence(text: string): string {
+  const trimmed = text.trim();
+  const match = /^[^.!?]*[.!?]/.exec(trimmed);
+  return match === null ? trimmed : match[0].trim();
 }
 
 /**
- * How many of a cohort have no sentence written about them.
- *
- * Counted as "the ones a model or a person has not written" rather than as the seeded rows,
- * because a cohort's roster is materialised on first read: a cohort created a second ago has its
- * size and no rows at all, and counting rows would call twelve people nought of anything.
- */
-const withoutDetails = (cohort: CohortView): number => Math.max(0, cohort.size - cohort.generated.model - cohort.generated.authored);
-
-/**
- * One dot per person in a cohort, none of whom has been anywhere yet.
- *
- * Nobody is named here — this screen has the headcount and not the roster, and the cohort's own
- * page is where the names live — so a dot is labelled by the cohort it belongs to. The lattice
- * folds and then gives way to a meter past its ladder's rungs, so a cohort of nine hundred draws
- * as honestly as a cohort of nine.
- */
-function castOf(cohort: CohortView): readonly LatticeDot[] {
-  return Array.from({ length: cohort.size }, (_, index) => ({
-    id: `${cohort.slug}#${String(index)}`,
-    state: "provisional" as const,
-    label: `somebody in ${cohort.name}`,
-  }));
-}
-
-/**
- * What removing a cohort actually does, said before it happens.
- *
- * It promises only what the server does: every population lets go of the cohort, the cohort's
- * people are archived rather than deleted, and executions that have already run keep naming them
- * (`store.deleteCohort` archives; `control.ts` detaches the populations first). Destructiveness is
- * a property of the act, not of the screen it is pressed on (§7.4).
+ * What deleting actually does, said before it happens. It promises only what the server does:
+ * a cohort nothing holds leaves the library, and executions that already ran keep everything
+ * they recorded. A held cohort never reaches this sentence — its Delete is at a bound.
  */
 function consequence(cohort: CohortView): string {
-  if (cohort.size === 0) {
-    return `Nobody is sent from ${cohort.name} today, so nothing else in this project moves. Executions that have already run keep their people, their visits and their findings.`;
-  }
-  return `${people(cohort.size)} leave ${cohort.usedByPopulations.map((population) => population.name).join(", ")}. They are kept on record, and executions that have already run keep their visits and their findings.`;
-}
-
-/** "3 First-time visitor : 2 Power user", or the one persona for a mix of one. */
-function mixOf(cohort: CohortView): string {
-  if (cohort.mix.length === 1) return `on ${cohort.mix[0]?.personaName ?? ""}`;
-  return cohort.mix.map((entry) => `${String(entry.weight)} ${entry.personaName}`).join(" : ");
-}
-
-/** Where they are sent, and how many: the only headcount a cohort has is the one a cast gives it. */
-function sentAs(cohort: CohortView): string {
-  if (cohort.usedByPopulations.length === 0) return "in no population yet, so nobody";
-  return cohort.usedByPopulations.map((population) => `${people(population.size)} in ${population.name}`).join(", ");
-}
-
-/** How often this cohort comes back, in words. Zero is the simulation's own cadence. */
-function cadenceOf(cohort: CohortView): string {
-  return cohort.cadence?.every === undefined
-    ? "comes back on the simulation's cadence"
-    : `comes back every ${String(Math.round(cohort.cadence.every / 1000))}s`;
+  return `${cohort.name} leaves the library. No population holds it, so no study sends anybody from it and nothing else in this project moves. Executions that have already run keep their people, their visits and their findings.`;
 }
 
 export function Cohorts() {
-  const { key, project, href } = useProject();
+  const { key, href } = useProject();
   const queries = useQueryClient();
   const cohorts = useQuery(q.cohorts(key));
-  const populations = useQuery(q.populations(key));
-  const personas = useQuery(q.personas(key));
-  const settings = useQuery(q.settings(key));
-  const [watching, setWatching] = useState<string[]>([]);
-  const [told, setTold] = useState<string[]>([]);
-  const [adding, setAdding] = useState("");
-  const [naming, setNaming] = useState("");
-  const [sharing, setSharing] = useState("");
 
-  // One simulation's estimate is what a visit costs on this machine; which population goes does
-  // not change the price of a visit, so the composition screen can price itself from it.
-  const priced = project.simulations[0];
-  const estimate = useQuery({ ...q.estimate(key, priced?.slug ?? ""), enabled: priced !== undefined });
-
-  const jobs = useQuery({
-    queryKey: ["people-jobs", watching],
-    queryFn: () => Promise.all(watching.map((id) => api.job(id))),
-    enabled: watching.length > 0,
-    refetchInterval: 1_000,
-  });
-  const running = (jobs.data ?? []).some((job) => job.status === "queued" || job.status === "running");
-
-  useEffect(() => {
-    // The rows the job wrote are the answer, so the moment it stops the screen re-reads them.
-    if (watching.length === 0 || jobs.data === undefined || jobs.data.some((job) => job.status === "queued" || job.status === "running")) return;
-    // What the writer actually managed is worth repeating: without an API key it falls back to
-    // the free seeded cast and succeeds, and a button that then changes nothing is a lie.
-    setTold([...new Set(jobs.data.map((job) => job.error ?? job.progress.label).filter(Boolean))]);
-    setWatching([]);
-    void queries.invalidateQueries();
-  }, [watching, jobs.data, queries]);
-
-  const refresh = async (): Promise<void> => {
-    await queries.invalidateQueries();
-  };
-  const drop = useMutation({ mutationFn: (id: string) => api.removeCohort(key, id), onSuccess: refresh });
-  const add = useMutation({
-    // A name, what they share, and one persona to start the mix. More personas, and their
-    // ratio, are added on the cohort's own page; how many go is the population's decision.
-    mutationFn: () => api.createCohort(key, { ...(naming.trim() === "" ? {} : { name: naming.trim() }), context: sharing.trim(), mix: [{ personaId: adding, weight: 1 }] }),
+  const remove = useMutation({
+    mutationFn: (id: string) => api.removeCohort(key, id),
     onSuccess: async () => {
-      setAdding("");
-      setNaming("");
-      setSharing("");
-      await refresh();
+      // The list, and the counts the rail and the overview read from it. Never the whole cache.
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: keys.cohorts(key) }),
+        queries.invalidateQueries({ queryKey: keys.project(key) }),
+        queries.invalidateQueries({ queryKey: keys.setup(key) }),
+      ]);
     },
   });
-  const write = useMutation({
-    mutationFn: async (ids: string[]) => {
-      const started: string[] = [];
-      for (const id of ids) started.push((await api.writePeople(key, id)).id);
-      return started;
-    },
-    onSuccess: setWatching,
-  });
 
-  const rosterError = drop.error;
-
-  const addErrorId = useId();
-  const writeErrorId = useId();
-
-  const state: StateKind | undefined =
-    cohorts.isError || populations.isError
+  const state: StateKind | undefined = cohorts.isPending
+    ? "loading"
+    : cohorts.isError
       ? "failed"
-      : cohorts.isPending || populations.isPending
-        ? "loading"
+      : cohorts.data.items.length === 0
+        ? "empty"
         : undefined;
 
   const rows = cohorts.data?.items ?? [];
-  const pops = populations.data?.items ?? [];
-  // The people a cohort holds is the largest size any cast gives it, so summing the cohorts counts
-  // a cohort in two casts once — which is what "how many people exist" means.
-  const headcount = rows.reduce((sum, cohort) => sum + cohort.size, 0);
-  const unwritten = rows.reduce((sum, cohort) => sum + withoutDetails(cohort), 0);
-  const unwrittenIn = rows.filter((cohort) => withoutDetails(cohort) > 0).map((cohort) => cohort.id);
-  const writingPrice = priceOfWriting(unwritten, settings.data);
-  const visitsEach = priced?.visitsPerPerson ?? null;
-  // Simulations that send THIS population, not every simulation in the project: one that sends a
-  // different set of people is not a use of these.
-  const populationId = pops[0]?.id;
-  const usedBy = populationId === undefined ? 0 : project.simulations.filter((simulation) => simulation.population.id === populationId).length;
-  const available = personas.data?.items ?? [];
-  const everyone = rows.flatMap(castOf);
+  const builder = href("library/cohorts/new");
 
   return (
-    <SplitPage
+    <DocumentPage
       header={
         <PageHeader
           title="Cohorts"
           lede={
             <>
-              Everyone who visits a target, grouped into cohorts. A cohort is people who share
-              something, drawn from one persona or a mix of them; each of them has a name and a life
-              of their own and keeps both between executions. How many go is set on the population.{" "}
-              {/*
-                Three of this screen's words — cohort, persona, person — divide one job between
-                them, and getting the division wrong is the most common way to misread this page.
-                The sentence above already explains it in passing; this is where that explanation
-                goes on, at a stable anchor, without a second paragraph of chrome on the screen.
-              */}
+              People who share something, drawn from one persona, or several at weights you set. A
+              cohort has no size of its own: how many go is set on the study that sends them.{" "}
               <Link to="/concepts#cohort">What a cohort owns, and what a persona does</Link>
             </>
           }
-          meta={
-            rows.length === 0
-              ? undefined
-              : [
-                  { key: "people", node: people(headcount) },
-                  { key: "cohorts", node: plural(rows.length, "cohort") },
-                  { key: "unwritten", node: unwritten === 0 ? null : `${String(unwritten)} without details` },
-                ]
+          meta={rows.length === 0 ? undefined : [{ key: "cohorts", node: plural(rows.length, "cohort") }]}
+          actions={
+            <Button asChild variant="primary">
+              <RouterLink to={builder}>New cohort</RouterLink>
+            </Button>
           }
         />
       }
@@ -286,295 +124,100 @@ export function Cohorts() {
       loading={
         <StateBlock
           kind="loading"
-          what="the people"
-          skeleton={<Skeleton variant="row" count={4} height={96} label="Reading the people" />}
+          what="the cohorts"
+          skeleton={<Skeleton variant="row" count={4} height={72} label="Reading the cohorts" />}
         />
       }
-      error={<StateBlock kind="failed" what="the people" error={cohorts.error ?? populations.error} />}
-      left={
-        // `trailing` is a FACT on the far right of the rule, never an instruction: a row that
-        // opens is an affordance the row itself carries, not a caption above the ledger.
-        <Section title="Cohorts" trailing={rows.length === 0 ? undefined : people(headcount)}>
-          <Stack gap={6}>
-            {rows.length === 0 ? (
-              <StateBlock kind="empty" what="the cohorts">
-                No cohorts yet. Say what a group has in common, pick a persona to draw them from,
-                and set how many go on the population.
-              </StateBlock>
-            ) : (
-              <Ledger>
-                {rows.map((cohort, index) => (
-                  <CohortRow
-                    key={cohort.id}
-                    cohort={cohort}
-                    ordinal={index + 1}
-                    to={href(`library/cohorts/${encodeURIComponent(cohort.slug)}`)}
-                    onDrop={() => {
-                      drop.mutate(cohort.id);
-                    }}
-                    busy={drop.isPending}
-                  />
-                ))}
-              </Ledger>
-            )}
-
-            {rosterError === null ? null : (
-              <WhatWentWrong
-                says="Nothing changed. The cohorts above are as they were."
-                error={rosterError}
-              />
-            )}
-
-            <Card>
-              <Stack gap={4}>
-                <Field
-                  label="What they have in common"
-                  hint="Addressed to them, in a sentence or two. Everyone in the cohort is told it. “You only ever use this on your phone, usually while doing something else.”"
-                >
-                  {({ id, describedBy, invalid }) => (
-                    <TextArea
-                      id={id}
-                      describedBy={describedBy}
-                      invalid={invalid}
-                      value={sharing}
-                      onChange={setSharing}
-                      rows={2}
-                      placeholder="You signed up during the launch week promotion, on a phone, and you have not read anything about it."
-                    />
-                  )}
-                </Field>
-                <FieldGrid cols={3} align="end">
-                  <Field label="Drawn from" hint="One persona to start. Mix in more, and set the ratio, on the cohort's page.">
-                    {({ id, describedBy, invalid }) => (
-                      <Select
-                        id={id}
-                        describedBy={describedBy}
-                        invalid={invalid}
-                        value={adding}
-                        onChange={setAdding}
-                        placeholder="Choose a persona"
-                        options={available.map((persona) => ({ value: persona.id, label: persona.spec.name }))}
-                      />
-                    )}
-                  </Field>
-                  <Field label="Called" hint="Optional. Falls back to the persona's name." optional>
-                    {({ id, describedBy, invalid }) => (
-                      <Input id={id} describedBy={describedBy} invalid={invalid} value={naming} onChange={setNaming} placeholder="Mobile signups" />
-                    )}
-                  </Field>
-                  <Inline gap={2} align="center">
-                    <Button
-                      variant="primary"
-                      onClick={() => {
-                        add.mutate();
-                      }}
-                      disabled={adding === "" || sharing.trim() === "" || add.isPending}
-                      pending={add.isPending}
-                      aria-describedby={add.isError ? addErrorId : undefined}
-                    >
-                      Cut a cohort
-                    </Button>
-                  </Inline>
-                </FieldGrid>
-
-                {add.isError ? (
-                  <WhatWentWrong id={addErrorId} says="No cohort was added." error={add.error} />
-                ) : null}
-              </Stack>
-            </Card>
+      error={<StateBlock kind="failed" what="the cohorts" error={cohorts.error} />}
+      empty={
+        <StateBlock kind="empty" what="this project's cohorts">
+          <Stack gap={4} align="start">
+            <span>
+              No cohorts yet. A cohort is people who share something — mobile-only signups, the
+              pilot team, everyone who arrived in launch week — drawn from the personas at weights
+              you set.
+            </span>
+            <Button asChild variant="primary">
+              <RouterLink to={builder}>Make the first cohort</RouterLink>
+            </Button>
           </Stack>
-        </Section>
+        </StateBlock>
       }
-      right={
-        <Stack gap={12}>
-          {/* The casts, each with its own headcount: a cohort has none, so this is the only
-              place a number can honestly stand beside a name. */}
-          <Section title="Who sends them" actions={<Link to={href("library/populations")}>All populations</Link>}>
-            <Card pad="roomy">
-              <Stack gap={6}>
-                <Stat label="People" value={headcount} sub={`across ${plural(rows.length, "cohort")}`} />
+    >
+      <Stack gap={6}>
+        <Ledger stubKind="mark">
+          {rows.map((cohort) => (
+            <CohortRow
+              key={cohort.id}
+              cohort={cohort}
+              to={href(`library/cohorts/${encodeURIComponent(cohort.id)}`)}
+              onDelete={() => {
+                remove.mutate(cohort.id);
+              }}
+            />
+          ))}
+        </Ledger>
 
-                {headcount === 0 ? null : (
-                  <Stack gap={2} align="start">
-                    <RosterLattice
-                      dots={everyone}
-                      sentence={`${people(headcount)} composed across ${plural(rows.length, "cohort")}, none of them sent anywhere yet.`}
-                    />
-                    <Text size="ui" tone="muted">
-                      {`${people(headcount)} composed across ${plural(rows.length, "cohort")}, none of them sent anywhere yet.`}
-                    </Text>
-                  </Stack>
-                )}
-
-                {pops.length === 0 ? (
-                  <MetaSentence>No population yet. The number a cohort is sent at is set there.</MetaSentence>
-                ) : (
-                  <Ledger>
-                    {pops.map((population) => (
-                      <LedgerRow key={population.id} stub={<Text size="meta" tone="muted">{population.members.length}</Text>}>
-                        <Inline gap={3} align="center" wrap>
-                          <Link to={href(`library/populations/${encodeURIComponent(population.slug)}`)}>{population.name}</Link>
-                          <Text size="meta" tone="muted">
-                            {`${people(population.people)} in ${plural(population.members.length, "cohort")}`}
-                          </Text>
-                        </Inline>
-                      </LedgerRow>
-                    ))}
-                  </Ledger>
-                )}
-
-                <MetaSentence>
-                  {usedBy === 0 ? "No simulation sends them anywhere yet." : `${pops[0]?.name ?? "The population"} is used by ${plural(usedBy, "simulation")}.`}
-                </MetaSentence>
-              </Stack>
-            </Card>
-          </Section>
-
-          <Section title="About what it costs">
-            <Card>
-              {/*
-                The fourth of four hand-rolled estimates (§6.3 row 18), and the one that had a
-                `basisOf()` verbatim in `Preflight`. The organism says it once. The range is
-                left off deliberately: the server's ends are drawn around the population the
-                priced simulation sends, and this column counts every cohort in the project — a
-                range around the wrong total is worse than no range at all.
-              */}
-              <CostEstimate
-                layout="sentence"
-                people={headcount}
-                cohorts={rows.length}
-                plan={
-                  estimate.data === undefined
-                    ? visitsEach === null
-                      ? { kind: "round" }
-                      : { kind: "capped", each: visitsEach }
-                    : visitPlanOf(estimate.data, visitsEach)
-                }
-                basis={costBasisOf(estimate.data)}
-              />
-
-              {unwritten === 0 ? null : (
-                <CardFooter>
-                  <Stack gap={3}>
-                    <Text size="read" as="p">
-                      {`${String(unwritten)} of ${String(headcount)} ${headcount === 1 ? "person has" : "people have"} no written details yet.`}
-                    </Text>
-                    <Text size="read" tone="soft" as="p">
-                      They have names and they work exactly as they are. What the model adds is
-                      a sentence about each of them, which is what makes twelve first-timers
-                      twelve different people rather than one repeated twelve times.
-                    </Text>
-
-                    <Inline gap={3} align="center" wrap>
-                      <Button
-                        variant="primary"
-                        onClick={() => {
-                          write.mutate(unwrittenIn);
-                        }}
-                        disabled={write.isPending || running}
-                        pending={write.isPending}
-                        aria-describedby={write.isError ? writeErrorId : undefined}
-                      >
-                        {running ? "Writing them…" : "Have the AI write them"}
-                      </Button>
-                      {writingPrice === null ? null : (
-                        <Text size="meta" tone="muted">
-                          <>
-                            roughly <Money usd={writingPrice} precision={4} />, counted against
-                            today&rsquo;s ceiling
-                          </>
-                        </Text>
-                      )}
-                    </Inline>
-
-                    {watching.length === 0 ? null : (
-                      <JobProgress jobs={jobs.data ?? []} label="Writing them" />
-                    )}
-
-                    {told.map((line) => (
-                      <Text key={line} size="meta" tone="muted" as="p">
-                        {line}
-                      </Text>
-                    ))}
-
-                    {write.isError ? (
-                      <WhatWentWrong
-                        id={writeErrorId}
-                        says="Nobody was written. The cohorts are unchanged."
-                        error={write.error}
-                      />
-                    ) : null}
-                  </Stack>
-                </CardFooter>
-              )}
-            </Card>
-          </Section>
-
-        </Stack>
-      }
-    />
+        {remove.isError ? (
+          <WhatWentWrong says="Nothing changed. The cohorts above are as they were." error={remove.error} />
+        ) : null}
+      </Stack>
+    </DocumentPage>
   );
 }
 
 /**
- * One cohort: the capsule you can open, and the facts about it.
- *
- * The capsule carries the name, the drawing and the headcount, so the row adds only what the
- * capsule does not know — what they share, who they are drawn from and in what ratio, which casts
- * send them and at how many, what they are called on disk, how often they come back, and how many
- * of them nobody has written yet. No stepper: the number is the population's.
+ * One cohort: its name, the first sentence of what its people share, and how many personas it
+ * draws on. The whole row opens the builder; the aside carries Edit and Delete.
  */
-function CohortRow({
-  cohort,
-  ordinal,
-  to,
-  onDrop,
-  busy,
-}: {
-  cohort: CohortView;
-  ordinal: number;
-  to: string;
-  onDrop: () => void;
-  busy: boolean;
-}) {
-  const unwritten = withoutDetails(cohort);
-  const facts: readonly MetaFact[] = [
-    { key: "mix", node: mixOf(cohort) },
-    { key: "sent", node: sentAs(cohort) },
-    { key: "slug", node: <Mono size="code-sm">{cohort.slug}</Mono> },
-    { key: "cadence", node: cadenceOf(cohort) },
-    { key: "unwritten", node: unwritten === 0 ? null : `${String(unwritten)} without details` },
-  ];
+function CohortRow({ cohort, to, onDelete }: { cohort: CohortView; to: string; onDelete: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const held = cohort.usedBy > 0;
 
   return (
     <LedgerRow
-      stub={
-        <Text size="meta" tone="muted">
-          {ordinal}
-        </Text>
+      stub={<Capsule size="sm" label={`${cohort.name}, a cohort`} />}
+      to={to}
+      aside={
+        <>
+          <DropdownMenu
+            label={`${cohort.name} actions`}
+            trigger={<IconButton icon="chevron-down" label={`Actions for ${cohort.name}`} />}
+            items={[
+              { label: "Edit", to },
+              {
+                // At a bound, not gone: the item keeps its place and its label is the reason
+                // (§6, §7.4). The server would refuse with the same fact, by name.
+                label: held ? `Delete — in ${plural(cohort.usedBy, "population")}` : "Delete",
+                tone: "danger",
+                disabled: held,
+                onSelect: () => {
+                  setConfirming(true);
+                },
+              },
+            ]}
+          />
+          <AlertDialog
+            open={confirming}
+            onOpenChange={setConfirming}
+            title={`Delete ${cohort.name}?`}
+            body={consequence(cohort)}
+            confirmLabel="Delete this cohort"
+            onConfirm={onDelete}
+          />
+        </>
       }
     >
-      <Stack gap={3}>
-        <Inline gap={3} align="center" wrap>
-          <CohortCapsule name={cohort.name} dots={castOf(cohort)} total={cohort.size} to={to} />
-          <Spacer />
-          <AlertDialog
-            title={`Remove ${cohort.name}?`}
-            body={consequence(cohort)}
-            confirmLabel="Remove this cohort"
-            onConfirm={onDrop}
-            trigger={
-              <Button variant="quiet" size="sm" disabled={busy}>
-                Remove
-              </Button>
-            }
-          />
+      <Stack gap={1}>
+        <Inline gap={3} align="baseline" wrap>
+          <Text size="name">{cohort.name}</Text>
+          <Text size="meta" tone="muted">
+            {plural(cohort.mix.length, "persona")}
+          </Text>
         </Inline>
-
         <Text size="read-sm" tone="soft" as="p">
-          {cohort.context}
+          {firstSentence(cohort.context)}
         </Text>
-        <MetaLine facts={facts} />
       </Stack>
     </LedgerRow>
   );

@@ -113,7 +113,7 @@ export const DEFAULT_STEPS: readonly StepStripItem[] = [
   {
     id: "send",
     title: "Point them at your app",
-    note: "one simulation, one target",
+    note: "one study, one target",
     glyph: <Lattice dots={POPULATION} size="sm" />,
   },
   {
